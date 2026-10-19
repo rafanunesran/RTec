@@ -21,14 +21,12 @@ export type Client = {
   token: string;
   active: boolean;
   valid: boolean;
-  max_devices: number;
   expires_at: string | null;
   notes: string;
   last_access_at: string | null;
   created_at: string;
   playlist_ids: string[];
   source: Source | null;
-  device_count: number;
   custom_pin: boolean;
   links: Links;
 };
@@ -53,24 +51,12 @@ export type Playlist = {
   channel_count: number | null;
 };
 
-export type Device = {
-  id: string;
-  client_id: string;
-  client_username: string;
-  client_name: string;
-  mac: string;
-  device_key: string;
-  label: string;
-  last_seen_at: string | null;
-  created_at: string;
-};
 
 export type Stats = {
   clients: number;
   active_clients: number;
   expired_clients: number;
   playlists: number;
-  devices: number;
   recent: { id: string; name: string; username: string; last_access_at: string }[];
 };
 
@@ -102,11 +88,9 @@ export type ChannelsResponse = { playlists: { id: string; name: string }[]; chan
 
 export type Programme = { start: string; stop: string; title: string; desc: string };
 
-export type PendingDevice = { device_id: string; device_key: string; user_agent: string; created_at: string };
-
 export type PlayerSettings = { custom_pin: boolean; locked_groups: string[] };
 
-export type ClientProfile = { name: string; username: string; expires_at: string | null; max_devices: number };
+export type ClientProfile = { name: string; username: string; expires_at: string | null };
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {

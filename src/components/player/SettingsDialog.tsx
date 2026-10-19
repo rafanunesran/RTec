@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { api, type ClientProfile, type PlayerSettings } from "@/lib/api";
-import { getDeviceIdentity } from "@/lib/device";
 import { formatDate } from "@/lib/utils";
 import { Button, Dialog, Field, Input } from "@/components/ui";
 
@@ -22,7 +21,6 @@ export default function SettingsDialog({
   onSettings: (s: PlayerSettings) => void;
   onLogout: () => void;
 }) {
-  const device = getDeviceIdentity();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [lockPin, setLockPin] = useState("");
@@ -59,10 +57,9 @@ export default function SettingsDialog({
   return (
     <Dialog open={open} onClose={onClose} title="Configuracoes" wide>
       <div className="space-y-8">
-        <section className="grid gap-3 sm:grid-cols-3">
+        <section className="grid gap-3 sm:grid-cols-2">
           <Info label="Conta" value={profile.name || profile.username} />
           <Info label="Validade" value={profile.expires_at ? formatDate(profile.expires_at) : "Sem expiracao"} />
-          <Info label="Aparelho" value={`${device.device_id} · ${device.device_key}`} mono />
         </section>
 
         <section>

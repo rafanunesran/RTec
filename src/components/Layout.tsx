@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { LayoutDashboard, LogOut, Menu, MonitorSmartphone, Settings, Users, ExternalLink } from "lucide-react";
+import { LayoutDashboard, LogOut, Menu, Settings, Users, ExternalLink } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import Logo from "./Logo";
@@ -8,7 +8,6 @@ import Logo from "./Logo";
 const nav = [
   { to: "/admin", label: "Painel", icon: LayoutDashboard },
   { to: "/admin/clientes", label: "Clientes", icon: Users },
-  { to: "/admin/dispositivos", label: "Dispositivos", icon: MonitorSmartphone },
   { to: "/admin/configuracoes", label: "Configuracoes", icon: Settings },
 ];
 

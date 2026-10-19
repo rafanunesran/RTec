@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowLeft, Clapperboard, Download, Film, Heart, KeyRound, Loader2, Lock, Radio, Search, Settings, Share, SquarePlus, Tv, UserRound } from "lucide-react";
+import { ArrowLeft, Clapperboard, Download, Film, Heart, Loader2, Lock, Radio, Search, Settings, Share, SquarePlus, Tv } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { useInstall } from "@/lib/pwa";
@@ -7,7 +7,6 @@ import { cn, formatDate } from "@/lib/utils";
 import { Button, Card, Dialog, Field, Input, Select } from "@/components/ui";
 import Logo from "@/components/Logo";
 import VideoPlayer from "@/components/VideoPlayer";
-import DeviceActivation from "@/components/player/DeviceActivation";
 import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
 
@@ -72,7 +71,6 @@ export default function Player() {
 }
 
 function PlayerLogin({ onLogin }: { onLogin: (p: ClientProfile) => void }) {
-  const [mode, setMode] = useState<"password" | "device">("password");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -97,16 +95,8 @@ function PlayerLogin({ onLogin }: { onLogin: (p: ClientProfile) => void }) {
         <div className="mb-6 flex justify-center">
           <Logo subtitle="TV ao vivo, filmes e series" />
         </div>
-        <div className="mb-6 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
-          <Tab active={mode === "password"} onClick={() => setMode("password")}>
-            <UserRound className="h-4 w-4" /> Usuario e senha
-          </Tab>
-          <Tab active={mode === "device"} onClick={() => setMode("device")}>
-            <KeyRound className="h-4 w-4" /> Codigo do aparelho
-          </Tab>
-        </div>
-        {mode === "password" ? (
-          <form onSubmit={submit} className="space-y-4">
+        <p className="mb-6 text-center text-sm text-muted-foreground">Entre com o usuario e a senha que voce recebeu</p>
+        <form onSubmit={submit} className="space-y-4">
             <Field label="Usuario">
               <Input value={username} onChange={(e) => setUsername(e.target.value)} autoCapitalize="none" autoComplete="username" required />
             </Field>
@@ -118,29 +108,11 @@ function PlayerLogin({ onLogin }: { onLogin: (p: ClientProfile) => void }) {
               Entrar
             </Button>
           </form>
-        ) : (
-          <DeviceActivation onLinked={onLogin} />
-        )}
         <div className="mt-6 flex justify-center">
           <InstallButton />
         </div>
       </Card>
     </div>
-  );
-}
-
-function Tab({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-medium transition-colors sm:text-sm",
-        active ? "bg-background text-foreground shadow" : "text-muted-foreground hover:text-foreground",
-      )}
-    >
-      {children}
-    </button>
   );
 }
 

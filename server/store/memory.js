@@ -80,8 +80,6 @@ export function createMemoryStore() {
     admins: new MemoryCollection(["username"]),
     clients: new MemoryCollection(["username", "token"]),
     playlists: new MemoryCollection(),
-    devices: new MemoryCollection(["mac"]),
-    pending: new MemoryCollection(),
     config,
     async getOrCreateSecret(generate) {
       const doc = await config.get("secrets");

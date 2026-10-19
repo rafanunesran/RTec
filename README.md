@@ -1,19 +1,18 @@
 # RTec IPTV Panel
 
-Painel web para criar **logins e senhas** de clientes, cadastrar e **disponibilizar listas M3U**, e ativar dispositivos por **MAC + chave** (no modelo do Duplecast IPTV).
+Painel web para criar **logins e senhas** de clientes, colar a **lista M3U de cada cliente** e deixar ele assistir no **reprodutor web/app** (inspirado no Duplecast IPTV).
 
 Frontend no stack do Lovable (Vite + React + TypeScript + Tailwind, componentes no estilo shadcn/ui), backend Node.js (Express) com banco **Firebase Firestore** e deploy na **Vercel**, tudo nos planos gratuitos.
 
 ## Funcionalidades
 
 - **Login do administrador** (sessao em cookie httpOnly, senha com bcrypt, troca de senha).
-- **Clientes**: usuario, senha (gerador automatico), validade (+1/7/30/90/365 dias), limite de dispositivos, bloqueio, observacoes e quais listas cada um recebe.
+- **Clientes**: usuario, senha (gerador automatico), validade (+1/7/30/90/365 dias), bloqueio, observacoes e a lista do cliente.
 - **Lista propria por cliente**, colada no cadastro do cliente: link M3U do fornecedor, login Xtream Codes (servidor + usuario + senha; tambem XUI.One/OneStream) ou o conteudo do arquivo `.m3u`. Botao **Testar lista** mostra quantos canais, filmes e episodios a lista tem antes de salvar. EPG (XMLTV) opcional e modo de reproducao (direto da fonte ou pelo servidor).
 - **Entrega ao cliente** (para apps IPTV externos): a lista do cliente tambem sai em:
   - `GET /get.php?username=USUARIO&password=SENHA&type=m3u_plus` (formato aceito pela maioria dos apps IPTV);
   - `GET /m3u/<token>.m3u` (link curto, pode ser regenerado);
   - botao "Copiar mensagem para o cliente" com todos os dados.
-- **Ativacao por aparelho (modelo Duplecast)**: no reprodutor o cliente escolhe "Codigo do aparelho" e ve um **Device ID**, uma **Device Key** e um **QR code**. O revendedor escaneia o QR (abre o painel ja preenchido) ou digita os dados em Dispositivos; o aparelho entra sozinho assim que e vinculado. Aparelhos aguardando aparecem em "Aguardando ativacao". Apps externos podem consultar `GET /api/device/playlists?mac=ID&key=CHAVE`.
 - **Reprodutor do cliente** (`/`): o cliente entra com usuario e senha e ve **apenas** os canais das listas dele, separados por grupo, com busca e favoritos, e assiste direto no navegador (HLS via hls.js, MPEG-TS via mpegts.js, MP4/MKV nativo). Canais Xtream `.ts` caem automaticamente para `.m3u8` em aparelhos que nao tocam TS (iPhone).
 - **Secoes TV ao vivo / Filmes / Series** (detectadas pelo padrao Xtream `/live/`, `/movie/`, `/series/` ou extensao do arquivo). Series sao agrupadas por nome com temporadas e episodios (`S01 E02`). Seletor de lista quando o cliente tem mais de uma.
 - **Guia de programacao (EPG)**: "Agora / A seguir" com barra de progresso, usando o XMLTV cadastrado na lista ou o `url-tvg` do cabecalho M3U (aceita `.gz`).
@@ -30,7 +29,7 @@ Frontend no stack do Lovable (Vite + React + TypeScript + Tailwind, componentes 
 3. Na aba **Regras** do Firestore, cole o conteudo de `firestore.rules` (bloqueia todo acesso direto; so o servidor acessa) e publique.
 4. **Engrenagem > Configuracoes do projeto > Contas de servico > Gerar nova chave privada**. Baixa um arquivo `.json`: guarde com cuidado e **nunca** coloque no GitHub.
 
-As colecoes (`admins`, `clients`, `playlists`, `devices`, `pending_devices`, `config`) sao criadas sozinhas no primeiro acesso. Nao precisa criar indices.
+As colecoes (`admins`, `clients`, `config`) sao criadas sozinhas no primeiro acesso. Nao precisa criar indices.
 
 ### 2. Vercel (site + API, plano Hobby gratuito)
 1. Acesse https://vercel.com, entre com o GitHub e clique em **Add New > Project > Import** no repositorio `RTec` (branch `main`).
@@ -77,7 +76,7 @@ O frontend (`src/`) usa a mesma estrutura dos projetos Lovable. Para continuar e
 api/index.js     Funcao serverless da Vercel (usa o mesmo app do server/)
 server/          API Express: app.js, m3u.js, epg.js, testes
 server/store/    Banco: firestore.js (producao) e memory.js (testes/dev)
-src/pages/       Player (cliente), Login, Painel, Clientes, Listas, Dispositivos, Configuracoes
+src/pages/       Player (cliente), Login, Painel, Clientes, Configuracoes
 public/          manifest.webmanifest, sw.js e icones do app instalavel
 src/components/  UI (botoes, inputs, dialogos), layout e logo
 ```

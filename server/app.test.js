@@ -104,14 +104,6 @@ test("fluxo completo: admin, lista, cliente, M3U e dispositivo", async () => {
   assert.equal((await call("GET", "/get.php?username=joao&password=errada")).status, 401);
 
 
-  const device = await call("POST", "/api/devices", { client_id: client.body.id, mac: "001a2b3c4d5e", device_key: "777" });
-  assert.equal(device.body.mac, "00:1A:2B:3C:4D:5E");
-  assert.equal((await call("POST", "/api/devices", { client_id: client.body.id, mac: "00:1A:2B:3C:4D:5F" })).status, 400);
-  const dev = await call("GET", "/api/device/playlists?mac=00:1A:2B:3C:4D:5E&key=777");
-  assert.equal(dev.status, 200);
-  assert.match(dev.body.playlists[0].url, /\/m3u\/.+\.m3u$/);
-  assert.equal((await call("GET", "/api/device/playlists?mac=00:1A:2B:3C:4D:5E&key=000")).status, 401);
-
   await call("PUT", `/api/clients/${client.body.id}`, { expires_at: "2000-01-01T00:00:00Z" });
   assert.equal((await call("GET", "/get.php?username=joao&password=1234")).status, 401);
   assert.equal((await call("POST", "/api/player/login", { username: "joao", password: "1234" })).status, 403);
@@ -159,30 +151,14 @@ test("reprodutor: login do cliente, canais e proxy assinado", async () => {
   assert.equal((await call("GET", ch.src)).status, 401);
 });
 
-test("controle parental e ativacao por codigo do aparelho", async () => {
+test("controle parental (PIN)", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
   const client = await call("POST", "/api/clients", { username: "bia", password: "pw" });
   const adminCookie = cookie;
 
-  // Aparelho novo: registra codigo e ainda nao esta vinculado
   cookie = "";
-  const device = { device_id: "aa:bb:cc:00:11:22", device_key: "123456" };
-  assert.equal((await call("POST", "/api/player/device/register", device)).body.linked, false);
-  assert.equal((await call("POST", "/api/player/device/register", { ...device, device_key: "999999" })).status, 409);
-  assert.equal((await call("GET", "/api/player/device/status?device_id=AA:BB:CC:00:11:22&device_key=123456")).body.linked, false);
-
-  // Revendedor ve o pendente e vincula ao cliente
-  cookie = adminCookie;
-  const pending = await call("GET", "/api/devices/pending");
-  assert.equal(pending.body[0].device_id, "AA:BB:CC:00:11:22");
-  await call("POST", "/api/devices", { client_id: client.body.id, mac: device.device_id, device_key: device.device_key });
-  assert.equal((await call("GET", "/api/devices/pending")).body.length, 0);
-
-  // Aparelho consulta de novo e ja entra logado
-  cookie = "";
-  const status = await call("GET", "/api/player/device/status?device_id=AA:BB:CC:00:11:22&device_key=123456");
-  assert.equal(status.body.linked, true);
+  await call("POST", "/api/player/login", { username: "bia", password: "pw" });
   assert.equal((await call("GET", "/api/player/me")).body.username, "bia");
 
   // PIN padrao 0000, troca e grupos bloqueados

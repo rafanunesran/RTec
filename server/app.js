@@ -21,7 +21,6 @@ let JWT_SECRET = process.env.JWT_SECRET || "";
 
 const randomToken = () => crypto.randomBytes(16).toString("hex");
 const randomPassword = () => crypto.randomBytes(6).toString("base64url");
-const normalizeMac = (mac) => String(mac || "").toUpperCase().replace(/[^0-9A-F]/g, "").replace(/(..)(?!$)/g, "$1:");
 const nowIso = () => new Date().toISOString();
 const byName = (a, b) => a.name.localeCompare(b.name);
 const newestFirst = (a, b) => String(b.created_at).localeCompare(String(a.created_at));
@@ -35,7 +34,7 @@ class HttpError extends Error {
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-async function unique(fn, message = "Ja existe um registro com esse valor (usuario/Device ID)") {
+async function unique(fn, message = "Ja existe um cliente com esse usuario") {
   try {
     return await fn();
   } catch (err) {
@@ -152,7 +151,7 @@ function rewriteHls(text, baseUrl, clientId) {
 }
 
 function clientProfile(c) {
-  return { name: c.name, username: c.username, expires_at: c.expires_at, max_devices: c.max_devices };
+  return { name: c.name, username: c.username, expires_at: c.expires_at };
 }
 
 function signClientSession(res, req, c) {
@@ -190,9 +189,9 @@ async function clientPlaylists(c) {
   return [...own, ...shared.filter((p) => p && p.active).sort(byName)];
 }
 
-function serializeClient(c, deviceCount = 0) {
+function serializeClient(c) {
   const { parental_pin_hash, locked_groups: _locked, ...rest } = c;
-  return { ...rest, playlist_ids: c.playlist_ids || [], device_count: deviceCount, valid: isClientValid(c), custom_pin: !!parental_pin_hash };
+  return { ...rest, playlist_ids: c.playlist_ids || [], valid: isClientValid(c), custom_pin: !!parental_pin_hash };
 }
 
 function str(v, field, { required = false, max = 2000 } = {}) {
@@ -334,13 +333,12 @@ export function createApp() {
     "/api/stats",
     requireAdmin,
     wrap(async (_req, res) => {
-      const [clients, playlists, devices] = await Promise.all([db().clients.list(), db().playlists.list(), db().devices.list()]);
+      const [clients, playlists] = await Promise.all([db().clients.list(), db().playlists.list()]);
       res.json({
         clients: clients.length,
         active_clients: clients.filter(isClientValid).length,
         expired_clients: clients.filter((c) => c.expires_at && new Date(c.expires_at) <= new Date()).length,
         playlists: clients.filter((c) => c.source?.kind).length + playlists.length,
-        devices: devices.length,
         recent: clients
           .filter((c) => c.last_access_at)
           .sort((a, b) => b.last_access_at.localeCompare(a.last_access_at))
@@ -351,19 +349,14 @@ export function createApp() {
   );
 
   // ---------- Clientes (login/senha) ----------
-  async function clientResponse(req, c) {
-    const devices = await db().devices.where("client_id", "==", c.id);
-    return { ...serializeClient(c, devices.length), links: clientLinks(req, c) };
-  }
+  const clientResponse = (req, c) => ({ ...serializeClient(c), links: clientLinks(req, c) });
 
   app.get(
     "/api/clients",
     requireAdmin,
     wrap(async (req, res) => {
-      const [clients, devices] = await Promise.all([db().clients.list(), db().devices.list()]);
-      const counts = {};
-      for (const d of devices) counts[d.client_id] = (counts[d.client_id] || 0) + 1;
-      res.json(clients.sort(newestFirst).map((c) => ({ ...serializeClient(c, counts[c.id] || 0), links: clientLinks(req, c) })));
+      const clients = await db().clients.list();
+      res.json(clients.sort(newestFirst).map((c) => clientResponse(req, c)));
     }),
   );
 
@@ -387,7 +380,6 @@ export function createApp() {
       username,
       password,
       active: !!(body.active ?? existing?.active ?? true),
-      max_devices: Math.max(1, Number(body.max_devices ?? existing?.max_devices ?? 1) || 1),
       expires_at: expires ? new Date(expires).toISOString() : null,
       notes: str(body.notes ?? existing?.notes, "observacoes"),
       playlist_ids: playlistIds,
@@ -402,7 +394,7 @@ export function createApp() {
       const c = await unique(() =>
         db().clients.create({ ...data, token: randomToken(), last_access_at: null, parental_pin_hash: "", locked_groups: [] }),
       );
-      res.status(201).json(await clientResponse(req, c));
+      res.status(201).json(clientResponse(req, c));
     }),
   );
 
@@ -417,7 +409,7 @@ export function createApp() {
       if (req.body?.reset_pin) patch.parental_pin_hash = "";
       const c = await unique(() => db().clients.update(existing.id, patch));
       forgetClient(existing.id);
-      res.json(await clientResponse(req, c));
+      res.json(clientResponse(req, c));
     }),
   );
 
@@ -427,7 +419,7 @@ export function createApp() {
     wrap(async (req, res) => {
       const c = await db().clients.update(req.params.id, { token: randomToken() });
       if (!c) throw new HttpError(404, "Cliente nao encontrado");
-      res.json(await clientResponse(req, c));
+      res.json(clientResponse(req, c));
     }),
   );
 
@@ -435,7 +427,6 @@ export function createApp() {
     "/api/clients/:id",
     requireAdmin,
     wrap(async (req, res) => {
-      await db().devices.deleteWhere("client_id", "==", req.params.id);
       await db().clients.delete(req.params.id);
       forgetClient(req.params.id);
       res.json({ ok: true });
@@ -518,86 +509,6 @@ export function createApp() {
       const p = await db().playlists.get(req.params.id);
       if (!p) throw new HttpError(404, "Lista nao encontrada");
       res.json(await previewSource(p));
-    }),
-  );
-
-  // ---------- Dispositivos (Device ID + Device Key) ----------
-  app.get(
-    "/api/devices",
-    requireAdmin,
-    wrap(async (_req, res) => {
-      const [devices, clients] = await Promise.all([db().devices.list(), db().clients.list()]);
-      const byId = new Map(clients.map((c) => [c.id, c]));
-      res.json(
-        devices
-          .sort(newestFirst)
-          .map((d) => ({ ...d, client_username: byId.get(d.client_id)?.username ?? "?", client_name: byId.get(d.client_id)?.name ?? "" })),
-      );
-    }),
-  );
-
-  async function readDeviceBody(body, existing) {
-    const mac = normalizeMac(body.mac ?? existing?.mac);
-    if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) throw new HttpError(400, "Device ID invalido (ex: 00:1A:2B:3C:4D:5E)");
-    const clientId = String(body.client_id ?? existing?.client_id ?? "");
-    const client = clientId && (await db().clients.get(clientId));
-    if (!client) throw new HttpError(400, "Selecione um cliente valido");
-    const used = (await db().devices.where("client_id", "==", clientId)).filter((d) => d.id !== existing?.id).length;
-    if (used >= client.max_devices) throw new HttpError(400, `Cliente atingiu o limite de ${client.max_devices} dispositivo(s)`);
-    return {
-      mac,
-      client_id: clientId,
-      device_key: str(body.device_key ?? existing?.device_key, "chave", { max: 64 }) || String(crypto.randomInt(100000, 999999)),
-      label: str(body.label ?? existing?.label, "descricao", { max: 120 }),
-    };
-  }
-
-  app.get(
-    "/api/devices/pending",
-    requireAdmin,
-    wrap(async (_req, res) => {
-      const pending = await db().pending.list();
-      res.json(pending.sort(newestFirst).map(({ id, ...p }) => ({ device_id: id, ...p })));
-    }),
-  );
-
-  app.delete(
-    "/api/devices/pending/:id",
-    requireAdmin,
-    wrap(async (req, res) => {
-      await db().pending.delete(normalizeMac(req.params.id));
-      res.json({ ok: true });
-    }),
-  );
-
-  app.post(
-    "/api/devices",
-    requireAdmin,
-    wrap(async (req, res) => {
-      const data = await readDeviceBody(req.body || {});
-      const d = await unique(() => db().devices.create({ ...data, last_seen_at: null }));
-      await db().pending.delete(d.mac);
-      res.status(201).json(d);
-    }),
-  );
-
-  app.put(
-    "/api/devices/:id",
-    requireAdmin,
-    wrap(async (req, res) => {
-      const existing = await db().devices.get(req.params.id);
-      if (!existing) throw new HttpError(404, "Dispositivo nao encontrado");
-      const data = await readDeviceBody(req.body || {}, existing);
-      res.json(await unique(() => db().devices.update(existing.id, data)));
-    }),
-  );
-
-  app.delete(
-    "/api/devices/:id",
-    requireAdmin,
-    wrap(async (req, res) => {
-      await db().devices.delete(req.params.id);
-      res.json({ ok: true });
     }),
   );
 
@@ -721,43 +632,6 @@ export function createApp() {
     }),
   );
 
-  // ---------- Ativacao por codigo do aparelho (Device ID + Device Key, com QR code) ----------
-  // O reprodutor gera ID e chave, registra aqui e fica consultando ate o revendedor vincular a um cliente.
-  app.post(
-    "/api/player/device/register",
-    wrap(async (req, res) => {
-      const id = normalizeMac(req.body?.device_id);
-      const key = String(req.body?.device_key || "");
-      if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(id) || !/^\d{6}$/.test(key)) throw new HttpError(400, "Codigo do aparelho invalido");
-      const linked = await db().devices.findOne("mac", id);
-      if (linked && linked.device_key !== key) throw new HttpError(409, "Este ID ja pertence a outro aparelho");
-      if (!linked) {
-        const pending = await db().pending.get(id);
-        if (pending && pending.device_key !== key) throw new HttpError(409, "Este ID ja pertence a outro aparelho");
-        if (!pending) {
-          const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-          await db().pending.deleteWhere("created_at", "<", weekAgo);
-          await db().pending.set(id, { device_key: key, user_agent: String(req.get("user-agent") || "").slice(0, 300), created_at: nowIso() });
-        }
-      }
-      res.json({ device_id: id, linked: !!linked });
-    }),
-  );
-
-  app.get(
-    "/api/player/device/status",
-    wrap(async (req, res) => {
-      const d = await db().devices.findOne("mac", normalizeMac(req.query.device_id));
-      if (!d || d.device_key !== String(req.query.device_key || "")) return res.json({ linked: false });
-      const c = await getClient(d.client_id);
-      if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor.");
-      await touch("devices", d, "last_seen_at");
-      await touch("clients", c, "last_access_at");
-      signClientSession(res, req, c);
-      res.json({ linked: true, profile: clientProfile(c) });
-    }),
-  );
-
   // Repassa streams e logos pelo servidor (listas no modo "proxy"): evita bloqueio de CORS e de conteudo
   // http em site https. So aceita URLs assinadas pelo proprio servidor para o cliente logado.
   app.get(
@@ -817,20 +691,6 @@ export function createApp() {
       const c = await db().clients.findOne("token", req.params.token);
       if (!isClientValid(c)) return res.status(401).type("text").send("Unauthorized");
       await sendM3u(res, c);
-    }),
-  );
-
-  // Ativacao por dispositivo para apps externos: o app envia ID + chave e recebe a lista.
-  app.get(
-    "/api/device/playlists",
-    wrap(async (req, res) => {
-      const d = await db().devices.findOne("mac", normalizeMac(req.query.mac));
-      if (!d || d.device_key !== String(req.query.key || "")) throw new HttpError(401, "Dispositivo nao ativado");
-      const c = await getClient(d.client_id);
-      if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado");
-      await touch("devices", d, "last_seen_at");
-      await touch("clients", c, "last_access_at");
-      res.json({ mac: d.mac, expires_at: c.expires_at, playlists: [{ name: c.name || c.username, url: clientLinks(req, c).m3u_token }] });
     }),
   );
 

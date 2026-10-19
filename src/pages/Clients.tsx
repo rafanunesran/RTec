@@ -13,7 +13,6 @@ type Form = {
   username: string;
   password: string;
   active: boolean;
-  max_devices: number;
   expires_at: string;
   notes: string;
   source: Source;
@@ -24,7 +23,6 @@ const emptyForm = (): Form => ({
   username: "",
   password: randomPass(),
   active: true,
-  max_devices: 1,
   expires_at: addDays(30),
   notes: "",
   source: emptySource(),
@@ -86,7 +84,6 @@ export default function Clients() {
       username: c.username,
       password: c.password,
       active: c.active,
-      max_devices: c.max_devices,
       expires_at: toLocalInput(c.expires_at),
       notes: c.notes,
       source: c.source ? { ...emptySource(), ...c.source } : emptySource(),
@@ -119,7 +116,7 @@ export default function Clients() {
   };
 
   const remove = async (c: Client) => {
-    if (!confirm(`Excluir o cliente "${c.username}"? Os dispositivos dele tambem serao removidos.`)) return;
+    if (!confirm(`Excluir o cliente "${c.username}"?`)) return;
     await api.del(`/api/clients/${c.id}`);
     toast.success("Cliente excluido");
     load();
@@ -243,9 +240,6 @@ export default function Clients() {
                   </Button>
                 ))}
               </div>
-            </Field>
-            <Field label="Limite de dispositivos">
-              <Input type="number" min={1} value={form.max_devices} onChange={(e) => setForm({ ...form, max_devices: Number(e.target.value) })} />
             </Field>
             <div className="flex items-center justify-between rounded-md border p-3">
               <div>

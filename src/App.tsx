@@ -5,7 +5,6 @@ import Layout from "@/components/Layout";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 import Clients from "@/pages/Clients";
-import Devices from "@/pages/Devices";
 import Settings from "@/pages/Settings";
 import Player from "@/pages/Player";
 
@@ -29,7 +28,6 @@ function Admin() {
         <Route element={<Protected />}>
           <Route index element={<Dashboard />} />
           <Route path="clientes" element={<Clients />} />
-          <Route path="dispositivos" element={<Devices />} />
           <Route path="configuracoes" element={<Settings />} />
         </Route>
         <Route path="*" element={<Navigate to="/admin" replace />} />

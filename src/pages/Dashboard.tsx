@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Activity, ListVideo, MonitorSmartphone, UserCheck, UserX, Users } from "lucide-react";
+import { Activity, ListVideo, UserCheck, UserX, Users } from "lucide-react";
 import { api, type Stats } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Card } from "@/components/ui";
@@ -18,13 +18,12 @@ export default function Dashboard() {
     { label: "Ativos", value: stats?.active_clients, icon: UserCheck, to: "/admin/clientes" },
     { label: "Expirados", value: stats?.expired_clients, icon: UserX, to: "/admin/clientes" },
     { label: "Com lista", value: stats?.playlists, icon: ListVideo, to: "/admin/clientes" },
-    { label: "Dispositivos", value: stats?.devices, icon: MonitorSmartphone, to: "/admin/dispositivos" },
   ];
 
   return (
     <>
       <PageHeader title="Painel" description="Visao geral do seu servico IPTV" />
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {cards.map(({ label, value, icon: Icon, to }) => (
           <Link key={label} to={to}>
             <Card className="p-5 transition-colors hover:border-primary/50">
@@ -56,7 +55,7 @@ export default function Dashboard() {
             ))}
           </ul>
         ) : (
-          <p className="text-sm text-muted-foreground">Nenhum acesso ainda. Crie um cliente e envie o link M3U para ele.</p>
+          <p className="text-sm text-muted-foreground">Nenhum acesso ainda. Crie um cliente e envie o endereco do site com o login e a senha dele.</p>
         )}
       </Card>
 
@@ -68,9 +67,6 @@ export default function Dashboard() {
             Xtream ou o conteudo do arquivo). Use "Testar lista" antes de salvar.
           </li>
           <li>Envie ao cliente o endereco do site com o login e a senha: ele assiste direto no navegador e pode instalar o app no celular.</li>
-          <li>
-            Opcional: ative o aparelho do cliente pelo Device ID e Device Key em <Link to="/admin/dispositivos" className="text-primary">Dispositivos</Link>.
-          </li>
         </ol>
       </Card>
     </>
