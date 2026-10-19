@@ -2,7 +2,7 @@
 
 Painel web para criar **logins e senhas** de clientes, cadastrar e **disponibilizar listas M3U**, e ativar dispositivos por **MAC + chave** (no modelo do Duplecast IPTV).
 
-Frontend no stack do Lovable (Vite + React + TypeScript + Tailwind, componentes no estilo shadcn/ui), backend Node.js (Express + SQLite nativo do Node).
+Frontend no stack do Lovable (Vite + React + TypeScript + Tailwind, componentes no estilo shadcn/ui), backend Node.js (Express) com banco **Firebase Firestore** e deploy na **Vercel**, tudo nos planos gratuitos.
 
 ## Funcionalidades
 
@@ -26,27 +26,48 @@ Frontend no stack do Lovable (Vite + React + TypeScript + Tailwind, componentes 
 - **App instalavel (PWA)**: no Android/Chrome aparece o botao "Instalar app"; no iPhone, o botao mostra o passo a passo (Safari → Compartilhar → Adicionar a Tela de Inicio). Exige HTTPS em producao.
 - Clientes expirados ou bloqueados recebem `401/403` automaticamente.
 
-## Rodando
+## Deploy gratuito: Firebase + Vercel
 
-Requer Node.js 22.13+.
+### 1. Firebase (banco de dados, plano Spark gratuito)
+1. Acesse https://console.firebase.google.com e crie um projeto (pode desativar o Google Analytics).
+2. Menu **Build > Firestore Database > Criar banco de dados**: escolha o local **southamerica-east1 (Sao Paulo)** e o **modo de producao**.
+3. Na aba **Regras** do Firestore, cole o conteudo de `firestore.rules` (bloqueia todo acesso direto; so o servidor acessa) e publique.
+4. **Engrenagem > Configuracoes do projeto > Contas de servico > Gerar nova chave privada**. Baixa um arquivo `.json`: guarde com cuidado e **nunca** coloque no GitHub.
+
+As colecoes (`admins`, `clients`, `playlists`, `devices`, `pending_devices`, `config`) sao criadas sozinhas no primeiro acesso. Nao precisa criar indices.
+
+### 2. Vercel (site + API, plano Hobby gratuito)
+1. Acesse https://vercel.com, entre com o GitHub e clique em **Add New > Project > Import** no repositorio `RTec` (branch `main`).
+2. A Vercel detecta tudo pelo `vercel.json` (Vite + funcao em `api/index.js`). Nao mude os comandos.
+3. Em **Environment Variables**, adicione:
+   - `FIREBASE_SERVICE_ACCOUNT`: o conteudo inteiro do `.json` baixado no passo 1.4;
+   - `ADMIN_PASSWORD`: a senha do seu primeiro acesso ao painel;
+   - `PUBLIC_URL`: o endereco do site (ex: `https://rtec.vercel.app`). Pode adicionar depois do primeiro deploy e fazer **Redeploy**.
+4. Clique em **Deploy**. O painel fica em `https://SEU-SITE/admin` e o reprodutor em `https://SEU-SITE/`.
+
+Cada `git push` na `main` faz um novo deploy automatico.
+
+### Limites dos planos gratuitos (importante)
+- **Vercel Hobby**: uso **pessoal e nao comercial** pelos termos da Vercel; ~100 GB de trafego/mes; funcoes com no maximo 60 s. Por isso as listas novas usam reproducao **direta da fonte** (o video nao passa pela Vercel). O modo **proxy** existe por lista, mas consome a banda do plano e streams `.ts` continuos sao cortados a cada 60 s; prefira HLS (`.m3u8`).
+- **Reproducao direta** exige que a fonte use `https` e libere CORS; links `http` sao bloqueados pelo navegador em sites `https`. Nesses casos use proxy (com os limites acima) ou um servidor proprio.
+- **Firestore Spark**: 50 mil leituras e 20 mil gravacoes por dia, 1 GB. O servidor usa cache e grava "ultimo acesso" no maximo a cada 5 minutos para economizar. Lista **manual** colada no painel tem limite de ~900 KB (limite de documento do Firestore); listas maiores, use URL M3U.
+
+## Rodando localmente
+
+Requer Node.js 22.
 
 ```bash
 npm install
 npm run dev      # API em :3001 + frontend em http://localhost:8080
 ```
 
-Producao:
+Sem `FIREBASE_SERVICE_ACCOUNT`, o servidor local usa um banco em memoria (os dados somem ao reiniciar). Para usar seu Firestore localmente, crie um arquivo `.env` com as variaveis de `.env.example` e rode `node --env-file=.env server/index.js`.
 
-```bash
-npm run build
-ADMIN_PASSWORD=sua-senha PUBLIC_URL=https://iptv.seudominio.com npm start   # serve tudo em :3001
-```
+Login inicial do painel: `admin` / `admin123` (ou `ADMIN_USER`/`ADMIN_PASSWORD`). **Troque a senha** em Configuracoes.
+
+Testes: `npm test` (banco em memoria) e `npm test:firestore` (mesmos testes no emulador oficial do Firestore; precisa de Java).
 
 Enderecos: reprodutor do cliente em `/`, painel do administrador em `/admin`.
-
-Login inicial do admin: `admin` / `admin123` (ou o definido em `ADMIN_USER`/`ADMIN_PASSWORD`). **Troque a senha** em Configuracoes. Veja `.env.example` para todas as variaveis.
-
-Testes da API: `npm test`.
 
 ## Editando o visual no Lovable
 
@@ -55,7 +76,9 @@ O frontend (`src/`) usa a mesma estrutura dos projetos Lovable. Para continuar e
 ## Estrutura
 
 ```
-server/          API Express + SQLite (app.js, db.js, m3u.js, testes)
+api/index.js     Funcao serverless da Vercel (usa o mesmo app do server/)
+server/          API Express: app.js, m3u.js, epg.js, testes
+server/store/    Banco: firestore.js (producao) e memory.js (testes/dev)
 src/pages/       Player (cliente), Login, Painel, Clientes, Listas, Dispositivos, Configuracoes
 public/          manifest.webmanifest, sw.js e icones do app instalavel
 src/components/  UI (botoes, inputs, dialogos), layout e logo

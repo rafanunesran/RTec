@@ -83,12 +83,12 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
       }
     };
 
-    // Se o formato original falhar, tenta a versao HLS do mesmo canal (quando existir).
+    // Se o formato original falhar, tenta a versao alternativa do mesmo canal (HLS <-> MPEG-TS no Xtream).
     function fail(msg: string) {
       if (cancelled) return;
       if (channel!.alt && !triedAlt) {
         triedAlt = true;
-        start(channel!.alt, "hls");
+        start(channel!.alt, channel!.alt_type || "hls");
         return;
       }
       setError(msg);

@@ -1,10 +1,9 @@
+// Servidor Node tradicional (desenvolvimento local ou VPS). Na Vercel, quem atende e api/index.js.
 import express from "express";
 import path from "node:path";
 import fs from "node:fs";
-import { seedAdmin } from "./db.js";
 import { createApp } from "./app.js";
 
-seedAdmin();
 const app = createApp();
 
 const dist = path.resolve("dist");

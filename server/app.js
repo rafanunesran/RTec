@@ -3,29 +3,28 @@ import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import { Readable } from "node:stream";
-import { db } from "./db.js";
+import { DuplicateError, getStore } from "./store/index.js";
 import { buildMergedM3u, countChannels, headerEpgUrls, loadPlaylistText, parseEntries, sourceUrl } from "./m3u.js";
 import { nowNext } from "./epg.js";
 
-function loadSecret() {
-  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
-  const file = path.join(process.env.DATA_DIR || path.resolve("data"), ".jwt-secret");
-  if (fs.existsSync(file)) return fs.readFileSync(file, "utf8").trim();
-  const secret = crypto.randomBytes(32).toString("hex");
-  fs.writeFileSync(file, secret, { mode: 0o600 });
-  return secret;
-}
-
-const JWT_SECRET = loadSecret();
 const COOKIE = "rtec_session";
 const CLIENT_COOKIE = "rtec_player";
+const DEFAULT_PIN = "0000";
+const MAX_MANUAL_BYTES = 900 * 1024; // um documento do Firestore aceita ate 1 MB
+
+// "direct": o navegador busca o video na fonte (nao gasta banda do servidor; ideal no plano gratis da Vercel).
+// "proxy": o video passa pelo servidor (resolve CORS e links http, mas consome banda).
+const DEFAULT_PLAYBACK = process.env.DEFAULT_PLAYBACK || (process.env.VERCEL ? "direct" : "proxy");
+
+let JWT_SECRET = process.env.JWT_SECRET || "";
 
 const randomToken = () => crypto.randomBytes(16).toString("hex");
 const randomPassword = () => crypto.randomBytes(6).toString("base64url");
 const normalizeMac = (mac) => String(mac || "").toUpperCase().replace(/[^0-9A-F]/g, "").replace(/(..)(?!$)/g, "$1:");
+const nowIso = () => new Date().toISOString();
+const byName = (a, b) => a.name.localeCompare(b.name);
+const newestFirst = (a, b) => String(b.created_at).localeCompare(String(a.created_at));
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -36,18 +35,59 @@ class HttpError extends Error {
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-function requireAdmin(req, _res, next) {
+async function unique(fn, message = "Ja existe um registro com esse valor (usuario/Device ID)") {
   try {
-    req.admin = jwt.verify(req.cookies[COOKIE], JWT_SECRET);
-    next();
-  } catch {
-    next(new HttpError(401, "Nao autenticado"));
+    return await fn();
+  } catch (err) {
+    if (err instanceof DuplicateError) throw new HttpError(409, message);
+    throw err;
   }
 }
+
+// ---------- Inicializacao (segredo da sessao e primeiro admin) ----------
+let ready;
+function init() {
+  ready ??= (async () => {
+    const db = getStore();
+    if (!JWT_SECRET) JWT_SECRET = await db.getOrCreateSecret(() => crypto.randomBytes(32).toString("hex"));
+    const admins = await db.admins.list();
+    if (admins.length === 0) {
+      const username = process.env.ADMIN_USER || "admin";
+      const password = process.env.ADMIN_PASSWORD || "admin123";
+      await unique(() => db.admins.create({ username, password_hash: bcrypt.hashSync(password, 10) })).catch(() => {});
+      console.log(`[rtec] Admin inicial criado: ${username} / ${process.env.ADMIN_PASSWORD ? "(ADMIN_PASSWORD)" : password}`);
+    }
+  })().catch((err) => {
+    ready = undefined;
+    throw err;
+  });
+  return ready;
+}
+
+// ---------- Cache curto de clientes (economiza leituras do Firestore) ----------
+const CLIENT_TTL_MS = 30_000;
+const clientCache = new Map();
+
+async function getClient(id) {
+  const hit = clientCache.get(id);
+  if (hit && Date.now() - hit.at < CLIENT_TTL_MS) return hit.client;
+  const client = await getStore().clients.get(id);
+  clientCache.set(id, { at: Date.now(), client });
+  return client;
+}
+
+const forgetClient = (id) => clientCache.delete(String(id));
 
 function isClientValid(c) {
   if (!c || !c.active) return false;
   return !c.expires_at || new Date(c.expires_at) > new Date();
+}
+
+/** Atualiza "ultimo acesso" no maximo a cada 5 minutos, para nao gastar gravacoes. */
+async function touch(collection, doc, field) {
+  if (doc[field] && Date.now() - new Date(doc[field]).getTime() < 5 * 60_000) return;
+  doc[field] = nowIso();
+  await getStore()[collection].update(doc.id, { [field]: doc[field] });
 }
 
 // Muda quando a senha do cliente muda, derrubando sessoes antigas do reprodutor.
@@ -90,45 +130,43 @@ function clientProfile(c) {
   return { name: c.name, username: c.username, expires_at: c.expires_at, max_devices: c.max_devices };
 }
 
-function requireClient(req, _res, next) {
+function signClientSession(res, req, c) {
+  const token = jwt.sign({ cid: c.id, pw: passwordFingerprint(c) }, JWT_SECRET, { expiresIn: "30d" });
+  res.cookie(CLIENT_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 30 * 24 * 3600 * 1000 });
+}
+
+function requireAdmin(req, _res, next) {
   try {
-    const payload = jwt.verify(req.cookies[CLIENT_COOKIE], JWT_SECRET);
-    const c = db.prepare("SELECT * FROM clients WHERE id = ?").get(payload.cid);
-    if (!c || payload.pw !== passwordFingerprint(c)) return next(new HttpError(401, "Sessao expirada, entre novamente"));
-    if (!isClientValid(c)) return next(new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor."));
-    req.client = c;
+    req.admin = jwt.verify(req.cookies[COOKIE], JWT_SECRET);
     next();
   } catch {
     next(new HttpError(401, "Nao autenticado"));
   }
 }
 
-function clientPlaylists(clientId) {
-  return db
-    .prepare(
-      `SELECT p.* FROM playlists p
-       JOIN client_playlists cp ON cp.playlist_id = p.id
-       WHERE cp.client_id = ? AND p.active = 1 ORDER BY p.name`,
-    )
-    .all(clientId);
+const requireClient = wrap(async (req, _res, next) => {
+  let payload;
+  try {
+    payload = jwt.verify(req.cookies[CLIENT_COOKIE], JWT_SECRET);
+  } catch {
+    throw new HttpError(401, "Nao autenticado");
+  }
+  const c = await getClient(payload.cid);
+  if (!c || payload.pw !== passwordFingerprint(c)) throw new HttpError(401, "Sessao expirada, entre novamente");
+  if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor.");
+  req.client = c;
+  next();
+});
+
+async function clientPlaylists(c) {
+  const db = getStore();
+  const lists = await Promise.all((c.playlist_ids || []).map((id) => db.playlists.get(id)));
+  return lists.filter((p) => p && p.active).sort(byName);
 }
 
-function touchClient(id) {
-  db.prepare("UPDATE clients SET last_access_at = datetime('now') WHERE id = ?").run(id);
-}
-
-function serializeClient(c) {
-  const playlistIds = db.prepare("SELECT playlist_id FROM client_playlists WHERE client_id = ?").all(c.id).map((r) => r.playlist_id);
-  const deviceCount = db.prepare("SELECT COUNT(*) AS n FROM devices WHERE client_id = ?").get(c.id).n;
+function serializeClient(c, deviceCount = 0) {
   const { parental_pin_hash, locked_groups: _locked, ...rest } = c;
-  return { ...rest, active: !!c.active, playlist_ids: playlistIds, device_count: deviceCount, valid: isClientValid(c), custom_pin: !!parental_pin_hash };
-}
-
-function setClientPlaylists(clientId, ids) {
-  if (!Array.isArray(ids)) return;
-  db.prepare("DELETE FROM client_playlists WHERE client_id = ?").run(clientId);
-  const ins = db.prepare("INSERT OR IGNORE INTO client_playlists (client_id, playlist_id) VALUES (?, ?)");
-  for (const id of ids) ins.run(clientId, Number(id));
+  return { ...rest, playlist_ids: c.playlist_ids || [], device_count: deviceCount, valid: isClientValid(c), custom_pin: !!parental_pin_hash };
 }
 
 function str(v, field, { required = false, max = 2000 } = {}) {
@@ -153,36 +191,45 @@ function clientLinks(req, c) {
 }
 
 async function sendM3u(res, client) {
-  touchClient(client.id);
-  const text = await buildMergedM3u(clientPlaylists(client.id));
+  await touch("clients", client, "last_access_at");
+  const text = await buildMergedM3u(await clientPlaylists(client));
   res.setHeader("Content-Type", "audio/x-mpegurl; charset=utf-8");
   res.setHeader("Content-Disposition", `inline; filename="${client.username}.m3u"`);
   res.setHeader("Cache-Control", "no-store");
   res.send(text);
 }
 
+async function findClientByLogin(username, password) {
+  const c = await getStore().clients.findOne("username", String(username || ""));
+  if (!c || c.password !== String(password || "")) return null;
+  return c;
+}
+
+const checkPin = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pin || ""), c.parental_pin_hash) : String(pin || "") === DEFAULT_PIN);
+
 export function createApp() {
   const app = express();
   app.set("trust proxy", true);
-  app.use(express.json({ limit: "20mb" }));
+  app.use(express.json({ limit: "4mb" }));
   app.use(cookieParser());
+  app.use(wrap(async (_req, _res, next) => (await init(), next())));
+
+  const db = () => getStore();
 
   // ---------- Autenticacao do administrador ----------
-  app.post("/api/auth/login", (req, res) => {
-    const { username, password } = req.body || {};
-    const admin = db.prepare("SELECT * FROM admins WHERE username = ?").get(String(username || ""));
-    if (!admin || !bcrypt.compareSync(String(password || ""), admin.password_hash)) {
-      throw new HttpError(401, "Usuario ou senha invalidos");
-    }
-    const token = jwt.sign({ id: admin.id, username: admin.username }, JWT_SECRET, { expiresIn: "7d" });
-    res.cookie(COOKIE, token, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: req.secure,
-      maxAge: 7 * 24 * 3600 * 1000,
-    });
-    res.json({ id: admin.id, username: admin.username });
-  });
+  app.post(
+    "/api/auth/login",
+    wrap(async (req, res) => {
+      const { username, password } = req.body || {};
+      const admin = await db().admins.findOne("username", String(username || ""));
+      if (!admin || !bcrypt.compareSync(String(password || ""), admin.password_hash)) {
+        throw new HttpError(401, "Usuario ou senha invalidos");
+      }
+      const token = jwt.sign({ id: admin.id, username: admin.username }, JWT_SECRET, { expiresIn: "7d" });
+      res.cookie(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 7 * 24 * 3600 * 1000 });
+      res.json({ id: admin.id, username: admin.username });
+    }),
+  );
 
   app.post("/api/auth/logout", (_req, res) => {
     res.clearCookie(COOKIE);
@@ -191,113 +238,137 @@ export function createApp() {
 
   app.get("/api/auth/me", requireAdmin, (req, res) => res.json(req.admin));
 
-  app.post("/api/auth/password", requireAdmin, (req, res) => {
-    const { current, next } = req.body || {};
-    const admin = db.prepare("SELECT * FROM admins WHERE id = ?").get(req.admin.id);
-    if (!admin || !bcrypt.compareSync(String(current || ""), admin.password_hash)) {
-      throw new HttpError(400, "Senha atual incorreta");
-    }
-    if (String(next || "").length < 6) throw new HttpError(400, "A nova senha precisa ter ao menos 6 caracteres");
-    db.prepare("UPDATE admins SET password_hash = ? WHERE id = ?").run(bcrypt.hashSync(String(next), 10), admin.id);
-    res.json({ ok: true });
-  });
+  app.post(
+    "/api/auth/password",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const { current, next } = req.body || {};
+      const admin = await db().admins.get(req.admin.id);
+      if (!admin || !bcrypt.compareSync(String(current || ""), admin.password_hash)) {
+        throw new HttpError(400, "Senha atual incorreta");
+      }
+      if (String(next || "").length < 6) throw new HttpError(400, "A nova senha precisa ter ao menos 6 caracteres");
+      await db().admins.update(admin.id, { password_hash: bcrypt.hashSync(String(next), 10) });
+      res.json({ ok: true });
+    }),
+  );
 
   // ---------- Painel ----------
-  app.get("/api/stats", requireAdmin, (_req, res) => {
-    const clients = db.prepare("SELECT * FROM clients").all();
-    res.json({
-      clients: clients.length,
-      active_clients: clients.filter(isClientValid).length,
-      expired_clients: clients.filter((c) => c.expires_at && new Date(c.expires_at) <= new Date()).length,
-      playlists: db.prepare("SELECT COUNT(*) AS n FROM playlists").get().n,
-      devices: db.prepare("SELECT COUNT(*) AS n FROM devices").get().n,
-      recent: db
-        .prepare("SELECT id, name, username, last_access_at FROM clients WHERE last_access_at IS NOT NULL ORDER BY last_access_at DESC LIMIT 8")
-        .all(),
-    });
-  });
+  app.get(
+    "/api/stats",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      const [clients, playlists, devices] = await Promise.all([db().clients.list(), db().playlists.list(), db().devices.list()]);
+      res.json({
+        clients: clients.length,
+        active_clients: clients.filter(isClientValid).length,
+        expired_clients: clients.filter((c) => c.expires_at && new Date(c.expires_at) <= new Date()).length,
+        playlists: playlists.length,
+        devices: devices.length,
+        recent: clients
+          .filter((c) => c.last_access_at)
+          .sort((a, b) => b.last_access_at.localeCompare(a.last_access_at))
+          .slice(0, 8)
+          .map(({ id, name, username, last_access_at }) => ({ id, name, username, last_access_at })),
+      });
+    }),
+  );
 
   // ---------- Clientes (login/senha) ----------
-  app.get("/api/clients", requireAdmin, (req, res) => {
-    const rows = db.prepare("SELECT * FROM clients ORDER BY created_at DESC").all();
-    res.json(rows.map((c) => ({ ...serializeClient(c), links: clientLinks(req, c) })));
-  });
+  async function clientResponse(req, c) {
+    const devices = await db().devices.where("client_id", "==", c.id);
+    return { ...serializeClient(c, devices.length), links: clientLinks(req, c) };
+  }
 
-  function readClientBody(body, existing) {
+  app.get(
+    "/api/clients",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const [clients, devices] = await Promise.all([db().clients.list(), db().devices.list()]);
+      const counts = {};
+      for (const d of devices) counts[d.client_id] = (counts[d.client_id] || 0) + 1;
+      res.json(clients.sort(newestFirst).map((c) => ({ ...serializeClient(c, counts[c.id] || 0), links: clientLinks(req, c) })));
+    }),
+  );
+
+  async function readClientBody(body, existing) {
     const username = str(body.username ?? existing?.username, "usuario", { required: true, max: 64 });
     if (!/^[A-Za-z0-9._-]+$/.test(username)) throw new HttpError(400, "Usuario deve conter apenas letras, numeros, ponto, _ ou -");
     const password = str(body.password ?? existing?.password, "senha", { max: 64 }) || randomPassword();
     const expires = body.expires_at === undefined ? existing?.expires_at ?? null : body.expires_at || null;
     if (expires && Number.isNaN(new Date(expires).getTime())) throw new HttpError(400, "Data de validade invalida");
+    let playlistIds = existing?.playlist_ids || [];
+    if (Array.isArray(body.playlist_ids)) {
+      const ids = [...new Set(body.playlist_ids.map(String))];
+      const found = await Promise.all(ids.map((id) => db().playlists.get(id)));
+      playlistIds = ids.filter((_id, i) => found[i]);
+    }
     return {
       name: str(body.name ?? existing?.name, "nome", { max: 120 }),
       username,
       password,
-      active: (body.active ?? existing?.active ?? true) ? 1 : 0,
+      active: !!(body.active ?? existing?.active ?? true),
       max_devices: Math.max(1, Number(body.max_devices ?? existing?.max_devices ?? 1) || 1),
-      expires_at: expires,
+      expires_at: expires ? new Date(expires).toISOString() : null,
       notes: str(body.notes ?? existing?.notes, "observacoes"),
+      playlist_ids: playlistIds,
     };
   }
 
-  function uniqueGuard(fn) {
-    try {
-      return fn();
-    } catch (err) {
-      if (/UNIQUE/.test(err.message)) throw new HttpError(409, "Ja existe um registro com esse valor (usuario/MAC)");
-      throw err;
-    }
-  }
+  app.post(
+    "/api/clients",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const data = await readClientBody(req.body || {});
+      const c = await unique(() =>
+        db().clients.create({ ...data, token: randomToken(), last_access_at: null, parental_pin_hash: "", locked_groups: [] }),
+      );
+      res.status(201).json(await clientResponse(req, c));
+    }),
+  );
 
-  app.post("/api/clients", requireAdmin, (req, res) => {
-    const c = readClientBody(req.body || {});
-    const { lastInsertRowid } = uniqueGuard(() =>
-      db
-        .prepare(
-          `INSERT INTO clients (name, username, password, token, active, max_devices, expires_at, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(c.name, c.username, c.password, randomToken(), c.active, c.max_devices, c.expires_at, c.notes),
-    );
-    setClientPlaylists(Number(lastInsertRowid), req.body.playlist_ids);
-    const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(lastInsertRowid);
-    res.status(201).json({ ...serializeClient(row), links: clientLinks(req, row) });
-  });
+  app.put(
+    "/api/clients/:id",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const existing = await db().clients.get(req.params.id);
+      if (!existing) throw new HttpError(404, "Cliente nao encontrado");
+      const patch = await readClientBody(req.body || {}, existing);
+      // O revendedor pode voltar o PIN parental para o padrao (0000) quando o cliente esquecer.
+      if (req.body?.reset_pin) patch.parental_pin_hash = "";
+      const c = await unique(() => db().clients.update(existing.id, patch));
+      forgetClient(existing.id);
+      res.json(await clientResponse(req, c));
+    }),
+  );
 
-  app.put("/api/clients/:id", requireAdmin, (req, res) => {
-    const existing = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
-    if (!existing) throw new HttpError(404, "Cliente nao encontrado");
-    const c = readClientBody(req.body || {}, existing);
-    uniqueGuard(() =>
-      db
-        .prepare(
-          `UPDATE clients SET name=?, username=?, password=?, active=?, max_devices=?, expires_at=?, notes=? WHERE id=?`,
-        )
-        .run(c.name, c.username, c.password, c.active, c.max_devices, c.expires_at, c.notes, existing.id),
-    );
-    setClientPlaylists(existing.id, req.body.playlist_ids);
-    // O revendedor pode voltar o PIN parental para o padrao (0000) quando o cliente esquecer.
-    if (req.body.reset_pin) db.prepare("UPDATE clients SET parental_pin_hash = '' WHERE id = ?").run(existing.id);
-    const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(existing.id);
-    res.json({ ...serializeClient(row), links: clientLinks(req, row) });
-  });
+  app.post(
+    "/api/clients/:id/regenerate-token",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const c = await db().clients.update(req.params.id, { token: randomToken() });
+      if (!c) throw new HttpError(404, "Cliente nao encontrado");
+      res.json(await clientResponse(req, c));
+    }),
+  );
 
-  app.post("/api/clients/:id/regenerate-token", requireAdmin, (req, res) => {
-    db.prepare("UPDATE clients SET token = ? WHERE id = ?").run(randomToken(), req.params.id);
-    const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
-    if (!row) throw new HttpError(404, "Cliente nao encontrado");
-    res.json({ ...serializeClient(row), links: clientLinks(req, row) });
-  });
-
-  app.delete("/api/clients/:id", requireAdmin, (req, res) => {
-    db.prepare("DELETE FROM clients WHERE id = ?").run(req.params.id);
-    res.json({ ok: true });
-  });
+  app.delete(
+    "/api/clients/:id",
+    requireAdmin,
+    wrap(async (req, res) => {
+      await db().devices.deleteWhere("client_id", "==", req.params.id);
+      await db().clients.delete(req.params.id);
+      forgetClient(req.params.id);
+      res.json({ ok: true });
+    }),
+  );
 
   // ---------- Listas (fontes M3U) ----------
   function readPlaylistBody(body, existing) {
     const kind = str(body.kind ?? existing?.kind, "tipo", { required: true });
     if (!["m3u_url", "xtream", "manual"].includes(kind)) throw new HttpError(400, "Tipo de lista invalido");
+    const playback = str(body.playback ?? existing?.playback ?? DEFAULT_PLAYBACK, "reproducao");
+    if (!["direct", "proxy"].includes(playback)) throw new HttpError(400, "Modo de reproducao invalido");
     const p = {
       name: str(body.name ?? existing?.name, "nome", { required: true, max: 120 }),
       kind,
@@ -305,89 +376,115 @@ export function createApp() {
       xtream_server: str(body.xtream_server ?? existing?.xtream_server, "servidor"),
       xtream_username: str(body.xtream_username ?? existing?.xtream_username, "usuario xtream"),
       xtream_password: str(body.xtream_password ?? existing?.xtream_password, "senha xtream"),
-      content: body.content ?? existing?.content ?? "",
+      content: String(body.content ?? existing?.content ?? ""),
       epg_url: str(body.epg_url ?? existing?.epg_url, "epg"),
-      active: (body.active ?? existing?.active ?? true) ? 1 : 0,
+      playback,
+      active: !!(body.active ?? existing?.active ?? true),
     };
     if (kind === "m3u_url" && !/^https?:\/\//i.test(p.url)) throw new HttpError(400, "Informe uma URL M3U valida (http/https)");
     if (kind === "xtream" && (!/^https?:\/\//i.test(p.xtream_server) || !p.xtream_username || !p.xtream_password)) {
       throw new HttpError(400, "Informe servidor (http/https), usuario e senha do Xtream");
     }
     if (kind === "manual" && !/#EXTINF/i.test(p.content)) throw new HttpError(400, "Cole um conteudo M3U valido (com #EXTINF)");
+    if (kind !== "manual") p.content = "";
+    if (Buffer.byteLength(p.content) > MAX_MANUAL_BYTES) {
+      throw new HttpError(400, "Lista manual muito grande (limite ~900 KB). Hospede o arquivo e use o tipo URL M3U.");
+    }
     return p;
   }
 
-  const serializePlaylist = (p) => {
-    const clients = db.prepare("SELECT COUNT(*) AS n FROM client_playlists WHERE playlist_id = ?").get(p.id).n;
-    return { ...p, active: !!p.active, client_count: clients, content: p.kind === "manual" ? p.content : "", channel_count: p.kind === "manual" ? countChannels(p.content) : null };
-  };
+  async function playlistResponse(p, clients) {
+    clients ??= await db().clients.where("playlist_ids", "array-contains", p.id);
+    const count = Array.isArray(clients) ? clients.filter((c) => (c.playlist_ids || []).includes(p.id)).length : clients;
+    return {
+      ...p,
+      playback: p.playback || DEFAULT_PLAYBACK,
+      client_count: count,
+      channel_count: p.kind === "manual" ? countChannels(p.content) : null,
+    };
+  }
 
-  app.get("/api/playlists", requireAdmin, (_req, res) => {
-    res.json(db.prepare("SELECT * FROM playlists ORDER BY name").all().map(serializePlaylist));
-  });
+  app.get(
+    "/api/playlists",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      const [playlists, clients] = await Promise.all([db().playlists.list(), db().clients.list()]);
+      res.json(await Promise.all(playlists.sort(byName).map((p) => playlistResponse(p, clients))));
+    }),
+  );
 
-  app.post("/api/playlists", requireAdmin, (req, res) => {
-    const p = readPlaylistBody(req.body || {});
-    const { lastInsertRowid } = db
-      .prepare(
-        `INSERT INTO playlists (name, kind, url, xtream_server, xtream_username, xtream_password, content, epg_url, active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(p.name, p.kind, p.url, p.xtream_server, p.xtream_username, p.xtream_password, p.content, p.epg_url, p.active);
-    res.status(201).json(serializePlaylist(db.prepare("SELECT * FROM playlists WHERE id = ?").get(lastInsertRowid)));
-  });
+  app.post(
+    "/api/playlists",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const p = await db().playlists.create(readPlaylistBody(req.body || {}));
+      res.status(201).json(await playlistResponse(p, 0));
+    }),
+  );
 
-  app.put("/api/playlists/:id", requireAdmin, (req, res) => {
-    const existing = db.prepare("SELECT * FROM playlists WHERE id = ?").get(req.params.id);
-    if (!existing) throw new HttpError(404, "Lista nao encontrada");
-    const p = readPlaylistBody(req.body || {}, existing);
-    db.prepare(
-      `UPDATE playlists SET name=?, kind=?, url=?, xtream_server=?, xtream_username=?, xtream_password=?, content=?, epg_url=?, active=? WHERE id=?`,
-    ).run(p.name, p.kind, p.url, p.xtream_server, p.xtream_username, p.xtream_password, p.content, p.epg_url, p.active, existing.id);
-    res.json(serializePlaylist(db.prepare("SELECT * FROM playlists WHERE id = ?").get(existing.id)));
-  });
+  app.put(
+    "/api/playlists/:id",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const existing = await db().playlists.get(req.params.id);
+      if (!existing) throw new HttpError(404, "Lista nao encontrada");
+      const p = await db().playlists.update(existing.id, readPlaylistBody(req.body || {}, existing));
+      res.json(await playlistResponse(p));
+    }),
+  );
 
-  app.delete("/api/playlists/:id", requireAdmin, (req, res) => {
-    db.prepare("DELETE FROM playlists WHERE id = ?").run(req.params.id);
-    res.json({ ok: true });
-  });
+  app.delete(
+    "/api/playlists/:id",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const id = req.params.id;
+      const users = await db().clients.where("playlist_ids", "array-contains", id);
+      await Promise.all(users.map((c) => db().clients.update(c.id, { playlist_ids: c.playlist_ids.filter((x) => x !== id) })));
+      users.forEach((c) => forgetClient(c.id));
+      await db().playlists.delete(id);
+      res.json({ ok: true });
+    }),
+  );
 
   app.get(
     "/api/playlists/:id/preview",
     requireAdmin,
     wrap(async (req, res) => {
-      const p = db.prepare("SELECT * FROM playlists WHERE id = ?").get(req.params.id);
+      const p = await db().playlists.get(req.params.id);
       if (!p) throw new HttpError(404, "Lista nao encontrada");
       try {
         const text = await loadPlaylistText(p);
-        const entries = parseEntries(text, 100);
-        const groups = [...new Set(parseEntries(text, 100000).map((e) => e.group).filter(Boolean))];
-        res.json({ ok: true, source: sourceUrl(p), channel_count: countChannels(text), groups, entries });
+        const all = parseEntries(text, Infinity);
+        const groups = [...new Set(all.map((e) => e.group).filter(Boolean))];
+        res.json({ ok: true, source: sourceUrl(p), channel_count: countChannels(text), groups, entries: all.slice(0, 100) });
       } catch (err) {
         res.json({ ok: false, source: sourceUrl(p), error: err.message });
       }
     }),
   );
 
-  // ---------- Dispositivos (MAC + chave) ----------
-  app.get("/api/devices", requireAdmin, (_req, res) => {
-    res.json(
-      db
-        .prepare(
-          `SELECT d.*, c.username AS client_username, c.name AS client_name
-           FROM devices d JOIN clients c ON c.id = d.client_id ORDER BY d.created_at DESC`,
-        )
-        .all(),
-    );
-  });
+  // ---------- Dispositivos (Device ID + Device Key) ----------
+  app.get(
+    "/api/devices",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      const [devices, clients] = await Promise.all([db().devices.list(), db().clients.list()]);
+      const byId = new Map(clients.map((c) => [c.id, c]));
+      res.json(
+        devices
+          .sort(newestFirst)
+          .map((d) => ({ ...d, client_username: byId.get(d.client_id)?.username ?? "?", client_name: byId.get(d.client_id)?.name ?? "" })),
+      );
+    }),
+  );
 
-  function readDeviceBody(body, existing) {
+  async function readDeviceBody(body, existing) {
     const mac = normalizeMac(body.mac ?? existing?.mac);
-    if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) throw new HttpError(400, "MAC invalido (ex: 00:1A:2B:3C:4D:5E)");
-    const clientId = Number(body.client_id ?? existing?.client_id);
-    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(clientId);
+    if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) throw new HttpError(400, "Device ID invalido (ex: 00:1A:2B:3C:4D:5E)");
+    const clientId = String(body.client_id ?? existing?.client_id ?? "");
+    const client = clientId && (await db().clients.get(clientId));
     if (!client) throw new HttpError(400, "Selecione um cliente valido");
-    const used = db.prepare("SELECT COUNT(*) AS n FROM devices WHERE client_id = ? AND id != ?").get(clientId, existing?.id ?? 0).n;
+    const used = (await db().devices.where("client_id", "==", clientId)).filter((d) => d.id !== existing?.id).length;
     if (used >= client.max_devices) throw new HttpError(400, `Cliente atingiu o limite de ${client.max_devices} dispositivo(s)`);
     return {
       mac,
@@ -397,50 +494,67 @@ export function createApp() {
     };
   }
 
-  app.get("/api/devices/pending", requireAdmin, (_req, res) => {
-    res.json(db.prepare("SELECT * FROM pending_devices ORDER BY created_at DESC").all());
-  });
+  app.get(
+    "/api/devices/pending",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      const pending = await db().pending.list();
+      res.json(pending.sort(newestFirst).map(({ id, ...p }) => ({ device_id: id, ...p })));
+    }),
+  );
 
-  app.delete("/api/devices/pending/:id", requireAdmin, (req, res) => {
-    db.prepare("DELETE FROM pending_devices WHERE device_id = ?").run(normalizeMac(req.params.id));
-    res.json({ ok: true });
-  });
+  app.delete(
+    "/api/devices/pending/:id",
+    requireAdmin,
+    wrap(async (req, res) => {
+      await db().pending.delete(normalizeMac(req.params.id));
+      res.json({ ok: true });
+    }),
+  );
 
-  app.post("/api/devices", requireAdmin, (req, res) => {
-    const d = readDeviceBody(req.body || {});
-    const { lastInsertRowid } = uniqueGuard(() =>
-      db.prepare("INSERT INTO devices (client_id, mac, device_key, label) VALUES (?, ?, ?, ?)").run(d.client_id, d.mac, d.device_key, d.label),
-    );
-    db.prepare("DELETE FROM pending_devices WHERE device_id = ?").run(d.mac);
-    res.status(201).json(db.prepare("SELECT * FROM devices WHERE id = ?").get(lastInsertRowid));
-  });
+  app.post(
+    "/api/devices",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const data = await readDeviceBody(req.body || {});
+      const d = await unique(() => db().devices.create({ ...data, last_seen_at: null }));
+      await db().pending.delete(d.mac);
+      res.status(201).json(d);
+    }),
+  );
 
-  app.put("/api/devices/:id", requireAdmin, (req, res) => {
-    const existing = db.prepare("SELECT * FROM devices WHERE id = ?").get(req.params.id);
-    if (!existing) throw new HttpError(404, "Dispositivo nao encontrado");
-    const d = readDeviceBody(req.body || {}, existing);
-    uniqueGuard(() =>
-      db.prepare("UPDATE devices SET client_id=?, mac=?, device_key=?, label=? WHERE id=?").run(d.client_id, d.mac, d.device_key, d.label, existing.id),
-    );
-    res.json(db.prepare("SELECT * FROM devices WHERE id = ?").get(existing.id));
-  });
+  app.put(
+    "/api/devices/:id",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const existing = await db().devices.get(req.params.id);
+      if (!existing) throw new HttpError(404, "Dispositivo nao encontrado");
+      const data = await readDeviceBody(req.body || {}, existing);
+      res.json(await unique(() => db().devices.update(existing.id, data)));
+    }),
+  );
 
-  app.delete("/api/devices/:id", requireAdmin, (req, res) => {
-    db.prepare("DELETE FROM devices WHERE id = ?").run(req.params.id);
-    res.json({ ok: true });
-  });
+  app.delete(
+    "/api/devices/:id",
+    requireAdmin,
+    wrap(async (req, res) => {
+      await db().devices.delete(req.params.id);
+      res.json({ ok: true });
+    }),
+  );
 
   // ---------- Reprodutor do cliente ----------
-  app.post("/api/player/login", (req, res) => {
-    const { username, password } = req.body || {};
-    const c = db.prepare("SELECT * FROM clients WHERE username = ? AND password = ?").get(String(username || ""), String(password || ""));
-    if (!c) throw new HttpError(401, "Usuario ou senha invalidos");
-    if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor.");
-    touchClient(c.id);
-    const token = jwt.sign({ cid: c.id, pw: passwordFingerprint(c) }, JWT_SECRET, { expiresIn: "30d" });
-    res.cookie(CLIENT_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 30 * 24 * 3600 * 1000 });
-    res.json(clientProfile(c));
-  });
+  app.post(
+    "/api/player/login",
+    wrap(async (req, res) => {
+      const c = await findClientByLogin(req.body?.username, req.body?.password);
+      if (!c) throw new HttpError(401, "Usuario ou senha invalidos");
+      if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor.");
+      await touch("clients", c, "last_access_at");
+      signClientSession(res, req, c);
+      res.json(clientProfile(c));
+    }),
+  );
 
   app.post("/api/player/logout", (_req, res) => {
     res.clearCookie(CLIENT_COOKIE);
@@ -454,10 +568,10 @@ export function createApp() {
     requireClient,
     wrap(async (req, res) => {
       const c = req.client;
-      touchClient(c.id);
+      await touch("clients", c, "last_access_at");
       const channels = [];
       const playlists = [];
-      for (const p of clientPlaylists(c.id)) {
+      for (const p of await clientPlaylists(c)) {
         let text;
         try {
           text = await loadPlaylistText(p);
@@ -465,20 +579,26 @@ export function createApp() {
           continue;
         }
         playlists.push({ id: p.id, name: p.name });
+        const viaProxy = (p.playback || DEFAULT_PLAYBACK) === "proxy";
+        const link = (url) => (viaProxy ? proxyUrl(c.id, url) : url);
         for (const e of parseEntries(text, Infinity)) {
           if (!/^https?:\/\//i.test(e.url)) continue;
+          // Servidores Xtream entregam o mesmo canal em HLS (.m3u8), que toca em mais aparelhos (ex: iPhone).
+          const hlsUrl = /\/live\/.+\.ts$/i.test(e.url.split("?")[0]) ? e.url.replace(/\.ts(\?|$)/i, ".m3u8$1") : "";
+          // Sem proxy, o navegador vai direto na fonte: prefere HLS, que costuma funcionar melhor assim.
+          const [main, alt] = !viaProxy && hlsUrl ? [hlsUrl, e.url] : [e.url, hlsUrl];
           channels.push({
             id: crypto.createHash("sha1").update(`${p.id}|${e.url}`).digest("hex").slice(0, 12),
             name: e.name,
             group: e.group || p.name,
-            logo: /^https?:\/\//i.test(e.logo) ? proxyUrl(c.id, e.logo) : "",
-            src: proxyUrl(c.id, e.url),
-            type: streamType(e.url),
+            logo: /^https?:\/\//i.test(e.logo) ? link(e.logo) : "",
+            src: link(main),
+            type: streamType(main),
+            alt: alt ? link(alt) : "",
+            alt_type: alt ? streamType(alt) : "",
             kind: e.kind,
             epg_id: e.tvg_id,
             playlist_id: p.id,
-            // Servidores Xtream entregam o mesmo canal em HLS; usado quando o aparelho nao toca MPEG-TS (ex: iPhone).
-            alt: /\/live\/.+\.ts$/i.test(e.url.split("?")[0]) ? proxyUrl(c.id, e.url.replace(/\.ts(\?|$)/i, ".m3u8$1")) : "",
           });
         }
       }
@@ -494,7 +614,7 @@ export function createApp() {
     wrap(async (req, res) => {
       const ids = String(req.query.ids || "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 300);
       const urls = new Set();
-      for (const p of clientPlaylists(req.client.id)) {
+      for (const p of await clientPlaylists(req.client)) {
         if (p.epg_url) urls.add(p.epg_url);
         try {
           headerEpgUrls(await loadPlaylistText(p)).forEach((u) => urls.add(u));
@@ -507,11 +627,8 @@ export function createApp() {
   );
 
   // ---------- Controle parental (PIN) ----------
-  const DEFAULT_PIN = "0000";
-  const checkPin = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pin || ""), c.parental_pin_hash) : String(pin || "") === DEFAULT_PIN);
-
   app.get("/api/player/settings", requireClient, (req, res) => {
-    res.json({ custom_pin: !!req.client.parental_pin_hash, locked_groups: JSON.parse(req.client.locked_groups || "[]") });
+    res.json({ custom_pin: !!req.client.parental_pin_hash, locked_groups: req.client.locked_groups || [] });
   });
 
   app.post("/api/player/pin/verify", requireClient, (req, res) => {
@@ -519,61 +636,72 @@ export function createApp() {
     res.json({ ok: true });
   });
 
-  app.post("/api/player/pin", requireClient, (req, res) => {
-    const { current, pin } = req.body || {};
-    if (!checkPin(req.client, current)) throw new HttpError(403, "PIN atual incorreto");
-    if (!/^\d{4,8}$/.test(String(pin || ""))) throw new HttpError(400, "O PIN deve ter de 4 a 8 numeros");
-    db.prepare("UPDATE clients SET parental_pin_hash = ? WHERE id = ?").run(bcrypt.hashSync(String(pin), 10), req.client.id);
-    res.json({ ok: true });
-  });
+  app.post(
+    "/api/player/pin",
+    requireClient,
+    wrap(async (req, res) => {
+      const { current, pin } = req.body || {};
+      if (!checkPin(req.client, current)) throw new HttpError(403, "PIN atual incorreto");
+      if (!/^\d{4,8}$/.test(String(pin || ""))) throw new HttpError(400, "O PIN deve ter de 4 a 8 numeros");
+      await db().clients.update(req.client.id, { parental_pin_hash: bcrypt.hashSync(String(pin), 10) });
+      forgetClient(req.client.id);
+      res.json({ ok: true });
+    }),
+  );
 
-  app.post("/api/player/locked-groups", requireClient, (req, res) => {
-    const { pin, groups } = req.body || {};
-    if (!checkPin(req.client, pin)) throw new HttpError(403, "PIN incorreto");
-    if (!Array.isArray(groups)) throw new HttpError(400, "Lista de grupos invalida");
-    const clean = [...new Set(groups.map((g) => String(g).slice(0, 200)))].slice(0, 500);
-    db.prepare("UPDATE clients SET locked_groups = ? WHERE id = ?").run(JSON.stringify(clean), req.client.id);
-    res.json({ locked_groups: clean });
-  });
+  app.post(
+    "/api/player/locked-groups",
+    requireClient,
+    wrap(async (req, res) => {
+      const { pin, groups } = req.body || {};
+      if (!checkPin(req.client, pin)) throw new HttpError(403, "PIN incorreto");
+      if (!Array.isArray(groups)) throw new HttpError(400, "Lista de grupos invalida");
+      const clean = [...new Set(groups.map((g) => String(g).slice(0, 200)))].slice(0, 500);
+      await db().clients.update(req.client.id, { locked_groups: clean });
+      forgetClient(req.client.id);
+      res.json({ locked_groups: clean });
+    }),
+  );
 
   // ---------- Ativacao por codigo do aparelho (Device ID + Device Key, com QR code) ----------
   // O reprodutor gera ID e chave, registra aqui e fica consultando ate o revendedor vincular a um cliente.
-  app.post("/api/player/device/register", (req, res) => {
-    const id = normalizeMac(req.body?.device_id);
-    const key = String(req.body?.device_key || "");
-    if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(id) || !/^\d{6}$/.test(key)) throw new HttpError(400, "Codigo do aparelho invalido");
-    const linked = db.prepare("SELECT device_key FROM devices WHERE mac = ?").get(id);
-    if (linked && linked.device_key !== key) throw new HttpError(409, "Este ID ja pertence a outro aparelho");
-    if (!linked) {
-      db.prepare("DELETE FROM pending_devices WHERE created_at < datetime('now', '-7 days')").run();
-      const pending = db.prepare("SELECT device_key FROM pending_devices WHERE device_id = ?").get(id);
-      if (pending && pending.device_key !== key) throw new HttpError(409, "Este ID ja pertence a outro aparelho");
-      if (!pending) {
-        db.prepare("INSERT INTO pending_devices (device_id, device_key, user_agent) VALUES (?, ?, ?)").run(
-          id,
-          key,
-          String(req.get("user-agent") || "").slice(0, 300),
-        );
+  app.post(
+    "/api/player/device/register",
+    wrap(async (req, res) => {
+      const id = normalizeMac(req.body?.device_id);
+      const key = String(req.body?.device_key || "");
+      if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(id) || !/^\d{6}$/.test(key)) throw new HttpError(400, "Codigo do aparelho invalido");
+      const linked = await db().devices.findOne("mac", id);
+      if (linked && linked.device_key !== key) throw new HttpError(409, "Este ID ja pertence a outro aparelho");
+      if (!linked) {
+        const pending = await db().pending.get(id);
+        if (pending && pending.device_key !== key) throw new HttpError(409, "Este ID ja pertence a outro aparelho");
+        if (!pending) {
+          const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+          await db().pending.deleteWhere("created_at", "<", weekAgo);
+          await db().pending.set(id, { device_key: key, user_agent: String(req.get("user-agent") || "").slice(0, 300), created_at: nowIso() });
+        }
       }
-    }
-    res.json({ device_id: id, linked: !!linked });
-  });
+      res.json({ device_id: id, linked: !!linked });
+    }),
+  );
 
-  app.get("/api/player/device/status", (req, res) => {
-    const id = normalizeMac(req.query.device_id);
-    const d = db.prepare("SELECT * FROM devices WHERE mac = ?").get(id);
-    if (!d || d.device_key !== String(req.query.device_key || "")) return res.json({ linked: false });
-    const c = db.prepare("SELECT * FROM clients WHERE id = ?").get(d.client_id);
-    if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor.");
-    db.prepare("UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?").run(d.id);
-    touchClient(c.id);
-    const token = jwt.sign({ cid: c.id, pw: passwordFingerprint(c) }, JWT_SECRET, { expiresIn: "30d" });
-    res.cookie(CLIENT_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 30 * 24 * 3600 * 1000 });
-    res.json({ linked: true, profile: clientProfile(c) });
-  });
+  app.get(
+    "/api/player/device/status",
+    wrap(async (req, res) => {
+      const d = await db().devices.findOne("mac", normalizeMac(req.query.device_id));
+      if (!d || d.device_key !== String(req.query.device_key || "")) return res.json({ linked: false });
+      const c = await getClient(d.client_id);
+      if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor.");
+      await touch("devices", d, "last_seen_at");
+      await touch("clients", c, "last_access_at");
+      signClientSession(res, req, c);
+      res.json({ linked: true, profile: clientProfile(c) });
+    }),
+  );
 
-  // Repassa streams e logos pelo servidor: evita bloqueio de CORS e de conteudo http em site https.
-  // So aceita URLs assinadas pelo proprio servidor para o cliente logado (nao e um proxy aberto).
+  // Repassa streams e logos pelo servidor (listas no modo "proxy"): evita bloqueio de CORS e de conteudo
+  // http em site https. So aceita URLs assinadas pelo proprio servidor para o cliente logado.
   app.get(
     "/api/player/proxy",
     requireClient,
@@ -619,7 +747,7 @@ export function createApp() {
   app.get(
     "/get.php",
     wrap(async (req, res) => {
-      const c = db.prepare("SELECT * FROM clients WHERE username = ? AND password = ?").get(String(req.query.username || ""), String(req.query.password || ""));
+      const c = await findClientByLogin(req.query.username, req.query.password);
       if (!isClientValid(c)) return res.status(401).type("text").send("Unauthorized");
       await sendM3u(res, c);
     }),
@@ -628,34 +756,32 @@ export function createApp() {
   app.get(
     "/m3u/:token.m3u",
     wrap(async (req, res) => {
-      const c = db.prepare("SELECT * FROM clients WHERE token = ?").get(req.params.token);
+      const c = await db().clients.findOne("token", req.params.token);
       if (!isClientValid(c)) return res.status(401).type("text").send("Unauthorized");
       await sendM3u(res, c);
     }),
   );
 
-  // Ativacao por dispositivo (estilo Duplecast): o app envia MAC + chave e recebe as listas.
-  app.get("/api/device/playlists", (req, res) => {
-    const d = db.prepare("SELECT * FROM devices WHERE mac = ?").get(normalizeMac(req.query.mac));
-    if (!d || d.device_key !== String(req.query.key || "")) throw new HttpError(401, "Dispositivo nao ativado");
-    const c = db.prepare("SELECT * FROM clients WHERE id = ?").get(d.client_id);
-    if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado");
-    db.prepare("UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?").run(d.id);
-    touchClient(c.id);
-    const links = clientLinks(req, c);
-    res.json({
-      mac: d.mac,
-      expires_at: c.expires_at,
-      playlists: [{ name: c.name || c.username, url: links.m3u_token }],
-    });
-  });
+  // Ativacao por dispositivo para apps externos: o app envia ID + chave e recebe a lista.
+  app.get(
+    "/api/device/playlists",
+    wrap(async (req, res) => {
+      const d = await db().devices.findOne("mac", normalizeMac(req.query.mac));
+      if (!d || d.device_key !== String(req.query.key || "")) throw new HttpError(401, "Dispositivo nao ativado");
+      const c = await getClient(d.client_id);
+      if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado");
+      await touch("devices", d, "last_seen_at");
+      await touch("clients", c, "last_access_at");
+      res.json({ mac: d.mac, expires_at: c.expires_at, playlists: [{ name: c.name || c.username, url: clientLinks(req, c).m3u_token }] });
+    }),
+  );
 
   app.use("/api", (_req, _res, next) => next(new HttpError(404, "Rota nao encontrada")));
 
   app.use((err, _req, res, _next) => {
     const status = err.status || 500;
     if (status >= 500) console.error(err);
-    res.status(status).json({ error: status >= 500 ? "Erro interno" : err.message });
+    res.status(status).json({ error: status >= 500 ? (/Firebase/.test(err.message) ? err.message : "Erro interno") : err.message });
   });
 
   return app;

@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { api } from "./api";
 
-type Admin = { id: number; username: string };
+type Admin = { id: string; username: string };
 type AuthCtx = {
   admin: Admin | null;
   loading: boolean;

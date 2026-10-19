@@ -17,6 +17,7 @@ const emptyForm: Form = {
   xtream_password: "",
   content: "#EXTM3U\n",
   epg_url: "",
+  playback: "direct",
   active: true,
 };
 
@@ -128,7 +129,9 @@ export default function Playlists() {
                 <p className="mt-1 truncate text-xs text-muted-foreground">
                   {kindLabel(p.kind)} · {p.kind === "m3u_url" ? p.url : p.kind === "xtream" ? p.xtream_server : `${p.channel_count} canais`}
                 </p>
-                <p className="mt-3 text-sm text-muted-foreground">{p.client_count} cliente(s) usando</p>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  {p.client_count} cliente(s) usando · {p.playback === "proxy" ? "via servidor" : "direto da fonte"}
+                </p>
                 <div className="mt-4 flex gap-2 border-t pt-4">
                   <Button size="sm" variant="outline" className="flex-1" onClick={() => openPreview(p)}>
                     <Eye /> Testar
@@ -197,6 +200,27 @@ export default function Playlists() {
 
           <Field label="URL do EPG (opcional)" hint="Guia de programacao XMLTV, enviado no cabecalho da lista">
             <Input value={form.epg_url} onChange={(e) => setForm({ ...form, epg_url: e.target.value })} placeholder="https://exemplo.com/epg.xml" />
+          </Field>
+
+          <Field label="Reproducao no navegador">
+            <div className="grid gap-2 sm:grid-cols-2">
+              {(
+                [
+                  ["direct", "Direto da fonte", "Nao gasta banda do servidor (recomendado no plano gratis). Exige link https com CORS liberado."],
+                  ["proxy", "Pelo servidor (proxy)", "Toca links http e sem CORS, mas o video passa pelo servidor e consome banda."],
+                ] as const
+              ).map(([value, label, desc]) => (
+                <button
+                  type="button"
+                  key={value}
+                  onClick={() => setForm({ ...form, playback: value })}
+                  className={cn("rounded-lg border p-3 text-left transition-colors", form.playback === value ? "border-primary bg-primary/10" : "hover:bg-muted/40")}
+                >
+                  <div className="text-sm font-medium">{label}</div>
+                  <div className="text-xs text-muted-foreground">{desc}</div>
+                </button>
+              ))}
+            </div>
           </Field>
 
           <div className="flex items-center justify-between rounded-md border p-3">

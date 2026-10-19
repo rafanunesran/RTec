@@ -1,15 +1,15 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import http from "node:http";
 
-process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "rtec-test-"));
 process.env.ADMIN_PASSWORD = "secret123";
 
-const { seedAdmin } = await import("./db.js");
+const { setStore } = await import("./store/index.js");
+const { createMemoryStore } = await import("./store/memory.js");
+const { createFirestoreStore } = await import("./store/firestore.js");
 const { createApp } = await import("./app.js");
+// Com FIRESTORE_EMULATOR_HOST (npm run test:firestore) os mesmos testes rodam no Firestore de verdade.
+setStore(process.env.FIRESTORE_EMULATOR_HOST ? createFirestoreStore() : createMemoryStore());
 
 let api, source, base, cookie = "";
 
@@ -51,7 +51,6 @@ async function call(method, url, body) {
 }
 
 before(async () => {
-  seedAdmin();
   source = http.createServer(sourceHandler).listen(0);
   api = createApp().listen(0);
   base = `http://127.0.0.1:${api.address().port}`;
@@ -200,4 +199,26 @@ test("controle parental e ativacao por codigo do aparelho", async () => {
   const reset = await call("PUT", `/api/clients/${client.body.id}`, { reset_pin: true });
   assert.equal(reset.body.custom_pin, false);
   assert.equal(reset.body.parental_pin_hash, undefined);
+});
+
+test("modo direto: canais apontam para a fonte, preferindo HLS no Xtream", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const port = source.address().port;
+  const p = await call("POST", "/api/playlists", {
+    name: "Direta",
+    kind: "manual",
+    playback: "direct",
+    content: `#EXTM3U\n#EXTINF:-1,Xtream TS\nhttp://127.0.0.1:${port}/live/u/p/7.ts\n`,
+  });
+  assert.equal(p.body.playback, "direct");
+  assert.equal((await call("POST", "/api/playlists", { name: "X", kind: "manual", playback: "outro", content: "#EXTINF:-1,a\nhttp://a" })).status, 400);
+  await call("POST", "/api/clients", { username: "dani", password: "pw", playlist_ids: [p.body.id] });
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "dani", password: "pw" });
+  const [ch] = (await call("GET", "/api/player/channels")).body.channels;
+  assert.equal(ch.src, `http://127.0.0.1:${port}/live/u/p/7.m3u8`);
+  assert.equal(ch.type, "hls");
+  assert.equal(ch.alt, `http://127.0.0.1:${port}/live/u/p/7.ts`);
+  assert.equal(ch.alt_type, "mpegts");
 });

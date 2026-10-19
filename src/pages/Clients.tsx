@@ -15,7 +15,7 @@ type Form = {
   max_devices: number;
   expires_at: string;
   notes: string;
-  playlist_ids: number[];
+  playlist_ids: string[];
 };
 
 const emptyForm = (): Form => ({
@@ -135,7 +135,7 @@ export default function Clients() {
     load();
   };
 
-  const togglePlaylist = (id: number) =>
+  const togglePlaylist = (id: string) =>
     setForm((f) => ({
       ...f,
       playlist_ids: f.playlist_ids.includes(id) ? f.playlist_ids.filter((x) => x !== id) : [...f.playlist_ids, id],

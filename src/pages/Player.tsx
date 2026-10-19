@@ -181,7 +181,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [data, setData] = useState<ChannelsResponse | null>(null);
   const [settings, setSettings] = useState<PlayerSettings>({ custom_pin: false, locked_groups: [] });
   const [section, setSection] = useState<Section>("live");
-  const [playlistId, setPlaylistId] = useState<number | 0>(0);
+  const [playlistId, setPlaylistId] = useState("");
   const [current, setCurrent] = useState<Channel | null>(null);
   const [group, setGroup] = useState("");
   const [query, setQuery] = useState("");
@@ -342,8 +342,8 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
             </button>
           ))}
         {(data?.playlists.length ?? 0) > 1 && (
-          <Select value={playlistId} onChange={(e) => setPlaylistId(Number(e.target.value))} className="my-2 ml-auto h-8 w-auto shrink-0 text-xs">
-            <option value={0}>Todas as listas</option>
+          <Select value={playlistId} onChange={(e) => setPlaylistId(e.target.value)} className="my-2 ml-auto h-8 w-auto shrink-0 text-xs">
+            <option value="">Todas as listas</option>
             {data!.playlists.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}

@@ -1,7 +1,7 @@
 export type Links = { m3u: string; m3u_token: string; server: string };
 
 export type Client = {
-  id: number;
+  id: string;
   name: string;
   username: string;
   password: string;
@@ -13,7 +13,7 @@ export type Client = {
   notes: string;
   last_access_at: string | null;
   created_at: string;
-  playlist_ids: number[];
+  playlist_ids: string[];
   device_count: number;
   custom_pin: boolean;
   links: Links;
@@ -21,8 +21,10 @@ export type Client = {
 
 export type PlaylistKind = "m3u_url" | "xtream" | "manual";
 
+export type PlaybackMode = "direct" | "proxy";
+
 export type Playlist = {
-  id: number;
+  id: string;
   name: string;
   kind: PlaylistKind;
   url: string;
@@ -31,14 +33,15 @@ export type Playlist = {
   xtream_password: string;
   content: string;
   epg_url: string;
+  playback: PlaybackMode;
   active: boolean;
   client_count: number;
   channel_count: number | null;
 };
 
 export type Device = {
-  id: number;
-  client_id: number;
+  id: string;
+  client_id: string;
   client_username: string;
   client_name: string;
   mac: string;
@@ -54,7 +57,7 @@ export type Stats = {
   expired_clients: number;
   playlists: number;
   devices: number;
-  recent: { id: number; name: string; username: string; last_access_at: string }[];
+  recent: { id: string; name: string; username: string; last_access_at: string }[];
 };
 
 export type Preview = {
@@ -75,11 +78,12 @@ export type Channel = {
   type: "hls" | "mpegts" | "file";
   kind: "live" | "movie" | "series";
   epg_id: string;
-  playlist_id: number;
+  playlist_id: string;
   alt: string;
+  alt_type: "hls" | "mpegts" | "file" | "";
 };
 
-export type ChannelsResponse = { playlists: { id: number; name: string }[]; channels: Channel[] };
+export type ChannelsResponse = { playlists: { id: string; name: string }[]; channels: Channel[] };
 
 export type Programme = { start: string; stop: string; title: string; desc: string };
 

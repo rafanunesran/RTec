@@ -3,3 +3,8 @@ dist
 data
 *.log
 .env
+.env.local
+.vercel
+firebase-debug.log
+firestore-debug.log
+*-service-account*.json

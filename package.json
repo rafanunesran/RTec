@@ -5,19 +5,21 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n api,web -c blue,magenta \"npm:dev:api\" \"npm:dev:web\"",
-    "dev:api": "node --watch --no-warnings=ExperimentalWarning server/index.js",
+    "dev:api": "node --watch server/index.js",
     "dev:web": "vite",
     "build": "vite build",
-    "start": "NODE_ENV=production node --no-warnings=ExperimentalWarning server/index.js",
-    "test": "node --no-warnings=ExperimentalWarning --test server/app.test.js"
+    "start": "NODE_ENV=production node server/index.js",
+    "test": "node --test server/app.test.js",
+    "test:firestore": "npx -y firebase-tools@14 emulators:exec --only firestore --project demo-rtec \"node --test server/app.test.js\""
   },
   "engines": {
-    "node": ">=22.13"
+    "node": "22.x"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.7",
     "express": "^4.22.3",
+    "firebase-admin": "^13.10.0",
     "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
