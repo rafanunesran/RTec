@@ -63,6 +63,8 @@ npm run dev      # API em :3001 + frontend em http://localhost:8080
 
 Sem `FIREBASE_SERVICE_ACCOUNT`, o servidor local usa um banco em memoria (os dados somem ao reiniciar). Para usar seu Firestore localmente, crie um arquivo `.env` com as variaveis de `.env.example` e rode `node --env-file=.env server/index.js`.
 
+**Esqueceu a senha ou o `ADMIN_PASSWORD` nao funcionou?** `ADMIN_PASSWORD` so vale quando o admin e criado pela primeira vez. Para redefinir, adicione na Vercel a variavel `ADMIN_RESET_PASSWORD` com a nova senha, faca **Redeploy**, entre no painel, troque a senha em Configuracoes e apague a variavel.
+
 Login inicial do painel: `admin` / `admin123` (ou `ADMIN_USER`/`ADMIN_PASSWORD`). **Troque a senha** em Configuracoes.
 
 Testes: `npm test` (banco em memoria) e `npm test:firestore` (mesmos testes no emulador oficial do Firestore; precisa de Java).

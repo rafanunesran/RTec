@@ -45,18 +45,43 @@ async function unique(fn, message = "Ja existe um registro com esse valor (usuar
 }
 
 // ---------- Inicializacao (segredo da sessao e primeiro admin) ----------
+const env = (name) => (process.env[name] || "").trim();
+
+/**
+ * Garante a conta do administrador:
+ * - sem nenhum admin: cria com ADMIN_USER / ADMIN_PASSWORD (padrao admin / admin123);
+ * - com ADMIN_RESET_PASSWORD: redefine a senha do ADMIN_USER uma vez para cada valor novo
+ *   (serve para recuperar o acesso pela Vercel sem mexer no banco).
+ */
+export async function ensureAdminAccount(db) {
+  const username = env("ADMIN_USER") || "admin";
+  const reset = env("ADMIN_RESET_PASSWORD");
+  if (reset) {
+    const fingerprint = crypto.createHash("sha256").update(`${username}|${reset}`).digest("hex");
+    const applied = await db.config.get("admin_reset");
+    if (applied?.fingerprint !== fingerprint) {
+      const hash = bcrypt.hashSync(reset, 10);
+      const admin = await db.admins.findOne("username", username);
+      if (admin) await db.admins.update(admin.id, { password_hash: hash });
+      else await unique(() => db.admins.create({ username, password_hash: hash })).catch(() => {});
+      await db.config.set("admin_reset", { fingerprint, applied_at: nowIso() });
+      console.log(`[rtec] Senha do admin "${username}" redefinida por ADMIN_RESET_PASSWORD.`);
+    }
+    return;
+  }
+  const admins = await db.admins.list();
+  if (admins.length > 0) return;
+  const password = env("ADMIN_PASSWORD") || "admin123";
+  await unique(() => db.admins.create({ username, password_hash: bcrypt.hashSync(password, 10) })).catch(() => {});
+  console.log(`[rtec] Admin inicial criado: ${username} / ${env("ADMIN_PASSWORD") ? "(senha de ADMIN_PASSWORD)" : password}`);
+}
+
 let ready;
 function init() {
   ready ??= (async () => {
     const db = getStore();
     if (!JWT_SECRET) JWT_SECRET = await db.getOrCreateSecret(() => crypto.randomBytes(32).toString("hex"));
-    const admins = await db.admins.list();
-    if (admins.length === 0) {
-      const username = process.env.ADMIN_USER || "admin";
-      const password = process.env.ADMIN_PASSWORD || "admin123";
-      await unique(() => db.admins.create({ username, password_hash: bcrypt.hashSync(password, 10) })).catch(() => {});
-      console.log(`[rtec] Admin inicial criado: ${username} / ${process.env.ADMIN_PASSWORD ? "(ADMIN_PASSWORD)" : password}`);
-    }
+    await ensureAdminAccount(db);
   })().catch((err) => {
     ready = undefined;
     throw err;
@@ -220,9 +245,16 @@ export function createApp() {
   app.post(
     "/api/auth/login",
     wrap(async (req, res) => {
-      const { username, password } = req.body || {};
-      const admin = await db().admins.findOne("username", String(username || ""));
-      if (!admin || !bcrypt.compareSync(String(password || ""), admin.password_hash)) {
+      const username = String(req.body?.username || "").trim();
+      const password = String(req.body?.password || "");
+      let admin = await db().admins.findOne("username", username);
+      if (!admin && (await db().admins.list()).length === 0) {
+        // Admin apagado no Firestore com o servidor ja rodando: recria na hora.
+        await ensureAdminAccount(db());
+        admin = await db().admins.findOne("username", username);
+      }
+      if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
+        console.warn(`[rtec] Login de admin recusado para "${username}": ${admin ? "senha incorreta" : "usuario nao existe"}`);
         throw new HttpError(401, "Usuario ou senha invalidos");
       }
       const token = jwt.sign({ id: admin.id, username: admin.username }, JWT_SECRET, { expiresIn: "7d" });

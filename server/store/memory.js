@@ -82,6 +82,7 @@ export function createMemoryStore() {
     playlists: new MemoryCollection(),
     devices: new MemoryCollection(["mac"]),
     pending: new MemoryCollection(),
+    config,
     async getOrCreateSecret(generate) {
       const doc = await config.get("secrets");
       if (doc?.jwt) return doc.jwt;

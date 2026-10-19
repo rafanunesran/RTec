@@ -7,7 +7,7 @@ process.env.ADMIN_PASSWORD = "secret123";
 const { setStore } = await import("./store/index.js");
 const { createMemoryStore } = await import("./store/memory.js");
 const { createFirestoreStore } = await import("./store/firestore.js");
-const { createApp } = await import("./app.js");
+const { createApp, ensureAdminAccount } = await import("./app.js");
 // Com FIRESTORE_EMULATOR_HOST (npm run test:firestore) os mesmos testes rodam no Firestore de verdade.
 setStore(process.env.FIRESTORE_EMULATOR_HOST ? createFirestoreStore() : createMemoryStore());
 
@@ -221,4 +221,32 @@ test("modo direto: canais apontam para a fonte, preferindo HLS no Xtream", async
   assert.equal(ch.type, "hls");
   assert.equal(ch.alt, `http://127.0.0.1:${port}/live/u/p/7.ts`);
   assert.equal(ch.alt_type, "mpegts");
+});
+
+test("recuperacao do admin: ADMIN_RESET_PASSWORD redefine a senha uma vez por valor", async () => {
+  const db = createMemoryStore();
+  const bcrypt = (await import("bcryptjs")).default;
+  const login = async (pw) => bcrypt.compareSync(pw, (await db.admins.findOne("username", "admin")).password_hash);
+
+  process.env.ADMIN_PASSWORD = "  primeira \n";
+  await ensureAdminAccount(db);
+  assert.equal(await login("primeira"), true, "espacos e quebras de linha da variavel sao ignorados");
+
+  process.env.ADMIN_PASSWORD = "outra";
+  await ensureAdminAccount(db);
+  assert.equal(await login("primeira"), true, "ADMIN_PASSWORD nao muda um admin ja existente");
+
+  process.env.ADMIN_RESET_PASSWORD = "nova-senha";
+  await ensureAdminAccount(db);
+  assert.equal(await login("nova-senha"), true);
+
+  // Trocada depois no painel, a senha nao volta a ser resetada pelo mesmo valor
+  const admin = await db.admins.findOne("username", "admin");
+  await db.admins.update(admin.id, { password_hash: bcrypt.hashSync("do-painel", 4) });
+  await ensureAdminAccount(db);
+  assert.equal(await login("do-painel"), true);
+
+  delete process.env.ADMIN_RESET_PASSWORD;
+  process.env.ADMIN_PASSWORD = "secret123";
+  assert.equal((await db.admins.list()).length, 1);
 });
