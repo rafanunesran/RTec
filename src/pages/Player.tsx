@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowLeft, Clapperboard, Download, Film, Heart, Loader2, Lock, Radio, Search, Settings, Share, SquarePlus, Tv } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Clapperboard, Download, Film, Heart, Loader2, Lock, Radio, Search, Settings, Share, SquarePlus, Tv } from "lucide-react";
 import { toast } from "sonner";
-import { api, ApiError, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
+import { api, ApiError, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { useInstall } from "@/lib/pwa";
 import { cn, formatDate } from "@/lib/utils";
 import { Button, Card, Dialog, Field, Input, Select } from "@/components/ui";
@@ -149,8 +149,14 @@ function InstallButton({ compact }: { compact?: boolean }) {
   );
 }
 
+type Group = { key: string; name: string };
+type Episode = Channel & { season: number; episode: number };
+type OpenSeries = { name: string; episodes: Episode[] | null };
+
 function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => void }) {
-  const [data, setData] = useState<ChannelsResponse | null>(null);
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [data, setData] = useState<ChannelsResponse | null>(null); // listas M3U comuns
+  const [xtItems, setXtItems] = useState<Record<string, Channel[] | "loading" | { error: string }>>({}); // Xtream: por secao/categoria
   const [settings, setSettings] = useState<PlayerSettings>({ custom_pin: false, locked_groups: [] });
   const [section, setSection] = useState<Section>("live");
   const [playlistId, setPlaylistId] = useState("");
@@ -158,12 +164,14 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [group, setGroup] = useState("");
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(PAGE);
-  const [series, setSeries] = useState<string | null>(null);
-  const [favorites, setFavorites] = useState<string[]>(() => load("rtec:favorites", []));
+  const [series, setSeries] = useState<OpenSeries | null>(null);
+  const [favorites, setFavorites] = useState<Channel[]>(() => load("rtec:favs", []));
   const [unlocked, setUnlocked] = useState(false);
   const [pinFor, setPinFor] = useState<null | (() => void)>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [epg, setEpg] = useState<Record<string, Programme[]>>({});
+
+  const xt = catalog?.mode === "xtream";
 
   const handleAuthError = useCallback(
     (err: unknown) => {
@@ -177,75 +185,142 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     [onLogout],
   );
 
-  useEffect(() => {
+  const loadAll = useCallback(() => {
+    setCatalog(null);
+    setData(null);
+    setXtItems({});
     api
-      .get<ChannelsResponse>("/api/player/channels")
-      .then((res) => {
-        setData(res);
-        const last = load<string>("rtec:last", "");
-        const found = res.channels.find((c) => c.id === last);
-        if (found && found.kind === "live") setCurrent(found);
-        if (!res.channels.some((c) => c.kind === "live")) {
-          const first = sections.find((s) => res.channels.some((c) => c.kind === s.key));
+      .get<Catalog>("/api/player/catalog")
+      .then((cat) => {
+        setCatalog(cat);
+        if (cat.mode === "xtream") {
+          const first = sections.find((s) => (cat.sections?.[s.key].length ?? 0) > 0);
           if (first) setSection(first.key);
+          return;
         }
+        return api.get<ChannelsResponse>("/api/player/channels").then((res) => {
+          setData(res);
+          if (!res.channels.some((c) => c.kind === "live")) {
+            const first = sections.find((s) => res.channels.some((c) => c.kind === s.key));
+            if (first) setSection(first.key);
+          }
+        });
       })
       .catch((err) => {
-        if (!handleAuthError(err)) toast.error("Nao foi possivel carregar os canais");
-        setData({ playlists: [], channels: [] });
+        if (handleAuthError(err)) return;
+        setCatalog({ mode: "m3u" });
+        setData({ playlists: [], channels: [], errors: ["Sem conexao com o servidor"] });
       });
-    api.get<PlayerSettings>("/api/player/settings").then(setSettings).catch(() => {});
   }, [handleAuthError]);
 
-  const channels = data?.channels ?? [];
+  useEffect(() => {
+    loadAll();
+    api.get<PlayerSettings>("/api/player/settings").then(setSettings).catch(() => {});
+    const last = load<Channel | null>("rtec:current", null);
+    if (last?.src && last.kind === "live") setCurrent(last);
+  }, [loadAll]);
+
   const isLocked = useCallback((g: string) => !unlocked && (ADULT.test(g) || settings.locked_groups.includes(g)), [unlocked, settings]);
 
-  const inScope = useMemo(
-    () => channels.filter((c) => c.kind === section && (!playlistId || c.playlist_id === playlistId)),
-    [channels, section, playlistId],
-  );
-  const groups = useMemo(() => [...new Set(inScope.map((c) => c.group))], [inScope]);
-  const allGroups = useMemo(() => [...new Set(channels.map((c) => c.group))], [channels]);
+  // Grupos (chips): no Xtream sao as categorias do fornecedor; nas listas M3U, os group-title.
+  const channels = data?.channels ?? [];
+  const groups: Group[] = useMemo(() => {
+    if (xt) return (catalog?.sections?.[section] ?? []).map((c) => ({ key: c.id, name: c.name }));
+    const names = new Set(channels.filter((c) => c.kind === section && (!playlistId || c.playlist_id === playlistId)).map((c) => c.group));
+    return [...names].map((n) => ({ key: n, name: n }));
+  }, [xt, catalog, section, channels, playlistId]);
+
+  const allGroupNames = useMemo(() => {
+    if (xt) return [...new Set(sections.flatMap((s) => (catalog?.sections?.[s.key] ?? []).map((c) => c.name)))];
+    return [...new Set(channels.map((c) => c.group))];
+  }, [xt, catalog, channels]);
+
   const counts = useMemo(() => {
     const out: Record<Section, number> = { live: 0, movie: 0, series: 0 };
-    for (const c of channels) if (!playlistId || c.playlist_id === playlistId) out[c.kind]++;
+    if (xt) for (const s of sections) out[s.key] = catalog?.sections?.[s.key].length ?? 0;
+    else for (const c of channels) if (!playlistId || c.playlist_id === playlistId) out[c.kind]++;
     return out;
-  }, [channels, playlistId]);
+  }, [xt, catalog, channels, playlistId]);
+
+  // No Xtream, filmes e series sempre abrem numa categoria (o catalogo inteiro e grande demais).
+  const needsCategory = xt && section !== "live";
+  useEffect(() => {
+    setSeries(null);
+    setGroup(needsCategory ? (groups.find((g) => !isLocked(g.name))?.key ?? "") : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, playlistId, xt, needsCategory, groups.length]);
+
+  // Carrega a categoria do Xtream quando necessario (ao vivo: todos os canais de uma vez).
+  const xtKey = xt && group !== FAVORITES ? `${section}:${section === "live" ? "" : group}` : "";
+  useEffect(() => {
+    if (!xtKey || xtItems[xtKey] || (needsCategory && !group)) return;
+    setXtItems((m) => ({ ...m, [xtKey]: "loading" }));
+    const [sec, cat] = xtKey.split(":");
+    api
+      .get<Channel[]>(`/api/player/xtream/items?section=${sec}&category=${encodeURIComponent(cat)}`)
+      .then((list) => setXtItems((m) => ({ ...m, [xtKey]: list })))
+      .catch((err) => {
+        if (!handleAuthError(err)) setXtItems((m) => ({ ...m, [xtKey]: { error: (err as Error).message } }));
+      });
+  }, [xtKey, xtItems, needsCategory, group, handleAuthError]);
+
+  const xtState = xtKey ? xtItems[xtKey] : undefined;
+  const loading = catalog === null || (!xt && data === null) || xtState === "loading";
+  const loadError = xtState && typeof xtState === "object" && "error" in xtState ? xtState.error : "";
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return inScope.filter((c) => {
-      if (group === FAVORITES ? !favorites.includes(c.id) : group ? c.group !== group : isLocked(c.group)) return false;
-      return !q || c.name.toLowerCase().includes(q);
-    });
-  }, [inScope, group, query, favorites, isLocked]);
+    let list: Channel[];
+    if (group === FAVORITES) list = favorites.filter((c) => c.kind === section);
+    else if (xt) {
+      list = Array.isArray(xtState) ? xtState : [];
+      if (section === "live") list = list.filter((c) => (group ? c.group === groups.find((g) => g.key === group)?.name : !isLocked(c.group)));
+    } else {
+      list = channels.filter(
+        (c) => c.kind === section && (!playlistId || c.playlist_id === playlistId) && (group ? c.group === group : !isLocked(c.group)),
+      );
+    }
+    return q ? list.filter((c) => c.name.toLowerCase().includes(q)) : list;
+  }, [group, favorites, section, xt, xtState, groups, isLocked, channels, playlistId, query]);
 
-  // Series: agrupa episodios pelo nome da serie.
+  // Series: no Xtream cada item e uma serie (episodios vem da API); nas listas M3U, agrupa pelo nome.
   const seriesList = useMemo(() => {
     if (section !== "series") return [];
-    const map = new Map<string, { name: string; logo: string; episodes: (Channel & { season: number; episode: number })[] }>();
+    if (xt) return visible.map((c) => ({ key: c.series_id || c.id, name: c.name, logo: c.logo, sub: "", episodes: null as Episode[] | null }));
+    const map = new Map<string, { key: string; name: string; logo: string; sub: string; episodes: Episode[] | null }>();
     for (const c of visible) {
       const info = episodeInfo(c.name);
-      if (!map.has(info.series)) map.set(info.series, { name: info.series, logo: c.logo, episodes: [] });
-      map.get(info.series)!.episodes.push({ ...c, season: info.season, episode: info.episode });
+      if (!map.has(info.series)) map.set(info.series, { key: info.series, name: info.series, logo: c.logo, sub: "", episodes: [] });
+      map.get(info.series)!.episodes!.push({ ...c, season: info.season, episode: info.episode });
     }
-    for (const s of map.values()) s.episodes.sort((a, b) => a.season - b.season || a.episode - b.episode);
+    for (const s of map.values()) {
+      s.episodes!.sort((a, b) => a.season - b.season || a.episode - b.episode);
+      s.sub = `${s.episodes!.length} episodio(s)`;
+    }
     return [...map.values()];
-  }, [section, visible]);
+  }, [section, xt, visible]);
 
-  useEffect(() => {
-    setLimit(PAGE);
-    setSeries(null);
-  }, [group, query, section, playlistId]);
-  useEffect(() => setGroup(""), [section, playlistId]);
+  useEffect(() => setLimit(PAGE), [group, query, section, playlistId]);
+
+  const openSeries = (s: (typeof seriesList)[number]) => {
+    if (s.episodes) return setSeries({ name: s.name, episodes: s.episodes });
+    setSeries({ name: s.name, episodes: null });
+    api
+      .get<Episode[]>(`/api/player/xtream/series/${encodeURIComponent(s.key)}?name=${encodeURIComponent(s.name)}`)
+      .then((eps) => setSeries((cur) => (cur?.name === s.name ? { name: s.name, episodes: eps } : cur)))
+      .catch((err) => {
+        if (!handleAuthError(err)) toast.error("Nao foi possivel carregar os episodios");
+        setSeries(null);
+      });
+  };
 
   // EPG dos canais ao vivo visiveis + o atual.
   const epgIds = useMemo(() => {
     if (section !== "live") return [];
-    const ids = new Set(visible.slice(0, limit).map((c) => c.epg_id).filter(Boolean));
+    const ids = new Set(visible.slice(0, xt ? 20 : limit).map((c) => c.epg_id).filter(Boolean));
     if (current?.epg_id) ids.add(current.epg_id);
     return [...ids].filter((id) => !(id in epg)).slice(0, 300);
-  }, [section, visible, limit, current, epg]);
+  }, [section, visible, limit, current, epg, xt]);
 
   useEffect(() => {
     if (!epgIds.length) return;
@@ -266,14 +341,15 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const play = (c: Channel) =>
     withPin(() => {
       setCurrent(c);
-      save("rtec:last", c.id);
+      save("rtec:current", c);
       if (window.innerWidth < 1024) window.scrollTo({ top: 0, behavior: "smooth" });
     }, c.group);
 
-  const toggleFavorite = (id: string) => {
-    const next = favorites.includes(id) ? favorites.filter((f) => f !== id) : [...favorites, id];
+  const isFavorite = (id: string) => favorites.some((f) => f.id === id);
+  const toggleFavorite = (c: Channel) => {
+    const next = isFavorite(c.id) ? favorites.filter((f) => f.id !== c.id) : [...favorites, c];
     setFavorites(next);
-    save("rtec:favorites", next);
+    save("rtec:favs", next);
   };
 
   const logout = async () => {
@@ -283,7 +359,9 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
 
   const nowPlaying = current?.epg_id ? epg[current.epg_id]?.[0] : undefined;
   const upNext = current?.epg_id ? epg[current.epg_id]?.slice(1, 3) : undefined;
-  const openSeries = seriesList.find((s) => s.name === series);
+  const sourceErrors = xt ? catalog?.errors : data?.errors;
+  const empty = xt ? sections.every((s) => !counts[s.key]) : channels.length === 0;
+  const total = section === "series" && !series ? seriesList.length : visible.length;
 
   return (
     <div className="flex min-h-[100dvh] flex-col">
@@ -310,10 +388,10 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
               )}
             >
               <Icon className="h-4 w-4" /> {label}
-              <span className="text-xs text-muted-foreground">{counts[key]}</span>
+              {!xt && <span className="text-xs text-muted-foreground">{counts[key]}</span>}
             </button>
           ))}
-        {(data?.playlists.length ?? 0) > 1 && (
+        {!xt && (data?.playlists.length ?? 0) > 1 && (
           <Select value={playlistId} onChange={(e) => setPlaylistId(e.target.value)} className="my-2 ml-auto h-8 w-auto shrink-0 text-xs">
             <option value="">Todas as listas</option>
             {data!.playlists.map((p) => (
@@ -325,20 +403,20 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
         )}
       </nav>
 
-      <div className="mx-auto grid w-full max-w-7xl flex-1 gap-4 lg:grid-cols-[1fr_400px] lg:gap-6 lg:p-6">
+      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_400px] lg:gap-6 lg:p-6">
         <section className="sticky top-[65px] z-20 self-start bg-background lg:static">
           <VideoPlayer channel={current} />
           <div className="flex items-start justify-between gap-3 px-4 py-3 lg:px-0">
             <div className="min-w-0 flex-1">
               <h1 className="truncate font-semibold">{current?.name ?? "Nada em reproducao"}</h1>
               <p className="truncate text-xs text-muted-foreground">
-                {current?.group ?? (profile.expires_at ? `Acesso valido ate ${formatDate(profile.expires_at)}` : `${channels.length} itens disponiveis`)}
+                {current?.group || (profile.expires_at ? `Acesso valido ate ${formatDate(profile.expires_at)}` : "Escolha um canal, filme ou serie")}
               </p>
               {nowPlaying && <EpgNow programme={nowPlaying} next={upNext} />}
             </div>
             {current && (
-              <Button variant="ghost" size="icon" onClick={() => toggleFavorite(current.id)} title="Favorito">
-                <Heart className={cn(favorites.includes(current.id) && "fill-pink-500 text-pink-500")} />
+              <Button variant="ghost" size="icon" onClick={() => toggleFavorite(current)} title="Favorito">
+                <Heart className={cn(isFavorite(current.id) && "fill-pink-500 text-pink-500")} />
               </Button>
             )}
           </div>
@@ -349,29 +427,75 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
             <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
             <Input
               className="pl-9"
-              placeholder={section === "live" ? "Buscar canal" : section === "movie" ? "Buscar filme" : "Buscar serie"}
+              placeholder={section === "live" ? "Buscar canal" : needsCategory ? "Buscar nesta categoria" : section === "movie" ? "Buscar filme" : "Buscar serie"}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
           <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 lg:mx-0 lg:px-0 [&::-webkit-scrollbar]:hidden">
-            <Chip active={!group} onClick={() => setGroup("")}>
-              Todos
-            </Chip>
+            {!needsCategory && (
+              <Chip active={!group} onClick={() => setGroup("")}>
+                Todos
+              </Chip>
+            )}
             <Chip active={group === FAVORITES} onClick={() => setGroup(FAVORITES)}>
               <Heart className="h-3 w-3" /> Favoritos
             </Chip>
             {groups.map((g) => (
-              <Chip key={g} active={group === g} onClick={() => withPin(() => setGroup(g), g)}>
-                {isLocked(g) && <Lock className="h-3 w-3" />} {g}
+              <Chip key={g.key} active={group === g.key} onClick={() => withPin(() => setGroup(g.key), g.name)}>
+                {isLocked(g.name) && <Lock className="h-3 w-3" />} {g.name}
               </Chip>
             ))}
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border bg-card/50">
-            {data === null ? (
+            {loading ? (
               <div className="flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" /> Carregando...
+              </div>
+            ) : (empty && !loadError) || loadError ? (
+              <div className="flex flex-col items-center gap-3 p-10 text-center text-sm">
+                <AlertTriangle className="h-6 w-6 text-amber-400" />
+                {!xt && data?.no_source ? (
+                  <p className="text-muted-foreground">Sua conta ainda nao tem uma lista configurada. Fale com seu revendedor.</p>
+                ) : (
+                  <>
+                    <p className="font-medium">Nao foi possivel carregar sua lista</p>
+                    {[...(loadError ? [loadError] : []), ...(sourceErrors ?? [])].map((e) => (
+                      <p key={e} className="text-muted-foreground">
+                        {e}
+                      </p>
+                    ))}
+                    <Button variant="outline" size="sm" onClick={loadAll}>
+                      Tentar novamente
+                    </Button>
+                  </>
+                )}
+              </div>
+            ) : series ? (
+              <div>
+                <button onClick={() => setSeries(null)} className="flex w-full items-center gap-2 border-b px-3 py-3 text-sm font-medium hover:bg-muted/40">
+                  <ArrowLeft className="h-4 w-4" /> {series.name}
+                </button>
+                {series.episodes === null ? (
+                  <div className="flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Carregando episodios...
+                  </div>
+                ) : (
+                  <ul className="divide-y">
+                    {series.episodes.map((e) => (
+                      <ChannelRow
+                        key={e.id}
+                        channel={e}
+                        label={e.episode ? `T${e.season} · Episodio ${e.episode}${xt && e.name ? ` · ${e.name}` : ""}` : e.name}
+                        active={current?.id === e.id}
+                        favorite={isFavorite(e.id)}
+                        onPlay={() => play({ ...e, group: series.name })}
+                        onFavorite={() => toggleFavorite({ ...e, group: series.name })}
+                      />
+                    ))}
+                  </ul>
+                )}
               </div>
             ) : visible.length === 0 ? (
               <div className="p-10 text-center text-sm text-muted-foreground">
@@ -384,44 +508,22 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                     key={c.id}
                     channel={c}
                     active={current?.id === c.id}
-                    favorite={favorites.includes(c.id)}
+                    favorite={isFavorite(c.id)}
                     now={c.epg_id ? epg[c.epg_id]?.[0]?.title : undefined}
                     onPlay={() => play(c)}
-                    onFavorite={() => toggleFavorite(c.id)}
+                    onFavorite={() => toggleFavorite(c)}
                   />
                 ))}
               </ul>
-            ) : section === "movie" ? (
+            ) : section === "movie" || group === FAVORITES ? (
               <PosterGrid items={visible.slice(0, limit)} activeId={current?.id} onSelect={play} />
-            ) : openSeries ? (
-              <div>
-                <button onClick={() => setSeries(null)} className="flex w-full items-center gap-2 border-b px-3 py-3 text-sm font-medium hover:bg-muted/40">
-                  <ArrowLeft className="h-4 w-4" /> {openSeries.name}
-                </button>
-                <ul className="divide-y">
-                  {openSeries.episodes.map((e) => (
-                    <ChannelRow
-                      key={e.id}
-                      channel={e}
-                      label={e.episode ? `T${e.season} · Episodio ${e.episode}` : e.name}
-                      active={current?.id === e.id}
-                      favorite={favorites.includes(e.id)}
-                      onPlay={() => play(e)}
-                      onFavorite={() => toggleFavorite(e.id)}
-                    />
-                  ))}
-                </ul>
-              </div>
             ) : (
-              <PosterGrid
-                items={seriesList.slice(0, limit).map((s) => ({ id: s.name, name: s.name, logo: s.logo, sub: `${s.episodes.length} episodio(s)` }))}
-                onSelect={(s) => setSeries(s.id)}
-              />
+              <PosterGrid items={seriesList.slice(0, limit).map((s) => ({ ...s, id: s.key }))} onSelect={openSeries} />
             )}
-            {!openSeries && (section === "series" ? seriesList.length : visible.length) > limit && (
+            {!series && total > limit && (
               <div className="p-3">
                 <Button variant="outline" className="w-full" onClick={() => setLimit((l) => l + PAGE)}>
-                  Mostrar mais
+                  Mostrar mais ({total - limit})
                 </Button>
               </div>
             )}
@@ -443,7 +545,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
         onClose={() => setSettingsOpen(false)}
         profile={profile}
         settings={settings}
-        groups={allGroups}
+        groups={allGroupNames}
         onSettings={setSettings}
         onLogout={logout}
       />

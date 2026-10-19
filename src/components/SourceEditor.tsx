@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { CheckCircle2, FileText, Globe, Loader2, Server, XCircle } from "lucide-react";
 import { api, type Preview, type Source, type SourceKind } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 
 export const emptySource = (): Source => ({
@@ -12,7 +12,7 @@ export const emptySource = (): Source => ({
   xtream_password: "",
   content: "#EXTM3U\n",
   epg_url: "",
-  playback: "direct",
+  playback: "auto",
 });
 
 const kinds: { value: SourceKind; label: string; desc: string; icon: typeof Globe }[] = [
@@ -95,11 +95,12 @@ export default function SourceEditor({ value, onChange }: { value: Source; onCha
       </Field>
 
       <Field label="Reproducao no navegador">
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-2 sm:grid-cols-3">
           {(
             [
-              ["direct", "Direto da fonte", "Nao gasta banda do servidor. Exige link https com CORS liberado."],
-              ["proxy", "Pelo servidor (proxy)", "Toca links http e sem CORS, mas consome a banda da Vercel."],
+              ["auto", "Automatico (recomendado)", "Links https tocam direto; links http passam pelo servidor."],
+              ["direct", "Sempre direto", "Nao gasta banda do servidor. So funciona com https e CORS liberado."],
+              ["proxy", "Sempre pelo servidor", "Toca tudo, mas todo o video consome a banda da Vercel."],
             ] as const
           ).map(([mode, label, desc]) => (
             <button
@@ -120,7 +121,15 @@ export default function SourceEditor({ value, onChange }: { value: Source; onCha
           {testing && <Loader2 className="animate-spin" />} Testar lista
         </Button>
         {result &&
-          (result.ok ? (
+          (result.ok && result.xtream ? (
+            <span className="flex items-center gap-2 text-sm text-success">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              Conta {result.xtream.status || "ok"}
+              {result.xtream.expires_at && ` ate ${formatDate(result.xtream.expires_at)}`} · {result.xtream.categories.live} categorias de canais ·{" "}
+              {result.xtream.categories.movie} de filmes · {result.xtream.categories.series} de series
+              {result.xtream.max_connections && ` · ${result.xtream.max_connections} tela(s)`}
+            </span>
+          ) : result.ok ? (
             <span className="flex items-center gap-2 text-sm text-success">
               <CheckCircle2 className="h-4 w-4" />
               {result.kinds?.live ?? 0} canais · {result.kinds?.movie ?? 0} filmes · {result.kinds?.series ?? 0} episodios · {result.groups?.length ?? 0} grupos

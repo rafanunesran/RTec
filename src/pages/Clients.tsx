@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Copy, Dices, Link2, Pencil, Plus, RefreshCw, Search, Trash2, Users } from "lucide-react";
+import { Copy, Dices, Link2, Loader2, Zap, Pencil, Plus, RefreshCw, Search, Trash2, Users } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Client, type Source } from "@/lib/api";
 import { copy, formatDate } from "@/lib/utils";
@@ -59,6 +59,8 @@ export default function Clients() {
   const [form, setForm] = useState<Form>(emptyForm);
   const [linksFor, setLinksFor] = useState<Client | null>(null);
   const [busy, setBusy] = useState(false);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quick, setQuick] = useState({ link: "", name: "" });
 
   const load = () => api.get<Client[]>("/api/clients").then(setClients);
 
@@ -115,6 +117,23 @@ export default function Clients() {
     }
   };
 
+  const createQuick = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const created = await api.post<Client>("/api/clients/quick", { link: quick.link, name: quick.name });
+      toast.success(`Cliente ${created.username} criado`);
+      setQuickOpen(false);
+      setQuick({ link: "", name: "" });
+      await load();
+      setLinksFor(created);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const remove = async (c: Client) => {
     if (!confirm(`Excluir o cliente "${c.username}"?`)) return;
     await api.del(`/api/clients/${c.id}`);
@@ -142,9 +161,14 @@ export default function Clients() {
         title="Clientes"
         description="Crie o login de cada cliente e cole a lista dele"
         action={
-          <Button variant="gradient" onClick={openNew}>
-            <Plus /> Novo cliente
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={openNew}>
+              <Plus /> Novo cliente
+            </Button>
+            <Button variant="gradient" onClick={() => setQuickOpen(true)}>
+              <Zap /> Cliente rapido
+            </Button>
+          </div>
         }
       />
 
@@ -161,9 +185,14 @@ export default function Clients() {
           title="Nenhum cliente ainda"
           text="Crie o primeiro cliente: login, senha e a lista M3U dele."
           action={
-            <Button variant="gradient" onClick={openNew}>
-              <Plus /> Criar cliente
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={openNew}>
+                <Plus /> Criar cliente
+              </Button>
+              <Button variant="gradient" onClick={() => setQuickOpen(true)}>
+                <Zap /> Cliente rapido
+              </Button>
+            </div>
           }
         />
       ) : (
@@ -213,6 +242,33 @@ export default function Clients() {
           </table>
         </Card>
       )}
+
+      <Dialog
+        open={quickOpen}
+        onClose={() => setQuickOpen(false)}
+        title="Cliente rapido"
+        description="Cole o link da lista do fornecedor. O cliente e criado com o mesmo usuario, senha e validade da lista."
+      >
+        <form onSubmit={createQuick} className="space-y-4">
+          <Field label="Link da lista">
+            <Textarea
+              autoFocus
+              rows={3}
+              className="text-xs"
+              value={quick.link}
+              onChange={(e) => setQuick({ ...quick, link: e.target.value })}
+              placeholder="http://servidor/get.php?username=USUARIO&password=SENHA&type=m3u_plus"
+              required
+            />
+          </Field>
+          <Field label="Nome do cliente (opcional)">
+            <Input value={quick.name} onChange={(e) => setQuick({ ...quick, name: e.target.value })} placeholder="Se vazio, usa o usuario da lista" />
+          </Field>
+          <Button variant="gradient" className="w-full" disabled={busy || !quick.link.trim()}>
+            {busy ? <Loader2 className="animate-spin" /> : <Zap />} Criar cliente
+          </Button>
+        </form>
+      </Dialog>
 
       <Dialog open={formOpen} onClose={() => setFormOpen(false)} title={editing ? "Editar cliente" : "Novo cliente"} wide>
         <form onSubmit={save} className="space-y-5">

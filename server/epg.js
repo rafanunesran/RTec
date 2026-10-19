@@ -47,7 +47,7 @@ export function parseXmltv(xml, now = Date.now()) {
 }
 
 async function download(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(60000), headers: { "User-Agent": "RTecPanel/1.0" } });
+  const res = await fetch(url, { signal: AbortSignal.timeout(45000), headers: { "User-Agent": "VLC/3.0.20 LibVLC/3.0.20" } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   let buf = Buffer.from(await res.arrayBuffer());
   if (buf[0] === 0x1f && buf[1] === 0x8b) buf = zlib.gunzipSync(buf);

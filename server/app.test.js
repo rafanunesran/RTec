@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 
 process.env.ADMIN_PASSWORD = "secret123";
+process.env.PROXY_CHUNK_MB = "1"; // testa a entrega de filmes em pedacos (como na Vercel)
 
 const { setStore } = await import("./store/index.js");
 const { createMemoryStore } = await import("./store/memory.js");
@@ -16,7 +17,55 @@ let api, source, base, cookie = "";
 const SOURCE_M3U = '#EXTM3U\n#EXTINF:-1 tvg-logo="x.png" group-title="Noticias",Canal Remoto\nhttp://example.com/remoto.ts\n';
 const HLS = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n#EXTINF:4,\nseg/1.ts\n";
 
+const MOVIE = Buffer.alloc(3 * 1024 * 1024, 7);
+const b64 = (t) => Buffer.from(t).toString("base64");
+
+function xtreamApi(req, res) {
+  const q = new URL(req.url, "http://x").searchParams;
+  if (q.get("username") !== "TiaX" || q.get("password") !== "Sen@1") return res.end(JSON.stringify({ user_info: { auth: 0 } }));
+  const json = (d) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(d));
+  const port = source.address().port;
+  switch (q.get("action")) {
+    case null:
+      return json({ user_info: { auth: 1, status: "Active", exp_date: "1893456000", max_connections: "2" }, server_info: {} });
+    case "get_live_categories":
+      return json([{ category_id: "10", category_name: "Esportes" }, { category_id: "11", category_name: "Adultos" }]);
+    case "get_vod_categories":
+      return json([{ category_id: "20", category_name: "Filmes | Acao" }]);
+    case "get_series_categories":
+      return json([{ category_id: "30", category_name: "Series | Drama" }]);
+    case "get_live_streams":
+      return json(
+        [
+          { stream_id: 1, name: "ESPN", stream_icon: `http://127.0.0.1:${port}/logo.png`, category_id: "10" },
+          { stream_id: 2, name: "Canal +18", stream_icon: "", category_id: "11" },
+        ].filter((x) => !q.get("category_id") || x.category_id === q.get("category_id")),
+      );
+    case "get_vod_streams":
+      return json([{ stream_id: 50, name: "Filme Teste", stream_icon: "https://img.example/f.jpg", container_extension: "mp4", category_id: "20" }]);
+    case "get_series":
+      return json([{ series_id: 70, name: "Serie Teste", cover: "https://img.example/s.jpg", category_id: "30" }]);
+    case "get_series_info":
+      return json({ info: {}, episodes: { 1: [{ id: 902, episode_num: 2, season: 1, title: "Ep 2", container_extension: "mkv" }, { id: 901, episode_num: 1, season: 1, title: "Ep 1", container_extension: "mp4" }] } });
+    case "get_short_epg": {
+      const now = Math.floor(Date.now() / 1000);
+      return json({ epg_listings: [{ title: b64("Jogo ao vivo"), description: b64("Final"), start_timestamp: now - 600, stop_timestamp: now + 600 }] });
+    }
+  }
+  res.end("[]");
+}
+
 function sourceHandler(req, res) {
+  if (req.url.startsWith("/player_api.php")) return xtreamApi(req, res);
+  if (req.url.startsWith("/movie/TiaX/")) {
+    const m = /bytes=(\d+)-(\d*)/.exec(req.headers.range || "");
+    if (!m) return res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": MOVIE.length }).end(MOVIE);
+    const start = Number(m[1]);
+    const end = m[2] ? Math.min(Number(m[2]), MOVIE.length - 1) : MOVIE.length - 1;
+    return res
+      .writeHead(206, { "Content-Type": "video/mp4", "Content-Range": `bytes ${start}-${end}/${MOVIE.length}`, "Content-Length": end - start + 1, "Accept-Ranges": "bytes" })
+      .end(MOVIE.subarray(start, end + 1));
+  }
   if (req.url === "/live/index.m3u8") return res.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl" }).end(HLS);
   if (req.url === "/live/seg/1.ts") return res.writeHead(200, { "Content-Type": "video/mp2t" }).end("TSDATA");
   if (req.url === "/hls.m3u") {
@@ -28,6 +77,9 @@ function sourceHandler(req, res) {
         `#EXTINF:-1 group-title="Series Drama",Serie Y S01 E01\nhttp://127.0.0.1:${port}/series/u/p/20.mkv\n`,
     );
   }
+  if (req.url === "/pagina.html") return res.writeHead(200, { "Content-Type": "text/html" }).end("<html><body>login</body></html>");
+  if (req.url === "/vazia.m3u") return res.end("");
+  if (req.url === "/ua.m3u") return res.end(`#EXTM3U\n#EXTINF:-1,${req.headers["user-agent"]}\nhttp://example.com/ua.ts\n`);
   if (req.url === "/epg.xml") {
     const fmt = (d) => d.toISOString().replace(/[-:T]/g, "").slice(0, 14) + " +0000";
     const now = Date.now();
@@ -262,4 +314,81 @@ test("lista propria do cliente: colar no cadastro, testar e assistir", async () 
   await call("POST", "/api/player/login", { username: "edu", password: "pw" });
   const after = await call("GET", "/api/player/channels");
   assert.deepEqual(after.body.channels.map((c) => [c.name, c.src]), [["Colado", "http://example.com/c.m3u8"]]);
+});
+
+test("reprodutor mostra por que a lista nao carregou", async () => {
+  const port = source.address().port;
+  const check = async (username, src) => {
+    cookie = "";
+    await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+    await call("POST", "/api/clients", { username, password: "pw", source: src });
+    cookie = "";
+    await call("POST", "/api/player/login", { username, password: "pw" });
+    return (await call("GET", "/api/player/channels")).body;
+  };
+  const html = await check("erro1", { kind: "m3u_url", url: `http://127.0.0.1:${port}/pagina.html` });
+  assert.equal(html.channels.length, 0);
+  assert.match(html.errors[0], /abriu uma pagina/);
+  const empty = await check("erro2", { kind: "m3u_url", url: `http://127.0.0.1:${port}/vazia.m3u` });
+  assert.match(empty.errors[0], /lista vazia/);
+  const down = await check("erro3", { kind: "m3u_url", url: "http://127.0.0.1:1/x.m3u" });
+  assert.match(down.errors[0], /Nao foi possivel conectar/);
+  const none = await check("erro4", undefined);
+  assert.equal(none.no_source, true);
+  // Os fornecedores recebem a identificacao de um player conhecido (VLC)
+  const ua = await check("erro5", { kind: "m3u_url", url: `http://127.0.0.1:${port}/ua.m3u` });
+  assert.match(ua.channels[0].name, /^VLC\//);
+});
+
+test("cliente rapido com link Xtream e catalogo por categoria", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const port = source.address().port;
+  const link = `http://127.0.0.1:${port}/get.php?username=TiaX&password=Sen%401&type=m3u_plus&output=m3u8`;
+
+  assert.equal((await call("POST", "/api/clients/quick", { link: "http://x/lista.m3u" })).status, 400);
+  const bad = await call("POST", "/api/clients/quick", { link: link.replace("Sen%401", "errada") });
+  assert.match(bad.body.error, /recusou/);
+
+  const quick = await call("POST", "/api/clients/quick", { link });
+  assert.equal(quick.status, 201);
+  assert.equal(quick.body.username, "TiaX");
+  assert.equal(quick.body.password, "Sen@1");
+  assert.equal(quick.body.expires_at, "2030-01-01T00:00:00.000Z");
+  assert.equal(quick.body.source.kind, "xtream");
+  assert.equal(quick.body.source.playback, "auto");
+  assert.equal((await call("POST", "/api/clients/quick", { link })).status, 409);
+
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
+  const catalog = (await call("GET", "/api/player/catalog")).body;
+  assert.equal(catalog.mode, "xtream");
+  assert.deepEqual(catalog.sections.live.map((c) => c.name), ["Esportes", "Adultos"]);
+
+  const live = (await call("GET", "/api/player/xtream/items?section=live")).body;
+  assert.equal(live.length, 2);
+  assert.equal(live[0].group, "Esportes");
+  assert.equal(live[0].type, "mpegts");
+  assert.match(live[0].src, /^\/api\/player\/proxy\?/, "link http passa pelo servidor no modo automatico");
+  assert.match(live[0].logo, /^\/api\/player\/proxy\?/);
+  assert.equal(live[0].epg_id, "xt:1");
+
+  const movies = (await call("GET", "/api/player/xtream/items?section=movie&category=20")).body;
+  assert.equal(movies[0].logo, "https://img.example/f.jpg", "logo https vai direto");
+  assert.equal((await call("GET", "/api/player/xtream/items?section=movie")).status, 400);
+
+  // Filme pelo proxy: entregue em pedacos de 1 MB
+  const first = await fetch(base + movies[0].src, { headers: { cookie, range: "bytes=0-" } });
+  assert.equal(first.status, 206);
+  assert.equal(first.headers.get("content-range"), `bytes 0-1048575/${MOVIE.length}`);
+  assert.equal((await first.arrayBuffer()).byteLength, 1048576);
+
+  const series = (await call("GET", "/api/player/xtream/items?section=series&category=30")).body;
+  assert.equal(series[0].series_id, "70");
+  const eps = (await call("GET", "/api/player/xtream/series/70?name=Serie%20Teste")).body;
+  assert.deepEqual(eps.map((e) => [e.name, e.season, e.episode]), [["Ep 1", 1, 1], ["Ep 2", 1, 2]]);
+  assert.match(decodeURIComponent(eps[1].src), /\/series\/TiaX\/Sen%401\/902\.mkv/);
+
+  const epg = (await call("GET", "/api/player/epg?ids=xt:1")).body;
+  assert.equal(epg["xt:1"][0].title, "Jogo ao vivo");
 });

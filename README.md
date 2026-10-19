@@ -8,6 +8,8 @@ Frontend no stack do Lovable (Vite + React + TypeScript + Tailwind, componentes 
 
 - **Login do administrador** (sessao em cookie httpOnly, senha com bcrypt, troca de senha).
 - **Clientes**: usuario, senha (gerador automatico), validade (+1/7/30/90/365 dias), bloqueio, observacoes e a lista do cliente.
+- **Cliente rapido**: cole o link `get.php?username=...&password=...` do fornecedor e o cliente e criado com o mesmo usuario, senha e validade da conta no fornecedor.
+- **Formato Xtream**: links `get.php` e logins Xtream carregam pelo `player_api.php`, por categoria (TV ao vivo, filmes, series e episodios), em vez de baixar a lista M3U inteira (que em fornecedores grandes passa de 70 MB). Guia de programacao pelo `get_short_epg`.
 - **Lista propria por cliente**, colada no cadastro do cliente: link M3U do fornecedor, login Xtream Codes (servidor + usuario + senha; tambem XUI.One/OneStream) ou o conteudo do arquivo `.m3u`. Botao **Testar lista** mostra quantos canais, filmes e episodios a lista tem antes de salvar. EPG (XMLTV) opcional e modo de reproducao (direto da fonte ou pelo servidor).
 - **Entrega ao cliente** (para apps IPTV externos): a lista do cliente tambem sai em:
   - `GET /get.php?username=USUARIO&password=SENHA&type=m3u_plus` (formato aceito pela maioria dos apps IPTV);
@@ -43,6 +45,8 @@ As colecoes (`admins`, `clients`, `config`) sao criadas sozinhas no primeiro ace
 Cada `git push` na `main` faz um novo deploy automatico.
 
 ### Limites dos planos gratuitos (importante)
+- **Modo automatico de reproducao**: links `https` tocam direto da fonte; links `http` (a maioria dos fornecedores IPTV) passam pelo servidor, porque o navegador bloqueia `http` dentro de um site `https`. Na Vercel, filmes sao entregues em pedacos de 8 MB e o ao vivo reconecta sozinho a cada ~50 s.
+- **Banda**: um canal ao vivo HD consome ~3 GB por hora e um filme ~1,5 GB. Com os ~100 GB/mes do plano gratis da Vercel, isso da algo como 30 horas de TV ao vivo **somando todos os clientes**.
 - **Vercel Hobby**: uso **pessoal e nao comercial** pelos termos da Vercel; ~100 GB de trafego/mes; funcoes com no maximo 60 s. Por isso as listas novas usam reproducao **direta da fonte** (o video nao passa pela Vercel). O modo **proxy** existe por lista, mas consome a banda do plano e streams `.ts` continuos sao cortados a cada 60 s; prefira HLS (`.m3u8`).
 - **Reproducao direta** exige que a fonte use `https` e libere CORS; links `http` sao bloqueados pelo navegador em sites `https`. Nesses casos use proxy (com os limites acima) ou um servidor proprio.
 - **Firestore Spark**: 50 mil leituras e 20 mil gravacoes por dia, 1 GB. O servidor usa cache e grava "ultimo acesso" no maximo a cada 5 minutos para economizar. Lista **manual** colada no painel tem limite de ~900 KB (limite de documento do Firestore); listas maiores, use URL M3U.

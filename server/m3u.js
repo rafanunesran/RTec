@@ -20,15 +20,27 @@ export function sourceUrl(p) {
   return null;
 }
 
+// Muitos paineis IPTV recusam programas que nao se identificam como um player conhecido.
+const PLAYER_UA = "VLC/3.0.20 LibVLC/3.0.20";
+const FETCH_TIMEOUT_MS = Number(process.env.M3U_TIMEOUT_SECONDS || 45) * 1000;
+
 async function fetchText(url) {
   const hit = cache.get(url);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.text;
-  const res = await fetch(url, {
-    signal: AbortSignal.timeout(20000),
-    headers: { "User-Agent": "RTecPanel/1.0" },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  let res;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), headers: { "User-Agent": PLAYER_UA, Accept: "*/*" } });
+  } catch (err) {
+    if (err.name === "TimeoutError") throw new Error("O servidor da lista demorou demais para responder");
+    throw new Error(`Nao foi possivel conectar no servidor da lista (${err.cause?.code || err.message})`);
+  }
+  if (res.status === 401 || res.status === 403) throw new Error(`O fornecedor recusou o acesso (HTTP ${res.status}): confira usuario/senha ou se a conta esta ativa`);
+  if (!res.ok) throw new Error(`O servidor da lista respondeu com erro HTTP ${res.status}`);
   const text = await res.text();
+  if (!/#EXTINF/i.test(text)) {
+    if (/^\s*</.test(text)) throw new Error("O link abriu uma pagina, nao uma lista M3U: confira o link");
+    throw new Error(text.trim() ? "O link nao retornou uma lista M3U valida" : "O fornecedor retornou a lista vazia: confira usuario/senha ou se a conta esta ativa");
+  }
   cache.set(url, { at: Date.now(), text });
   return text;
 }

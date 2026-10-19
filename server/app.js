@@ -7,17 +7,30 @@ import { Readable } from "node:stream";
 import { DuplicateError, getStore } from "./store/index.js";
 import { buildMergedM3u, countChannels, headerEpgUrls, loadPlaylistText, parseEntries, sourceUrl } from "./m3u.js";
 import { nowNext } from "./epg.js";
+import * as xtream from "./xtream.js";
 
 const COOKIE = "rtec_session";
 const CLIENT_COOKIE = "rtec_player";
 const DEFAULT_PIN = "0000";
 const MAX_MANUAL_BYTES = 900 * 1024; // um documento do Firestore aceita ate 1 MB
 
-// "direct": o navegador busca o video na fonte (nao gasta banda do servidor; ideal no plano gratis da Vercel).
+// "direct": o navegador busca o video na fonte (nao gasta banda do servidor).
 // "proxy": o video passa pelo servidor (resolve CORS e links http, mas consome banda).
-const DEFAULT_PLAYBACK = process.env.DEFAULT_PLAYBACK || (process.env.VERCEL ? "direct" : "proxy");
+// "auto": links https vao direto; links http passam pelo servidor (o navegador bloqueia http em site https).
+const DEFAULT_PLAYBACK = process.env.DEFAULT_PLAYBACK || "auto";
+const PLAYBACK_MODES = ["auto", "direct", "proxy"];
+
+function viaProxy(mode, url) {
+  if (mode === "proxy") return true;
+  if (mode === "direct") return false;
+  return !/^https:/i.test(url);
+}
 
 let JWT_SECRET = process.env.JWT_SECRET || "";
+
+// Na Vercel (funcoes de no maximo 60 s) o proxy entrega filmes em pedacos e corta o ao vivo antes do limite.
+const PROXY_CHUNK_BYTES = Number(process.env.PROXY_CHUNK_MB || (process.env.VERCEL ? 8 : 0)) * 1024 * 1024;
+const PROXY_MAX_SECONDS = Number(process.env.PROXY_MAX_SECONDS || (process.env.VERCEL ? 50 : 0));
 
 const randomToken = () => crypto.randomBytes(16).toString("hex");
 const randomPassword = () => crypto.randomBytes(6).toString("base64url");
@@ -235,7 +248,7 @@ function readSource(body, existing) {
   const kind = str(body.kind ?? existing?.kind, "tipo", { required: true });
   if (!["m3u_url", "xtream", "manual"].includes(kind)) throw new HttpError(400, "Tipo de lista invalido");
   const playback = str(body.playback ?? existing?.playback ?? DEFAULT_PLAYBACK, "reproducao");
-  if (!["direct", "proxy"].includes(playback)) throw new HttpError(400, "Modo de reproducao invalido");
+  if (!PLAYBACK_MODES.includes(playback)) throw new HttpError(400, "Modo de reproducao invalido");
   const p = {
     kind,
     url: str(body.url ?? existing?.url, "url"),
@@ -261,6 +274,19 @@ function readSource(body, existing) {
 }
 
 async function previewSource(p) {
+  // Xtream: confere a conta e conta as categorias pela API (rapido), sem baixar a lista inteira.
+  const creds = xtream.xtreamCredentials(p);
+  if (creds) {
+    try {
+      const [account, live, movie, series] = await Promise.all([
+        xtream.accountInfo(creds),
+        ...["live", "movie", "series"].map((s) => xtream.categories(creds, s)),
+      ]);
+      return { ok: true, xtream: { ...account, categories: { live: live.length, movie: movie.length, series: series.length } } };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  }
   try {
     const text = await loadPlaylistText(p);
     const all = parseEntries(text, Infinity);
@@ -271,6 +297,42 @@ async function previewSource(p) {
   } catch (err) {
     return { ok: false, source: sourceUrl(p), error: err.message };
   }
+}
+
+const MAX_M3U_ITEMS = 20000;
+
+/** Logos https vao direto; http passam pelo servidor (imagens sao pequenas). */
+const logoUrl = (clientId, url) => (!/^https?:\/\//i.test(url || "") ? "" : /^https:/i.test(url) ? url : proxyUrl(clientId, url));
+
+const hashId = (...parts) => crypto.createHash("sha1").update(parts.join("|")).digest("hex").slice(0, 12);
+
+/** Converte um item da API Xtream no formato de canal usado pelo reprodutor. */
+function xtreamChannel(c, item, group) {
+  const mode = c.source?.playback || DEFAULT_PLAYBACK;
+  const link = (url) => (viaProxy(mode, url) ? proxyUrl(c.id, url) : url);
+  if (item.kind === "series" && item.series_id) {
+    return { id: `s${item.series_id}`, series_id: item.series_id, name: item.name, group, logo: logoUrl(c.id, item.logo), src: "", type: "file", alt: "", alt_type: "", kind: "series", epg_id: "", playlist_id: "own" };
+  }
+  return {
+    id: hashId(c.id, item.kind, item.stream_id),
+    name: item.name,
+    group,
+    logo: logoUrl(c.id, item.logo),
+    src: link(item.url),
+    type: streamType(item.url),
+    alt: item.alt_url ? link(item.alt_url) : "",
+    alt_type: item.alt_url ? streamType(item.alt_url) : "",
+    kind: item.kind,
+    epg_id: item.kind === "live" ? `xt:${item.stream_id}` : "",
+    playlist_id: "own",
+    ...(item.season ? { season: item.season, episode: item.episode } : {}),
+  };
+}
+
+function requireXtream(c) {
+  const creds = xtream.xtreamCredentials(c.source);
+  if (!creds) throw new HttpError(400, "A lista deste cliente nao e Xtream");
+  return creds;
 }
 
 const checkPin = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pin || ""), c.parental_pin_hash) : String(pin || "") === DEFAULT_PIN);
@@ -393,6 +455,44 @@ export function createApp() {
       const data = await readClientBody(req.body || {});
       const c = await unique(() =>
         db().clients.create({ ...data, token: randomToken(), last_access_at: null, parental_pin_hash: "", locked_groups: [] }),
+      );
+      res.status(201).json(clientResponse(req, c));
+    }),
+  );
+
+  // Cliente rapido: cola o link do fornecedor e o cliente nasce com o mesmo usuario, senha e validade da lista.
+  app.post(
+    "/api/clients/quick",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const link = String(req.body?.link || "").trim();
+      const creds = xtream.parseXtreamLink(link);
+      if (!creds) throw new HttpError(400, "Cole um link no formato http://servidor/get.php?username=...&password=...");
+      let account = null;
+      try {
+        account = await xtream.accountInfo(creds);
+      } catch (err) {
+        throw new HttpError(400, err.message);
+      }
+      const username = creds.username.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 64) || `cliente${crypto.randomInt(1000, 9999)}`;
+      const source = readSource({ kind: "xtream", xtream_server: creds.server, xtream_username: creds.username, xtream_password: creds.password, playback: DEFAULT_PLAYBACK });
+      const c = await unique(
+        () =>
+          db().clients.create({
+            name: String(req.body?.name || "").trim().slice(0, 120) || creds.username,
+            username,
+            password: creds.password,
+            active: true,
+            expires_at: account.expires_at,
+            notes: account.max_connections ? `Fornecedor: ${account.max_connections} tela(s) simultanea(s)` : "",
+            source,
+            playlist_ids: [],
+            token: randomToken(),
+            last_access_at: null,
+            parental_pin_hash: "",
+            locked_groups: [],
+          }),
+        `Ja existe um cliente com o usuario "${username}"`,
       );
       res.status(201).json(clientResponse(req, c));
     }),
@@ -540,27 +640,31 @@ export function createApp() {
       await touch("clients", c, "last_access_at");
       const channels = [];
       const playlists = [];
-      for (const p of await clientPlaylists(c)) {
+      const errors = [];
+      const sources = await clientPlaylists(c);
+      for (const p of sources) {
         let text;
         try {
           text = await loadPlaylistText(p);
-        } catch {
+        } catch (err) {
+          console.warn(`[rtec] Lista do cliente "${c.username}" falhou: ${err.message}`);
+          errors.push(err.message);
           continue;
         }
         playlists.push({ id: p.id, name: p.name });
-        const viaProxy = (p.playback || DEFAULT_PLAYBACK) === "proxy";
-        const link = (url) => (viaProxy ? proxyUrl(c.id, url) : url);
+        const mode = p.playback || DEFAULT_PLAYBACK;
+        const link = (url) => (viaProxy(mode, url) ? proxyUrl(c.id, url) : url);
         for (const e of parseEntries(text, Infinity)) {
           if (!/^https?:\/\//i.test(e.url)) continue;
           // Servidores Xtream entregam o mesmo canal em HLS (.m3u8), que toca em mais aparelhos (ex: iPhone).
           const hlsUrl = /\/live\/.+\.ts$/i.test(e.url.split("?")[0]) ? e.url.replace(/\.ts(\?|$)/i, ".m3u8$1") : "";
           // Sem proxy, o navegador vai direto na fonte: prefere HLS, que costuma funcionar melhor assim.
-          const [main, alt] = !viaProxy && hlsUrl ? [hlsUrl, e.url] : [e.url, hlsUrl];
+          const [main, alt] = !viaProxy(mode, e.url) && hlsUrl ? [hlsUrl, e.url] : [e.url, hlsUrl];
           channels.push({
             id: crypto.createHash("sha1").update(`${p.id}|${e.url}`).digest("hex").slice(0, 12),
             name: e.name,
             group: e.group || p.name,
-            logo: /^https?:\/\//i.test(e.logo) ? link(e.logo) : "",
+            logo: logoUrl(c.id, e.logo),
             src: link(main),
             type: streamType(main),
             alt: alt ? link(alt) : "",
@@ -572,7 +676,61 @@ export function createApp() {
         }
       }
       res.setHeader("Cache-Control", "no-store");
-      res.json({ playlists, channels });
+      if (channels.length > MAX_M3U_ITEMS) {
+        return res.json({
+          playlists,
+          channels: [],
+          errors: [`A lista tem ${channels.length.toLocaleString("pt-BR")} itens, grande demais para carregar de uma vez. Cadastre no formato Xtream (servidor, usuario e senha).`],
+        });
+      }
+      res.json({ playlists, channels, errors, no_source: sources.length === 0 });
+    }),
+  );
+
+  // Catalogo: no formato Xtream o reprodutor carrega por categoria; nas demais listas usa /channels.
+  app.get(
+    "/api/player/catalog",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      await touch("clients", c, "last_access_at");
+      const creds = xtream.xtreamCredentials(c.source);
+      if (!creds) return res.json({ mode: "m3u" });
+      try {
+        const [live, movie, series] = await Promise.all(["live", "movie", "series"].map((s) => xtream.categories(creds, s)));
+        res.json({ mode: "xtream", sections: { live, movie, series } });
+      } catch (err) {
+        console.warn(`[rtec] Xtream do cliente "${c.username}" falhou: ${err.message}`);
+        res.json({ mode: "xtream", sections: { live: [], movie: [], series: [] }, errors: [err.message] });
+      }
+    }),
+  );
+
+  app.get(
+    "/api/player/xtream/items",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      const creds = requireXtream(c);
+      const section = String(req.query.section || "");
+      if (!["live", "movie", "series"].includes(section)) throw new HttpError(400, "Secao invalida");
+      const category = String(req.query.category || "");
+      if (!category && section !== "live") throw new HttpError(400, "Escolha uma categoria");
+      const [cats, list] = await Promise.all([xtream.categories(creds, section), xtream.items(creds, section, category)]);
+      const names = new Map(cats.map((x) => [x.id, x.name]));
+      res.setHeader("Cache-Control", "no-store");
+      res.json(list.map((it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "")));
+    }),
+  );
+
+  app.get(
+    "/api/player/xtream/series/:id",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      const episodes = await xtream.seriesEpisodes(requireXtream(c), req.params.id);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(episodes.map((ep) => xtreamChannel(c, ep, String(req.query.name || ""))));
     }),
   );
 
@@ -581,7 +739,20 @@ export function createApp() {
     "/api/player/epg",
     requireClient,
     wrap(async (req, res) => {
-      const ids = String(req.query.ids || "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 300);
+      const all = String(req.query.ids || "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 300);
+      // Canais Xtream ("xt:<id>"): programacao curta direto da API do fornecedor (limitado por pedido).
+      const xtIds = all.filter((id) => id.startsWith("xt:")).slice(0, 25);
+      const ids = all.filter((id) => !id.startsWith("xt:"));
+      const out = {};
+      const creds = xtIds.length ? xtream.xtreamCredentials(req.client.source) : null;
+      if (creds) {
+        await Promise.all(
+          xtIds.map(async (id) => {
+            out[id] = await xtream.shortEpg(creds, id.slice(3)).catch(() => []);
+          }),
+        );
+      }
+      if (!ids.length) return res.json(out);
       const urls = new Set();
       for (const p of await clientPlaylists(req.client)) {
         if (p.epg_url) urls.add(p.epg_url);
@@ -591,7 +762,7 @@ export function createApp() {
           /* lista fora do ar: segue sem o EPG dela */
         }
       }
-      res.json(ids.length && urls.size ? await nowNext([...urls], ids) : {});
+      res.json({ ...out, ...(urls.size ? await nowNext([...urls], ids) : {}) });
     }),
   );
 
@@ -645,7 +816,17 @@ export function createApp() {
       const controller = new AbortController();
       res.on("close", () => controller.abort());
       const headers = { "User-Agent": "VLC/3.0.20 LibVLC/3.0.20" };
-      if (req.headers.range) headers.Range = req.headers.range;
+      // Filmes/series: pede ao fornecedor so um pedaco por vez (o navegador busca o proximo sozinho),
+      // para cada resposta terminar rapido e caber no limite de tempo da funcao da Vercel.
+      const isFile = /\.(mp4|mkv|avi|mov|m4v|webm)$/i.test(new URL(url).pathname);
+      if (isFile && PROXY_CHUNK_BYTES) {
+        const m = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range || "bytes=0-");
+        const start = m ? Number(m[1]) : 0;
+        const end = m && m[2] ? Math.min(Number(m[2]), start + PROXY_CHUNK_BYTES - 1) : start + PROXY_CHUNK_BYTES - 1;
+        headers.Range = `bytes=${start}-${end}`;
+      } else if (req.headers.range) {
+        headers.Range = req.headers.range;
+      }
       let upstream;
       try {
         upstream = await fetch(url, { headers, signal: controller.signal, redirect: "follow" });
@@ -668,8 +849,11 @@ export function createApp() {
         if (v) res.setHeader(h, v);
       }
       if (!upstream.body) return res.end();
+      // Ao vivo continuo: encerra antes do limite da funcao; o reprodutor reconecta sozinho.
+      const timer = PROXY_MAX_SECONDS ? setTimeout(() => controller.abort(), PROXY_MAX_SECONDS * 1000) : null;
+      res.on("close", () => timer && clearTimeout(timer));
       Readable.fromWeb(upstream.body)
-        .on("error", () => res.destroy())
+        .on("error", () => res.end())
         .pipe(res);
     }),
   );
