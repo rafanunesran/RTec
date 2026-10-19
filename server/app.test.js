@@ -192,15 +192,23 @@ test("reprodutor: login do cliente, canais e proxy assinado", async () => {
   const playlist = await call("GET", ch.src);
   assert.equal(playlist.status, 200);
   const lines = playlist.body.split("\n");
-  assert.match(lines[1], /URI="\/api\/player\/proxy\?u=http%3A%2F%2F127\.0\.0\.1%3A\d+%2Flive%2Fkey\.bin&s=/);
+  assert.match(lines[1], /URI="\/api\/player\/proxy\?u=http%3A%2F%2F127\.0\.0\.1%3A\d+%2Flive%2Fkey\.bin&c=\w+&e=\d+&s=/);
   const segment = await call("GET", lines[3]);
   assert.equal(segment.body, "TSDATA");
 
   const tampered = ch.src.replace("index.m3u8", "outro.m3u8");
   assert.equal((await call("GET", tampered)).status, 403);
 
+  // Link assinado funciona sem cookie (servidor de video separado), mas expira e respeita bloqueio
   cookie = "";
-  assert.equal((await call("GET", ch.src)).status, 401);
+  assert.equal((await call("GET", ch.src)).status, 200);
+  const expired = ch.src.replace(/([?&]e=)\d+/, "$11000");
+  assert.equal((await call("GET", expired)).status, 403);
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const ana = (await call("GET", "/api/clients")).body.find((c) => c.username === "ana");
+  await call("PUT", `/api/clients/${ana.id}`, { active: false });
+  cookie = "";
+  assert.equal((await call("GET", ch.src)).status, 403);
 });
 
 test("controle parental (PIN)", async () => {
@@ -391,4 +399,58 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
 
   const epg = (await call("GET", "/api/player/epg?ids=xt:1")).body;
   assert.equal(epg["xt:1"][0].title, "Jogo ao vivo");
+});
+
+test("app Android recebe link direto; servidor de video externo recebe links absolutos", async () => {
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
+  const port = source.address().port;
+  const appRes = await fetch(base + "/api/player/xtream/items?section=live", {
+    headers: { cookie, "user-agent": "Mozilla/5.0 (Linux; Android 14; wv) Chrome/126 Mobile RTecApp/1.0" },
+  });
+  const [appCh] = await appRes.json();
+  assert.equal(appCh.src, `http://127.0.0.1:${port}/live/TiaX/Sen%401/1.ts`, "no app o video vai direto do fornecedor");
+
+  process.env.STREAM_PROXY_URL = "https://video.exemplo.com/";
+  try {
+    const [webCh] = (await call("GET", "/api/player/xtream/items?section=live")).body;
+    assert.match(webCh.src, /^https:\/\/video\.exemplo\.com\/api\/player\/proxy\?u=/);
+    // O link gerado continua valido (mesma assinatura) quando chega no servidor de video
+    const local = webCh.src.replace("https://video.exemplo.com", "");
+    const r = await fetch(base + local, { headers: { range: "bytes=0-10" } });
+    assert.equal(r.headers.get("access-control-allow-origin"), "*");
+    await r.body?.cancel();
+  } finally {
+    delete process.env.STREAM_PROXY_URL;
+  }
+});
+
+test("servidor de video separado (Oracle) aceita os links assinados pelo painel", async () => {
+  const { spawn } = await import("node:child_process");
+  process.env.PROXY_SECRET = "segredo-compartilhado";
+  const proxy = spawn(process.execPath, ["public/proxy/server.mjs"], { env: { ...process.env, PORT: "18089" }, stdio: "pipe" });
+  try {
+    await new Promise((ok) => proxy.stdout.on("data", (d) => String(d).includes("rodando") && ok()));
+    cookie = "";
+    await call("POST", "/api/player/login", { username: "ana", password: "abcd" }).catch(() => {});
+    await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+    const port = source.address().port;
+    await call("POST", "/api/clients", { username: "vps", password: "pw", source: { kind: "m3u_url", url: `http://127.0.0.1:${port}/hls.m3u` } });
+    cookie = "";
+    await call("POST", "/api/player/login", { username: "vps", password: "pw" });
+    process.env.STREAM_PROXY_URL = "http://127.0.0.1:18089";
+    const ch = (await call("GET", "/api/player/channels")).body.channels.find((c) => c.kind === "live");
+    delete process.env.STREAM_PROXY_URL;
+    assert.match(ch.src, /^http:\/\/127\.0\.0\.1:18089\/api\/player\/proxy\?/);
+
+    const playlist = await fetch(ch.src);
+    assert.equal(playlist.headers.get("access-control-allow-origin"), "*");
+    const lines = (await playlist.text()).split("\n");
+    const segment = await fetch("http://127.0.0.1:18089" + lines[3]);
+    assert.equal(await segment.text(), "TSDATA");
+    assert.equal((await fetch(ch.src.replace("index.m3u8", "x.m3u8"))).status, 403);
+  } finally {
+    delete process.env.PROXY_SECRET;
+    proxy.kill();
+  }
 });

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNo
 import { AlertTriangle, ArrowLeft, Clapperboard, Download, Film, Heart, Loader2, Lock, Radio, Search, Settings, Share, SquarePlus, Tv } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
-import { useInstall } from "@/lib/pwa";
+import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
 import { cn, formatDate } from "@/lib/utils";
 import { Button, Card, Dialog, Field, Input, Select } from "@/components/ui";
 import Logo from "@/components/Logo";
@@ -118,7 +118,19 @@ function PlayerLogin({ onLogin }: { onLogin: (p: ClientProfile) => void }) {
 
 function InstallButton({ compact }: { compact?: boolean }) {
   const { canPrompt, ios, install } = useInstall();
+  const apk = useApkAvailable();
   const [help, setHelp] = useState(false);
+  const android = /android/i.test(navigator.userAgent);
+  // No Android, o app (APK) toca o video direto do fornecedor: melhor que instalar o site.
+  if (apk && (android || !ios)) {
+    return (
+      <a href={APK_URL} download>
+        <Button variant="outline" size={compact ? "sm" : "default"} type="button">
+          <Download /> {compact ? "App" : "Baixar app Android"}
+        </Button>
+      </a>
+    );
+  }
   if (!canPrompt && !ios) return null;
   return (
     <>

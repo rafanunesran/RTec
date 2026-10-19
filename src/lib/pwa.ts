@@ -36,7 +36,7 @@ export function useInstall() {
     listeners.add(l);
     return () => void listeners.delete(l);
   }, []);
-  const installed = isStandalone();
+  const installed = isStandalone() || isNativeApp();
   return {
     canPrompt: !!deferred && !installed,
     ios: isIOS() && !installed,
@@ -48,4 +48,21 @@ export function useInstall() {
       force((n) => n + 1);
     },
   };
+}
+
+/** Rodando dentro do app Android do RTec (WebView com "RTecApp" no User-Agent). */
+export const isNativeApp = () => /\bRTecApp\b/.test(navigator.userAgent);
+
+export const APK_URL = "/download/rtec-tv.apk";
+
+/** O APK so aparece para download se ja foi publicado no site. */
+export function useApkAvailable() {
+  const [ok, setOk] = useState(false);
+  useEffect(() => {
+    if (isNativeApp()) return;
+    fetch(APK_URL, { method: "HEAD" })
+      .then((r) => setOk(r.ok && !/text\/html/i.test(r.headers.get("content-type") || "")))
+      .catch(() => {});
+  }, []);
+  return ok;
 }

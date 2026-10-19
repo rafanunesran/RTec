@@ -20,11 +20,16 @@ const MAX_MANUAL_BYTES = 900 * 1024; // um documento do Firestore aceita ate 1 M
 const DEFAULT_PLAYBACK = process.env.DEFAULT_PLAYBACK || "auto";
 const PLAYBACK_MODES = ["auto", "direct", "proxy"];
 
-function viaProxy(mode, url) {
-  // Link http nunca toca direto: o navegador bloqueia http dentro de um site https.
-  if (!/^https:/i.test(url)) return true;
-  return mode === "proxy";
+function viaProxy(mode, url, app = false) {
+  if (mode === "proxy") return true;
+  // No app Android o video vai direto do fornecedor para o aparelho (sem limite de banda do servidor).
+  if (app) return false;
+  // No navegador, link http nunca toca direto: e bloqueado dentro de um site https.
+  return !/^https:/i.test(url);
 }
+
+/** O app Android (WebView) se identifica com "RTecApp" no User-Agent. */
+const isApp = (req) => /\bRTecApp\b/.test(req.get("user-agent") || "");
 
 let JWT_SECRET = process.env.JWT_SECRET || "";
 
@@ -130,17 +135,29 @@ async function touch(collection, doc, field) {
 // Muda quando a senha do cliente muda, derrubando sessoes antigas do reprodutor.
 const passwordFingerprint = (c) => crypto.createHash("sha256").update(c.password).digest("hex").slice(0, 16);
 
-function signUrl(clientId, url) {
-  return crypto.createHmac("sha256", JWT_SECRET).update(`${clientId}|${url}`).digest("base64url").slice(0, 32);
+// Links do proxy assinados com validade: funcionam sem cookie, inclusive num servidor de video separado
+// (STREAM_PROXY_URL, ex: Oracle Cloud), que confere a assinatura com o mesmo PROXY_SECRET.
+const LINK_TTL_SECONDS = 12 * 3600;
+const proxySecret = () => process.env.PROXY_SECRET || JWT_SECRET;
+const proxyBase = () => (process.env.STREAM_PROXY_URL || "").replace(/\/+$/, "");
+
+function signUrl(clientId, exp, url) {
+  return crypto.createHmac("sha256", proxySecret()).update(`${clientId}|${exp}|${url}`).digest("base64url").slice(0, 32);
 }
 
-function verifySignature(clientId, url, sig) {
-  const expected = Buffer.from(signUrl(clientId, url));
-  const given = Buffer.from(sig);
+function verifySignature(clientId, exp, url, sig) {
+  if (!clientId || !(Number(exp) > Date.now() / 1000)) return false;
+  const expected = Buffer.from(signUrl(clientId, exp, url));
+  const given = Buffer.from(String(sig));
   return expected.length === given.length && crypto.timingSafeEqual(expected, given);
 }
 
-const proxyUrl = (clientId, url) => `/api/player/proxy?u=${encodeURIComponent(url)}&s=${signUrl(clientId, url)}`;
+function proxyUrl(clientId, url, base = proxyBase()) {
+  // Validade arredondada para a hora: o mesmo link se repete e aproveita cache do navegador.
+  const exp = Math.ceil((Date.now() / 1000 + LINK_TTL_SECONDS) / 3600) * 3600;
+  const q = new URLSearchParams({ u: url, c: clientId, e: String(exp), s: signUrl(clientId, exp, url) });
+  return `${base}/api/player/proxy?${q}`;
+}
 
 function streamType(url) {
   const pathname = url.split(/[?#]/)[0].toLowerCase();
@@ -150,15 +167,15 @@ function streamType(url) {
 }
 
 /** Reescreve uma playlist HLS para que segmentos, chaves e sub-playlists passem pelo proxy. */
-function rewriteHls(text, baseUrl, clientId) {
+function rewriteHls(text, baseUrl, clientId, base) {
   const abs = (u) => new URL(u, baseUrl).toString();
   return text
     .split(/\r?\n/)
     .map((line) => {
       const t = line.trim();
       if (!t) return line;
-      if (t.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_m, u) => `URI="${proxyUrl(clientId, abs(u))}"`);
-      return proxyUrl(clientId, abs(t));
+      if (t.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_m, u) => `URI="${proxyUrl(clientId, abs(u), base)}"`);
+      return proxyUrl(clientId, abs(t), base);
     })
     .join("\n");
 }
@@ -307,9 +324,9 @@ const logoUrl = (clientId, url) => (!/^https?:\/\//i.test(url || "") ? "" : /^ht
 const hashId = (...parts) => crypto.createHash("sha1").update(parts.join("|")).digest("hex").slice(0, 12);
 
 /** Converte um item da API Xtream no formato de canal usado pelo reprodutor. */
-function xtreamChannel(c, item, group) {
+function xtreamChannel(c, item, group, app = false) {
   const mode = c.source?.playback || DEFAULT_PLAYBACK;
-  const link = (url) => (viaProxy(mode, url) ? proxyUrl(c.id, url) : url);
+  const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
   if (item.kind === "series" && item.series_id) {
     return { id: `s${item.series_id}`, series_id: item.series_id, name: item.name, group, logo: logoUrl(c.id, item.logo), src: "", type: "file", alt: "", alt_type: "", kind: "series", epg_id: "", playlist_id: "own" };
   }
@@ -653,13 +670,14 @@ export function createApp() {
         }
         playlists.push({ id: p.id, name: p.name });
         const mode = p.playback || DEFAULT_PLAYBACK;
-        const link = (url) => (viaProxy(mode, url) ? proxyUrl(c.id, url) : url);
+        const app = isApp(req);
+        const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
         for (const e of parseEntries(text, Infinity)) {
           if (!/^https?:\/\//i.test(e.url)) continue;
           // Servidores Xtream entregam o mesmo canal em HLS (.m3u8), que toca em mais aparelhos (ex: iPhone).
           const hlsUrl = /\/live\/.+\.ts$/i.test(e.url.split("?")[0]) ? e.url.replace(/\.ts(\?|$)/i, ".m3u8$1") : "";
           // Sem proxy, o navegador vai direto na fonte: prefere HLS, que costuma funcionar melhor assim.
-          const [main, alt] = !viaProxy(mode, e.url) && hlsUrl ? [hlsUrl, e.url] : [e.url, hlsUrl];
+          const [main, alt] = !viaProxy(mode, e.url, app) && hlsUrl ? [hlsUrl, e.url] : [e.url, hlsUrl];
           channels.push({
             id: crypto.createHash("sha1").update(`${p.id}|${e.url}`).digest("hex").slice(0, 12),
             name: e.name,
@@ -719,7 +737,7 @@ export function createApp() {
       const [cats, list] = await Promise.all([xtream.categories(creds, section), xtream.items(creds, section, category)]);
       const names = new Map(cats.map((x) => [x.id, x.name]));
       res.setHeader("Cache-Control", "no-store");
-      res.json(list.map((it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "")));
+      res.json(list.map((it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "", isApp(req))));
     }),
   );
 
@@ -730,7 +748,7 @@ export function createApp() {
       const c = req.client;
       const episodes = await xtream.seriesEpisodes(requireXtream(c), req.params.id);
       res.setHeader("Cache-Control", "no-store");
-      res.json(episodes.map((ep) => xtreamChannel(c, ep, String(req.query.name || ""))));
+      res.json(episodes.map((ep) => xtreamChannel(c, ep, String(req.query.name || ""), isApp(req))));
     }),
   );
 
@@ -807,12 +825,16 @@ export function createApp() {
   // http em site https. So aceita URLs assinadas pelo proprio servidor para o cliente logado.
   app.get(
     "/api/player/proxy",
-    requireClient,
     wrap(async (req, res) => {
       const url = String(req.query.u || "");
-      if (!/^https?:\/\//i.test(url) || !verifySignature(req.client.id, url, String(req.query.s || ""))) {
-        throw new HttpError(403, "Link invalido");
+      const clientId = String(req.query.c || "");
+      if (!/^https?:\/\//i.test(url) || !verifySignature(clientId, req.query.e, url, req.query.s || "")) {
+        throw new HttpError(403, "Link invalido ou expirado");
       }
+      const client = await getClient(clientId);
+      if (!isClientValid(client)) throw new HttpError(403, "Acesso expirado ou bloqueado");
+      req.client = client;
+      res.setHeader("Access-Control-Allow-Origin", "*");
       const controller = new AbortController();
       res.on("close", () => controller.abort());
       const headers = { "User-Agent": "VLC/3.0.20 LibVLC/3.0.20" };
@@ -842,7 +864,7 @@ export function createApp() {
         res.status(upstream.status);
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
         res.setHeader("Cache-Control", "no-store");
-        res.send(rewriteHls(text, upstream.url, req.client.id));
+        res.send(rewriteHls(text, upstream.url, req.client.id, ""));
         return;
       }
       res.status(upstream.status);

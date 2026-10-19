@@ -358,7 +358,7 @@ export default function Clients() {
                 size="sm"
                 onClick={() =>
                   copy(
-                    `Seu acesso IPTV\nAssista em: ${linksFor.links.server}\nUsuario: ${linksFor.username}\nSenha: ${linksFor.password}\n\nNo celular, abra o link e toque em "Instalar app" para colocar na tela inicial.`,
+                    `Seu acesso IPTV\nAssista em: ${linksFor.links.server}\nUsuario: ${linksFor.username}\nSenha: ${linksFor.password}\n\nAndroid, TV Box e Fire TV: baixe o app em ${linksFor.links.server}/download/rtec-tv.apk\niPhone: abra o link no Safari e use "Adicionar a Tela de Inicio".`,
                     "Mensagem copiada",
                   )
                 }

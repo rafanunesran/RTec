@@ -51,6 +51,35 @@ Cada `git push` na `main` faz um novo deploy automatico.
 - **Reproducao direta** exige que a fonte use `https` e libere CORS; links `http` sao bloqueados pelo navegador em sites `https`. Nesses casos use proxy (com os limites acima) ou um servidor proprio.
 - **Firestore Spark**: 50 mil leituras e 20 mil gravacoes por dia, 1 GB. O servidor usa cache e grava "ultimo acesso" no maximo a cada 5 minutos para economizar. Lista **manual** colada no painel tem limite de ~900 KB (limite de documento do Firestore); listas maiores, use URL M3U.
 
+## Video sem limite
+
+O navegador bloqueia links `http` dentro de um site `https`, entao no site o video dos fornecedores `http`
+passa pelo servidor (proxy). Na Vercel gratis isso tem limite (~100 GB/mes). Ha dois caminhos sem esse limite:
+
+### 1. App Android (Android, TV Box, Fire TV)
+O app abre o mesmo site, mas o video vai **direto do fornecedor para o aparelho**, sem passar por nenhum servidor.
+
+Gerar o APK (precisa de Java 21 e Android SDK):
+```bash
+export ANDROID_HOME=/caminho/android-sdk
+export RTEC_KEYSTORE=/caminho/rtec-release.jks RTEC_KEYSTORE_PASSWORD='senha'
+APP_URL=https://SEU-SITE.vercel.app npm run app:android
+git add public/download/rtec-tv.apk && git commit -m "App Android" && git push origin main
+```
+Os clientes baixam em `https://SEU-SITE/download/rtec-tv.apk` (o reprodutor mostra o botao "Baixar app Android").
+**Guarde o arquivo `.jks` e a senha fora do repositorio**: sem eles, uma versao nova do app nao instala por cima da antiga.
+
+### 2. Servidor de video gratis (Oracle Cloud "Always Free", ~10 TB/mes) - navegador e iPhone
+1. Crie a conta em https://www.oracle.com/cloud/free/ e uma instancia **Ubuntu** (shape Ampere A1 ou VM.Standard.E2.1.Micro).
+2. Em **Networking > Virtual Cloud Network > Security List**, adicione regras de entrada TCP para as portas **80** e **443** (origem `0.0.0.0/0`).
+3. Escolha um segredo (ex: gere em https://www.random.org/strings) e, no terminal da instancia, rode:
+   ```bash
+   curl -fsSL https://SEU-SITE.vercel.app/proxy/install.sh | sudo bash -s -- https://SEU-SITE.vercel.app SEU_SEGREDO
+   ```
+4. O instalador mostra um endereco `https://IP.sslip.io`. Na Vercel, adicione `STREAM_PROXY_URL` (esse endereco) e `PROXY_SECRET` (o mesmo segredo) e faca **Redeploy**.
+
+O servidor de video so aceita links assinados pelo painel, com validade de 12 h.
+
 ## Rodando localmente
 
 Requer Node.js 22.
