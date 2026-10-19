@@ -1,5 +1,18 @@
 export type Links = { m3u: string; m3u_token: string; server: string };
 
+export type SourceKind = "m3u_url" | "xtream" | "manual";
+
+export type Source = {
+  kind: SourceKind;
+  url: string;
+  xtream_server: string;
+  xtream_username: string;
+  xtream_password: string;
+  content: string;
+  epg_url: string;
+  playback: "direct" | "proxy";
+};
+
 export type Client = {
   id: string;
   name: string;
@@ -14,6 +27,7 @@ export type Client = {
   last_access_at: string | null;
   created_at: string;
   playlist_ids: string[];
+  source: Source | null;
   device_count: number;
   custom_pin: boolean;
   links: Links;
@@ -62,6 +76,7 @@ export type Stats = {
 
 export type Preview = {
   ok: boolean;
+  kinds?: { live: number; movie: number; series: number };
   source: string | null;
   error?: string;
   channel_count?: number;

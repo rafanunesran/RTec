@@ -250,3 +250,40 @@ test("recuperacao do admin: ADMIN_RESET_PASSWORD redefine a senha uma vez por va
   process.env.ADMIN_PASSWORD = "secret123";
   assert.equal((await db.admins.list()).length, 1);
 });
+
+test("lista propria do cliente: colar no cadastro, testar e assistir", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const port = source.address().port;
+  const src = { kind: "m3u_url", url: `http://127.0.0.1:${port}/hls.m3u`, playback: "proxy" };
+
+  const preview = await call("POST", "/api/source/preview", src);
+  assert.equal(preview.body.ok, true);
+  assert.deepEqual(preview.body.kinds, { live: 1, movie: 1, series: 1 });
+  assert.equal((await call("POST", "/api/source/preview", { kind: "m3u_url", url: "ftp://x" })).status, 400);
+  assert.equal((await call("POST", "/api/clients", { username: "edu", password: "pw", source: { kind: "xtream", xtream_server: "http://a" } })).status, 400);
+
+  const client = await call("POST", "/api/clients", { name: "Edu", username: "edu", password: "pw", source: src });
+  assert.equal(client.status, 201);
+  assert.equal(client.body.source.kind, "m3u_url");
+  const adminCookie = cookie;
+
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "edu", password: "pw" });
+  const res = await call("GET", "/api/player/channels");
+  assert.equal(res.body.channels.length, 3);
+  assert.equal(res.body.playlists[0].name, "Edu");
+  const m3u = await call("GET", `/m3u/${client.body.token}.m3u`);
+  assert.match(m3u.body, /Canal HLS/);
+
+  // Trocar para lista colada
+  cookie = adminCookie;
+  const updated = await call("PUT", `/api/clients/${client.body.id}`, {
+    source: { kind: "manual", content: "#EXTM3U\n#EXTINF:-1,Colado\nhttp://example.com/c.m3u8", playback: "direct" },
+  });
+  assert.equal(updated.body.source.url, "");
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "edu", password: "pw" });
+  const after = await call("GET", "/api/player/channels");
+  assert.deepEqual(after.body.channels.map((c) => [c.name, c.src]), [["Colado", "http://example.com/c.m3u8"]]);
+});

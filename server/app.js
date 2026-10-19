@@ -185,8 +185,9 @@ const requireClient = wrap(async (req, _res, next) => {
 
 async function clientPlaylists(c) {
   const db = getStore();
-  const lists = await Promise.all((c.playlist_ids || []).map((id) => db.playlists.get(id)));
-  return lists.filter((p) => p && p.active).sort(byName);
+  const own = c.source?.kind ? [{ ...c.source, id: `own-${c.id}`, name: c.name || c.username, active: true }] : [];
+  const shared = await Promise.all((c.playlist_ids || []).map((id) => db.playlists.get(id)));
+  return [...own, ...shared.filter((p) => p && p.active).sort(byName)];
 }
 
 function serializeClient(c, deviceCount = 0) {
@@ -228,6 +229,49 @@ async function findClientByLogin(username, password) {
   const c = await getStore().clients.findOne("username", String(username || ""));
   if (!c || c.password !== String(password || "")) return null;
   return c;
+}
+
+/** Valida a fonte de canais: URL M3U, login Xtream ou conteudo M3U colado. */
+function readSource(body, existing) {
+  const kind = str(body.kind ?? existing?.kind, "tipo", { required: true });
+  if (!["m3u_url", "xtream", "manual"].includes(kind)) throw new HttpError(400, "Tipo de lista invalido");
+  const playback = str(body.playback ?? existing?.playback ?? DEFAULT_PLAYBACK, "reproducao");
+  if (!["direct", "proxy"].includes(playback)) throw new HttpError(400, "Modo de reproducao invalido");
+  const p = {
+    kind,
+    url: str(body.url ?? existing?.url, "url"),
+    xtream_server: str(body.xtream_server ?? existing?.xtream_server, "servidor"),
+    xtream_username: str(body.xtream_username ?? existing?.xtream_username, "usuario xtream"),
+    xtream_password: str(body.xtream_password ?? existing?.xtream_password, "senha xtream"),
+    content: String(body.content ?? existing?.content ?? ""),
+    epg_url: str(body.epg_url ?? existing?.epg_url, "epg"),
+    playback,
+  };
+  if (kind === "m3u_url" && !/^https?:\/\//i.test(p.url)) throw new HttpError(400, "Informe uma URL M3U valida (http/https)");
+  if (kind === "xtream" && (!/^https?:\/\//i.test(p.xtream_server) || !p.xtream_username || !p.xtream_password)) {
+    throw new HttpError(400, "Informe servidor (http/https), usuario e senha do Xtream");
+  }
+  if (kind === "manual" && !/#EXTINF/i.test(p.content)) throw new HttpError(400, "Cole um conteudo M3U valido (com #EXTINF)");
+  if (kind !== "manual") p.content = "";
+  if (kind !== "m3u_url") p.url = "";
+  if (kind !== "xtream") p.xtream_server = p.xtream_username = p.xtream_password = "";
+  if (Buffer.byteLength(p.content) > MAX_MANUAL_BYTES) {
+    throw new HttpError(400, "Lista colada muito grande (limite ~900 KB). Use o link M3U do fornecedor.");
+  }
+  return p;
+}
+
+async function previewSource(p) {
+  try {
+    const text = await loadPlaylistText(p);
+    const all = parseEntries(text, Infinity);
+    const kinds = { live: 0, movie: 0, series: 0 };
+    all.forEach((e) => kinds[e.kind]++);
+    const groups = [...new Set(all.map((e) => e.group).filter(Boolean))];
+    return { ok: true, source: sourceUrl(p), channel_count: countChannels(text), kinds, groups, entries: all.slice(0, 100) };
+  } catch (err) {
+    return { ok: false, source: sourceUrl(p), error: err.message };
+  }
 }
 
 const checkPin = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pin || ""), c.parental_pin_hash) : String(pin || "") === DEFAULT_PIN);
@@ -295,7 +339,7 @@ export function createApp() {
         clients: clients.length,
         active_clients: clients.filter(isClientValid).length,
         expired_clients: clients.filter((c) => c.expires_at && new Date(c.expires_at) <= new Date()).length,
-        playlists: playlists.length,
+        playlists: clients.filter((c) => c.source?.kind).length + playlists.length,
         devices: devices.length,
         recent: clients
           .filter((c) => c.last_access_at)
@@ -335,7 +379,10 @@ export function createApp() {
       const found = await Promise.all(ids.map((id) => db().playlists.get(id)));
       playlistIds = ids.filter((_id, i) => found[i]);
     }
+    let source = existing?.source ?? null;
+    if (body.source !== undefined) source = body.source && body.source.kind ? readSource(body.source) : null;
     return {
+      source,
       name: str(body.name ?? existing?.name, "nome", { max: 120 }),
       username,
       password,
@@ -395,34 +442,20 @@ export function createApp() {
     }),
   );
 
-  // ---------- Listas (fontes M3U) ----------
+  // Testa uma lista (do formulario do cliente) antes de salvar.
+  app.post(
+    "/api/source/preview",
+    requireAdmin,
+    wrap(async (req, res) => res.json(await previewSource(readSource(req.body || {})))),
+  );
+
+  // ---------- Listas compartilhadas (legado: hoje cada cliente tem a propria lista) ----------
   function readPlaylistBody(body, existing) {
-    const kind = str(body.kind ?? existing?.kind, "tipo", { required: true });
-    if (!["m3u_url", "xtream", "manual"].includes(kind)) throw new HttpError(400, "Tipo de lista invalido");
-    const playback = str(body.playback ?? existing?.playback ?? DEFAULT_PLAYBACK, "reproducao");
-    if (!["direct", "proxy"].includes(playback)) throw new HttpError(400, "Modo de reproducao invalido");
-    const p = {
+    return {
+      ...readSource(body, existing),
       name: str(body.name ?? existing?.name, "nome", { required: true, max: 120 }),
-      kind,
-      url: str(body.url ?? existing?.url, "url"),
-      xtream_server: str(body.xtream_server ?? existing?.xtream_server, "servidor"),
-      xtream_username: str(body.xtream_username ?? existing?.xtream_username, "usuario xtream"),
-      xtream_password: str(body.xtream_password ?? existing?.xtream_password, "senha xtream"),
-      content: String(body.content ?? existing?.content ?? ""),
-      epg_url: str(body.epg_url ?? existing?.epg_url, "epg"),
-      playback,
       active: !!(body.active ?? existing?.active ?? true),
     };
-    if (kind === "m3u_url" && !/^https?:\/\//i.test(p.url)) throw new HttpError(400, "Informe uma URL M3U valida (http/https)");
-    if (kind === "xtream" && (!/^https?:\/\//i.test(p.xtream_server) || !p.xtream_username || !p.xtream_password)) {
-      throw new HttpError(400, "Informe servidor (http/https), usuario e senha do Xtream");
-    }
-    if (kind === "manual" && !/#EXTINF/i.test(p.content)) throw new HttpError(400, "Cole um conteudo M3U valido (com #EXTINF)");
-    if (kind !== "manual") p.content = "";
-    if (Buffer.byteLength(p.content) > MAX_MANUAL_BYTES) {
-      throw new HttpError(400, "Lista manual muito grande (limite ~900 KB). Hospede o arquivo e use o tipo URL M3U.");
-    }
-    return p;
   }
 
   async function playlistResponse(p, clients) {
@@ -484,14 +517,7 @@ export function createApp() {
     wrap(async (req, res) => {
       const p = await db().playlists.get(req.params.id);
       if (!p) throw new HttpError(404, "Lista nao encontrada");
-      try {
-        const text = await loadPlaylistText(p);
-        const all = parseEntries(text, Infinity);
-        const groups = [...new Set(all.map((e) => e.group).filter(Boolean))];
-        res.json({ ok: true, source: sourceUrl(p), channel_count: countChannels(text), groups, entries: all.slice(0, 100) });
-      } catch (err) {
-        res.json({ ok: false, source: sourceUrl(p), error: err.message });
-      }
+      res.json(await previewSource(p));
     }),
   );
 

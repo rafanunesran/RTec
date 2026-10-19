@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Copy, Dices, Link2, Pencil, Plus, RefreshCw, Search, Trash2, Users } from "lucide-react";
 import { toast } from "sonner";
-import { api, type Client, type Playlist } from "@/lib/api";
+import { api, type Client, type Source } from "@/lib/api";
 import { copy, formatDate } from "@/lib/utils";
 import { Badge, Button, Card, Dialog, EmptyState, Field, Input, Switch, Textarea } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
 import CopyRow from "@/components/CopyRow";
+import SourceEditor, { emptySource, sourceLabel } from "@/components/SourceEditor";
 
 type Form = {
   name: string;
@@ -15,7 +16,7 @@ type Form = {
   max_devices: number;
   expires_at: string;
   notes: string;
-  playlist_ids: string[];
+  source: Source;
 };
 
 const emptyForm = (): Form => ({
@@ -26,7 +27,7 @@ const emptyForm = (): Form => ({
   max_devices: 1,
   expires_at: addDays(30),
   notes: "",
-  playlist_ids: [],
+  source: emptySource(),
 });
 
 function randomPass() {
@@ -54,7 +55,6 @@ function status(c: Client) {
 
 export default function Clients() {
   const [clients, setClients] = useState<Client[]>([]);
-  const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Client | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -66,7 +66,6 @@ export default function Clients() {
 
   useEffect(() => {
     load();
-    api.get<Playlist[]>("/api/playlists").then(setPlaylists);
   }, []);
 
   const filtered = useMemo(() => {
@@ -90,7 +89,7 @@ export default function Clients() {
       max_devices: c.max_devices,
       expires_at: toLocalInput(c.expires_at),
       notes: c.notes,
-      playlist_ids: c.playlist_ids,
+      source: c.source ? { ...emptySource(), ...c.source } : emptySource(),
     });
     setFormOpen(true);
   };
@@ -99,7 +98,12 @@ export default function Clients() {
     e.preventDefault();
     setBusy(true);
     try {
-      const body = { ...form, expires_at: form.expires_at ? new Date(form.expires_at).toISOString() : null };
+      const src = form.source;
+      const blank =
+        (src.kind === "m3u_url" && !src.url.trim()) ||
+        (src.kind === "xtream" && !src.xtream_server.trim() && !src.xtream_username.trim()) ||
+        (src.kind === "manual" && !/#EXTINF/i.test(src.content));
+      const body = { ...form, source: blank ? null : src, expires_at: form.expires_at ? new Date(form.expires_at).toISOString() : null };
       const saved = editing
         ? await api.put<Client>(`/api/clients/${editing.id}`, body)
         : await api.post<Client>("/api/clients", body);
@@ -135,17 +139,11 @@ export default function Clients() {
     load();
   };
 
-  const togglePlaylist = (id: string) =>
-    setForm((f) => ({
-      ...f,
-      playlist_ids: f.playlist_ids.includes(id) ? f.playlist_ids.filter((x) => x !== id) : [...f.playlist_ids, id],
-    }));
-
   return (
     <>
       <PageHeader
         title="Clientes"
-        description="Crie logins e senhas e defina quais listas cada cliente recebe"
+        description="Crie o login de cada cliente e cole a lista dele"
         action={
           <Button variant="gradient" onClick={openNew}>
             <Plus /> Novo cliente
@@ -164,7 +162,7 @@ export default function Clients() {
         <EmptyState
           icon={<Users className="h-6 w-6" />}
           title="Nenhum cliente ainda"
-          text="Crie o primeiro login e senha para disponibilizar suas listas M3U."
+          text="Crie o primeiro cliente: login, senha e a lista M3U dele."
           action={
             <Button variant="gradient" onClick={openNew}>
               <Plus /> Criar cliente
@@ -180,7 +178,7 @@ export default function Clients() {
                 <th className="px-4 py-3 font-medium">Senha</th>
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="hidden px-4 py-3 font-medium md:table-cell">Validade</th>
-                <th className="hidden px-4 py-3 font-medium md:table-cell">Listas</th>
+                <th className="hidden px-4 py-3 font-medium md:table-cell">Lista</th>
                 <th className="hidden px-4 py-3 font-medium lg:table-cell">Ultimo acesso</th>
                 <th className="px-4 py-3" />
               </tr>
@@ -195,7 +193,9 @@ export default function Clients() {
                   <td className="px-4 py-3 font-mono text-xs">{c.password}</td>
                   <td className="px-4 py-3">{status(c)}</td>
                   <td className="hidden px-4 py-3 text-muted-foreground md:table-cell">{c.expires_at ? formatDate(c.expires_at) : "Sem validade"}</td>
-                  <td className="hidden px-4 py-3 md:table-cell">{c.playlist_ids.length}</td>
+                  <td className="hidden px-4 py-3 md:table-cell">
+                    {c.source ? <Badge>{sourceLabel(c.source)}</Badge> : <Badge variant="muted">Sem lista</Badge>}
+                  </td>
                   <td className="hidden px-4 py-3 text-muted-foreground lg:table-cell">{formatDate(c.last_access_at)}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
@@ -256,21 +256,11 @@ export default function Clients() {
             </div>
           </div>
 
-          <Field label="Listas liberadas">
-            {playlists.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Cadastre listas em "Listas M3U" para liberar ao cliente.</p>
-            ) : (
-              <div className="grid gap-2 sm:grid-cols-2">
-                {playlists.map((p) => (
-                  <label key={p.id} className="flex cursor-pointer items-center gap-3 rounded-md border p-3 hover:bg-muted/40">
-                    <input type="checkbox" className="accent-violet-500" checked={form.playlist_ids.includes(p.id)} onChange={() => togglePlaylist(p.id)} />
-                    <span className="text-sm">{p.name}</span>
-                    {!p.active && <Badge variant="muted">inativa</Badge>}
-                  </label>
-                ))}
-              </div>
-            )}
-          </Field>
+          <div className="space-y-2">
+            <div className="text-sm font-medium">Lista do cliente</div>
+            <p className="text-xs text-muted-foreground">Cole o link ou o login do fornecedor deste cliente. E so isso que ele vai ver no reprodutor.</p>
+            <SourceEditor value={form.source} onChange={(source) => setForm({ ...form, source })} />
+          </div>
 
           {editing?.custom_pin && (
             <div className="flex items-center justify-between rounded-md border p-3">

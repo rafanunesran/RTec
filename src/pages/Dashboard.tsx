@@ -17,7 +17,7 @@ export default function Dashboard() {
     { label: "Clientes", value: stats?.clients, icon: Users, to: "/admin/clientes" },
     { label: "Ativos", value: stats?.active_clients, icon: UserCheck, to: "/admin/clientes" },
     { label: "Expirados", value: stats?.expired_clients, icon: UserX, to: "/admin/clientes" },
-    { label: "Listas M3U", value: stats?.playlists, icon: ListVideo, to: "/admin/listas" },
+    { label: "Com lista", value: stats?.playlists, icon: ListVideo, to: "/admin/clientes" },
     { label: "Dispositivos", value: stats?.devices, icon: MonitorSmartphone, to: "/admin/dispositivos" },
   ];
 
@@ -64,14 +64,12 @@ export default function Dashboard() {
         <h2 className="mb-3 font-semibold">Como funciona</h2>
         <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
           <li>
-            Cadastre suas fontes em <Link to="/admin/listas" className="text-primary">Listas M3U</Link> (URL M3U, servidor Xtream ou conteudo colado).
-          </li>
-          <li>
-            Crie um <Link to="/admin/clientes" className="text-primary">cliente</Link> com login e senha, validade e as listas que ele pode acessar.
+            Crie um <Link to="/admin/clientes" className="text-primary">cliente</Link> com login, senha e validade, e cole a lista M3U dele (link, login
+            Xtream ou o conteudo do arquivo). Use "Testar lista" antes de salvar.
           </li>
           <li>Envie ao cliente o endereco do site com o login e a senha: ele assiste direto no navegador e pode instalar o app no celular.</li>
           <li>
-            Opcional: ative o aparelho do cliente pelo MAC e chave em <Link to="/admin/dispositivos" className="text-primary">Dispositivos</Link>.
+            Opcional: ative o aparelho do cliente pelo Device ID e Device Key em <Link to="/admin/dispositivos" className="text-primary">Dispositivos</Link>.
           </li>
         </ol>
       </Card>

@@ -8,12 +8,8 @@ Frontend no stack do Lovable (Vite + React + TypeScript + Tailwind, componentes 
 
 - **Login do administrador** (sessao em cookie httpOnly, senha com bcrypt, troca de senha).
 - **Clientes**: usuario, senha (gerador automatico), validade (+1/7/30/90/365 dias), limite de dispositivos, bloqueio, observacoes e quais listas cada um recebe.
-- **Listas M3U** de tres tipos:
-  - URL M3U existente;
-  - servidor Xtream Codes (servidor + usuario + senha);
-  - conteudo manual (colar texto ou enviar arquivo `.m3u`).
-  - Botao **Testar**: carrega a lista e mostra canais, grupos e logos. EPG (XMLTV) opcional.
-- **Entrega ao cliente**: todas as listas liberadas sao mescladas em um unico M3U:
+- **Lista propria por cliente**, colada no cadastro do cliente: link M3U do fornecedor, login Xtream Codes (servidor + usuario + senha; tambem XUI.One/OneStream) ou o conteudo do arquivo `.m3u`. Botao **Testar lista** mostra quantos canais, filmes e episodios a lista tem antes de salvar. EPG (XMLTV) opcional e modo de reproducao (direto da fonte ou pelo servidor).
+- **Entrega ao cliente** (para apps IPTV externos): a lista do cliente tambem sai em:
   - `GET /get.php?username=USUARIO&password=SENHA&type=m3u_plus` (formato aceito pela maioria dos apps IPTV);
   - `GET /m3u/<token>.m3u` (link curto, pode ser regenerado);
   - botao "Copiar mensagem para o cliente" com todos os dados.
