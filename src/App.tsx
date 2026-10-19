@@ -1,0 +1,41 @@
+import { Navigate, Route, Routes } from "react-router-dom";
+import { Loader2 } from "lucide-react";
+import { AuthProvider, useAuth } from "@/lib/auth";
+import Layout from "@/components/Layout";
+import Login from "@/pages/Login";
+import Dashboard from "@/pages/Dashboard";
+import Clients from "@/pages/Clients";
+import Playlists from "@/pages/Playlists";
+import Devices from "@/pages/Devices";
+import Settings from "@/pages/Settings";
+import Portal from "@/pages/Portal";
+
+function Protected() {
+  const { admin, loading } = useAuth();
+  if (loading)
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+      </div>
+    );
+  return admin ? <Layout /> : <Navigate to="/login" replace />;
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/portal" element={<Portal />} />
+        <Route element={<Protected />}>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/clientes" element={<Clients />} />
+          <Route path="/listas" element={<Playlists />} />
+          <Route path="/dispositivos" element={<Devices />} />
+          <Route path="/configuracoes" element={<Settings />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </AuthProvider>
+  );
+}
