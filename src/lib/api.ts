@@ -65,15 +65,17 @@ export type Preview = {
   entries?: { name: string; group: string; logo: string; url: string }[];
 };
 
-export type PortalData = {
+export type Channel = {
+  id: string;
   name: string;
-  username: string;
-  expires_at: string | null;
-  max_devices: number;
-  links: Links;
-  playlists: { id: number; name: string }[];
-  devices: { mac: string; label: string; last_seen_at: string | null }[];
+  group: string;
+  logo: string;
+  src: string;
+  type: "hls" | "mpegts" | "file";
+  alt: string;
 };
+
+export type ClientProfile = { name: string; username: string; expires_at: string | null };
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {

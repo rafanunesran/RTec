@@ -19,7 +19,9 @@ Frontend no stack do Lovable (Vite + React + TypeScript + Tailwind, componentes 
   - botao "Copiar mensagem para o cliente" com todos os dados.
 - **Dispositivos (estilo Duplecast)**: vincula MAC + chave a um cliente. O app consulta
   `GET /api/device/playlists?mac=MAC&key=CHAVE` e recebe a URL da lista.
-- **Portal do cliente** (`/portal`): o cliente entra com usuario e senha e ve seus links, validade, pacotes e dispositivos.
+- **Reprodutor do cliente** (`/`): o cliente entra com usuario e senha e ve **apenas** os canais das listas dele, separados por grupo, com busca e favoritos, e assiste direto no navegador (HLS via hls.js, MPEG-TS via mpegts.js, MP4/MKV nativo). Canais Xtream `.ts` caem automaticamente para `.m3u8` em aparelhos que nao tocam TS (iPhone).
+- **Proxy de streams**: os videos e logos passam pelo servidor, evitando bloqueio de CORS e de conteudo `http` em site `https`. So URLs assinadas para o cliente logado sao aceitas (nao e um proxy aberto). Atencao: o trafego de video passa pela banda do seu servidor.
+- **App instalavel (PWA)**: no Android/Chrome aparece o botao "Instalar app"; no iPhone, o botao mostra o passo a passo (Safari → Compartilhar → Adicionar a Tela de Inicio). Exige HTTPS em producao.
 - Clientes expirados ou bloqueados recebem `401/403` automaticamente.
 
 ## Rodando
@@ -38,7 +40,9 @@ npm run build
 ADMIN_PASSWORD=sua-senha PUBLIC_URL=https://iptv.seudominio.com npm start   # serve tudo em :3001
 ```
 
-Login inicial: `admin` / `admin123` (ou o definido em `ADMIN_USER`/`ADMIN_PASSWORD`). **Troque a senha** em Configuracoes. Veja `.env.example` para todas as variaveis.
+Enderecos: reprodutor do cliente em `/`, painel do administrador em `/admin`.
+
+Login inicial do admin: `admin` / `admin123` (ou o definido em `ADMIN_USER`/`ADMIN_PASSWORD`). **Troque a senha** em Configuracoes. Veja `.env.example` para todas as variaveis.
 
 Testes da API: `npm test`.
 
@@ -50,7 +54,8 @@ O frontend (`src/`) usa a mesma estrutura dos projetos Lovable. Para continuar e
 
 ```
 server/          API Express + SQLite (app.js, db.js, m3u.js, testes)
-src/pages/       Login, Painel, Clientes, Listas, Dispositivos, Configuracoes, Portal
+src/pages/       Player (cliente), Login, Painel, Clientes, Listas, Dispositivos, Configuracoes
+public/          manifest.webmanifest, sw.js e icones do app instalavel
 src/components/  UI (botoes, inputs, dialogos), layout e logo
 ```
 

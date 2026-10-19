@@ -8,7 +8,7 @@ import Clients from "@/pages/Clients";
 import Playlists from "@/pages/Playlists";
 import Devices from "@/pages/Devices";
 import Settings from "@/pages/Settings";
-import Portal from "@/pages/Portal";
+import Player from "@/pages/Player";
 
 function Protected() {
   const { admin, loading } = useAuth();
@@ -18,24 +18,33 @@ function Protected() {
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
       </div>
     );
-  return admin ? <Layout /> : <Navigate to="/login" replace />;
+  return admin ? <Layout /> : <Navigate to="/admin/login" replace />;
+}
+
+function Admin() {
+  return (
+    <AuthProvider>
+      <Routes>
+        <Route path="login" element={<Login />} />
+        <Route element={<Protected />}>
+          <Route index element={<Dashboard />} />
+          <Route path="clientes" element={<Clients />} />
+          <Route path="listas" element={<Playlists />} />
+          <Route path="dispositivos" element={<Devices />} />
+          <Route path="configuracoes" element={<Settings />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/admin" replace />} />
+      </Routes>
+    </AuthProvider>
+  );
 }
 
 export default function App() {
   return (
-    <AuthProvider>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/portal" element={<Portal />} />
-        <Route element={<Protected />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/clientes" element={<Clients />} />
-          <Route path="/listas" element={<Playlists />} />
-          <Route path="/dispositivos" element={<Devices />} />
-          <Route path="/configuracoes" element={<Settings />} />
-        </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </AuthProvider>
+    <Routes>
+      <Route path="/" element={<Player />} />
+      <Route path="/admin/*" element={<Admin />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }

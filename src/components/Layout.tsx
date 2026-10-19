@@ -6,11 +6,11 @@ import { cn } from "@/lib/utils";
 import Logo from "./Logo";
 
 const nav = [
-  { to: "/", label: "Painel", icon: LayoutDashboard },
-  { to: "/clientes", label: "Clientes", icon: Users },
-  { to: "/listas", label: "Listas M3U", icon: ListVideo },
-  { to: "/dispositivos", label: "Dispositivos", icon: MonitorSmartphone },
-  { to: "/configuracoes", label: "Configuracoes", icon: Settings },
+  { to: "/admin", label: "Painel", icon: LayoutDashboard },
+  { to: "/admin/clientes", label: "Clientes", icon: Users },
+  { to: "/admin/listas", label: "Listas M3U", icon: ListVideo },
+  { to: "/admin/dispositivos", label: "Dispositivos", icon: MonitorSmartphone },
+  { to: "/admin/configuracoes", label: "Configuracoes", icon: Settings },
 ];
 
 export default function Layout() {
@@ -25,7 +25,7 @@ export default function Layout() {
           <NavLink
             key={to}
             to={to}
-            end={to === "/"}
+            end={to === "/admin"}
             onClick={() => setOpen(false)}
             className={({ isActive }) =>
               cn(
@@ -39,12 +39,12 @@ export default function Layout() {
           </NavLink>
         ))}
         <a
-          href="/portal"
+          href="/"
           target="_blank"
           className="mt-2 flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
         >
           <ExternalLink className="h-4 w-4" />
-          Portal do cliente
+          Abrir reprodutor
         </a>
       </nav>
       <div className="flex items-center justify-between rounded-lg border bg-muted/40 p-3">

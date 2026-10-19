@@ -5,6 +5,7 @@ import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { db } from "./db.js";
 import { buildMergedM3u, countChannels, loadPlaylistText, parseEntries, sourceUrl } from "./m3u.js";
 
@@ -19,6 +20,7 @@ function loadSecret() {
 
 const JWT_SECRET = loadSecret();
 const COOKIE = "rtec_session";
+const CLIENT_COOKIE = "rtec_player";
 
 const randomToken = () => crypto.randomBytes(16).toString("hex");
 const randomPassword = () => crypto.randomBytes(6).toString("base64url");
@@ -45,6 +47,59 @@ function requireAdmin(req, _res, next) {
 function isClientValid(c) {
   if (!c || !c.active) return false;
   return !c.expires_at || new Date(c.expires_at) > new Date();
+}
+
+// Muda quando a senha do cliente muda, derrubando sessoes antigas do reprodutor.
+const passwordFingerprint = (c) => crypto.createHash("sha256").update(c.password).digest("hex").slice(0, 16);
+
+function signUrl(clientId, url) {
+  return crypto.createHmac("sha256", JWT_SECRET).update(`${clientId}|${url}`).digest("base64url").slice(0, 32);
+}
+
+function verifySignature(clientId, url, sig) {
+  const expected = Buffer.from(signUrl(clientId, url));
+  const given = Buffer.from(sig);
+  return expected.length === given.length && crypto.timingSafeEqual(expected, given);
+}
+
+const proxyUrl = (clientId, url) => `/api/player/proxy?u=${encodeURIComponent(url)}&s=${signUrl(clientId, url)}`;
+
+function streamType(url) {
+  const pathname = url.split(/[?#]/)[0].toLowerCase();
+  if (pathname.endsWith(".m3u8")) return "hls";
+  if (/\.(mp4|mkv|webm|mov|m4v|mp3|aac)$/.test(pathname)) return "file";
+  return "mpegts";
+}
+
+/** Reescreve uma playlist HLS para que segmentos, chaves e sub-playlists passem pelo proxy. */
+function rewriteHls(text, baseUrl, clientId) {
+  const abs = (u) => new URL(u, baseUrl).toString();
+  return text
+    .split(/\r?\n/)
+    .map((line) => {
+      const t = line.trim();
+      if (!t) return line;
+      if (t.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_m, u) => `URI="${proxyUrl(clientId, abs(u))}"`);
+      return proxyUrl(clientId, abs(t));
+    })
+    .join("\n");
+}
+
+function clientProfile(c) {
+  return { name: c.name, username: c.username, expires_at: c.expires_at };
+}
+
+function requireClient(req, _res, next) {
+  try {
+    const payload = jwt.verify(req.cookies[CLIENT_COOKIE], JWT_SECRET);
+    const c = db.prepare("SELECT * FROM clients WHERE id = ?").get(payload.cid);
+    if (!c || payload.pw !== passwordFingerprint(c)) return next(new HttpError(401, "Sessao expirada, entre novamente"));
+    if (!isClientValid(c)) return next(new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor."));
+    req.client = c;
+    next();
+  } catch {
+    next(new HttpError(401, "Nao autenticado"));
+  }
 }
 
 function clientPlaylists(clientId) {
@@ -361,23 +416,99 @@ export function createApp() {
     res.json({ ok: true });
   });
 
-  // ---------- Portal do cliente ----------
-  app.post("/api/portal/login", (req, res) => {
+  // ---------- Reprodutor do cliente ----------
+  app.post("/api/player/login", (req, res) => {
     const { username, password } = req.body || {};
     const c = db.prepare("SELECT * FROM clients WHERE username = ? AND password = ?").get(String(username || ""), String(password || ""));
     if (!c) throw new HttpError(401, "Usuario ou senha invalidos");
     if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor.");
     touchClient(c.id);
-    res.json({
-      name: c.name,
-      username: c.username,
-      expires_at: c.expires_at,
-      max_devices: c.max_devices,
-      links: clientLinks(req, c),
-      playlists: clientPlaylists(c.id).map((p) => ({ id: p.id, name: p.name })),
-      devices: db.prepare("SELECT mac, label, last_seen_at FROM devices WHERE client_id = ?").all(c.id),
-    });
+    const token = jwt.sign({ cid: c.id, pw: passwordFingerprint(c) }, JWT_SECRET, { expiresIn: "30d" });
+    res.cookie(CLIENT_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 30 * 24 * 3600 * 1000 });
+    res.json(clientProfile(c));
   });
+
+  app.post("/api/player/logout", (_req, res) => {
+    res.clearCookie(CLIENT_COOKIE);
+    res.json({ ok: true });
+  });
+
+  app.get("/api/player/me", requireClient, (req, res) => res.json(clientProfile(req.client)));
+
+  app.get(
+    "/api/player/channels",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      touchClient(c.id);
+      const channels = [];
+      for (const p of clientPlaylists(c.id)) {
+        let text;
+        try {
+          text = await loadPlaylistText(p);
+        } catch {
+          continue;
+        }
+        for (const e of parseEntries(text, Infinity)) {
+          if (!/^https?:\/\//i.test(e.url)) continue;
+          channels.push({
+            id: crypto.createHash("sha1").update(e.url).digest("hex").slice(0, 12),
+            name: e.name,
+            group: e.group || p.name,
+            logo: /^https?:\/\//i.test(e.logo) ? proxyUrl(c.id, e.logo) : "",
+            src: proxyUrl(c.id, e.url),
+            type: streamType(e.url),
+            // Servidores Xtream entregam o mesmo canal em HLS; usado quando o aparelho nao toca MPEG-TS (ex: iPhone).
+            alt: /\/live\/.+\.ts$/i.test(e.url.split("?")[0]) ? proxyUrl(c.id, e.url.replace(/\.ts(\?|$)/i, ".m3u8$1")) : "",
+          });
+        }
+      }
+      res.setHeader("Cache-Control", "no-store");
+      res.json(channels);
+    }),
+  );
+
+  // Repassa streams e logos pelo servidor: evita bloqueio de CORS e de conteudo http em site https.
+  // So aceita URLs assinadas pelo proprio servidor para o cliente logado (nao e um proxy aberto).
+  app.get(
+    "/api/player/proxy",
+    requireClient,
+    wrap(async (req, res) => {
+      const url = String(req.query.u || "");
+      if (!/^https?:\/\//i.test(url) || !verifySignature(req.client.id, url, String(req.query.s || ""))) {
+        throw new HttpError(403, "Link invalido");
+      }
+      const controller = new AbortController();
+      res.on("close", () => controller.abort());
+      const headers = { "User-Agent": "VLC/3.0.20 LibVLC/3.0.20" };
+      if (req.headers.range) headers.Range = req.headers.range;
+      let upstream;
+      try {
+        upstream = await fetch(url, { headers, signal: controller.signal, redirect: "follow" });
+      } catch {
+        if (!res.headersSent && !controller.signal.aborted) res.status(502).json({ error: "Falha ao conectar na fonte" });
+        return;
+      }
+      const type = upstream.headers.get("content-type") || "";
+      if (/mpegurl/i.test(type) || /\.m3u8$/i.test(new URL(upstream.url).pathname)) {
+        const text = await upstream.text();
+        res.status(upstream.status);
+        res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+        res.setHeader("Cache-Control", "no-store");
+        res.send(rewriteHls(text, upstream.url, req.client.id));
+        return;
+      }
+      res.status(upstream.status);
+      for (const h of ["content-type", "content-length", "content-range", "accept-ranges"]) {
+        const v = upstream.headers.get(h);
+        if (v) res.setHeader(h, v);
+      }
+      if (!upstream.body) return res.end();
+      Readable.fromWeb(upstream.body)
+        .on("error", () => res.destroy())
+        .pipe(res);
+    }),
+  );
 
   // ---------- Endpoints publicos para apps IPTV ----------
   // Compativel com apps que aceitam "URL M3U" no formato Xtream (get.php).

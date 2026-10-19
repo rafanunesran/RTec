@@ -280,9 +280,10 @@ export default function Clients() {
         </form>
       </Dialog>
 
-      <Dialog open={!!linksFor} onClose={() => setLinksFor(null)} title="Dados de acesso" description="Envie estes dados ao cliente para usar no app IPTV" wide>
+      <Dialog open={!!linksFor} onClose={() => setLinksFor(null)} title="Dados de acesso" description="O cliente assiste pelo site com usuario e senha. Os links M3U servem para apps IPTV externos." wide>
         {linksFor && (
           <div className="space-y-4">
+            <CopyRow label="Site do reprodutor" value={linksFor.links.server} />
             <CopyRow label="Link M3U (usuario e senha)" value={linksFor.links.m3u} />
             <CopyRow label="Link M3U curto" value={linksFor.links.m3u_token} />
             <div className="grid gap-4 sm:grid-cols-3">
@@ -298,7 +299,7 @@ export default function Clients() {
                 size="sm"
                 onClick={() =>
                   copy(
-                    `Seu acesso IPTV\nUsuario: ${linksFor.username}\nSenha: ${linksFor.password}\nLista M3U: ${linksFor.links.m3u_token}\nPortal: ${linksFor.links.server}/portal`,
+                    `Seu acesso IPTV\nAssista em: ${linksFor.links.server}\nUsuario: ${linksFor.username}\nSenha: ${linksFor.password}\n\nNo celular, abra o link e toque em "Instalar app" para colocar na tela inicial.`,
                     "Mensagem copiada",
                   )
                 }

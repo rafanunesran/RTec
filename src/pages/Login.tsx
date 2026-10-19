@@ -13,14 +13,14 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
 
-  if (admin) return <Navigate to="/" replace />;
+  if (admin) return <Navigate to="/admin" replace />;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     try {
       await login(username, password);
-      navigate("/");
+      navigate("/admin");
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -60,8 +60,8 @@ export default function Login() {
         </form>
         <p className="mt-6 text-center text-sm text-muted-foreground">
           E cliente?{" "}
-          <a href="/portal" className="font-medium text-primary hover:underline">
-            Acesse o portal
+          <a href="/" className="font-medium text-primary hover:underline">
+            Abrir o reprodutor
           </a>
         </p>
       </Card>

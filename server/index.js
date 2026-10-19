@@ -9,7 +9,13 @@ const app = createApp();
 
 const dist = path.resolve("dist");
 if (fs.existsSync(dist)) {
-  app.use(express.static(dist));
+  app.use(
+    express.static(dist, {
+      setHeaders: (res, file) => {
+        if (/(sw\.js|manifest\.webmanifest|index\.html)$/.test(file)) res.setHeader("Cache-Control", "no-cache");
+      },
+    }),
+  );
   app.get("*", (_req, res) => res.sendFile(path.join(dist, "index.html")));
 }
 
