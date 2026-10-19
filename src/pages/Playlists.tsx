@@ -22,7 +22,7 @@ const emptyForm: Form = {
 
 const kinds: { value: PlaylistKind; label: string; desc: string; icon: typeof Globe }[] = [
   { value: "m3u_url", label: "URL M3U", desc: "Link de uma lista existente", icon: Globe },
-  { value: "xtream", label: "Xtream Codes", desc: "Servidor + usuario + senha", icon: Server },
+  { value: "xtream", label: "Xtream Codes", desc: "Xtream, XUI.One ou OneStream", icon: Server },
   { value: "manual", label: "Manual", desc: "Cole ou escreva o M3U", icon: FileText },
 ];
 

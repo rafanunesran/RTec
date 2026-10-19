@@ -61,6 +61,7 @@ export function parseEntries(text, limit = 50) {
     const name = line.slice(line.lastIndexOf(",") + 1).trim();
     const group = /group-title="([^"]*)"/i.exec(line)?.[1] || "";
     const logo = /tvg-logo="([^"]*)"/i.exec(line)?.[1] || "";
+    const tvgId = /tvg-id="([^"]*)"/i.exec(line)?.[1] || "";
     let url = "";
     for (let j = i + 1; j < lines.length; j++) {
       const l = lines[j].trim();
@@ -69,9 +70,28 @@ export function parseEntries(text, limit = 50) {
         break;
       }
     }
-    out.push({ name, group, logo, url });
+    out.push({ name, group, logo, url, tvg_id: tvgId, kind: contentKind(url, group, name) });
   }
   return out;
+}
+
+/** Classifica a entrada em TV ao vivo, filme ou serie (padrao de URL do Xtream, extensao e nome). */
+export function contentKind(url, group = "", name = "") {
+  const path = url.split("?")[0].toLowerCase();
+  if (/\/series\//.test(path)) return "series";
+  if (/\/movies?\//.test(path)) return "movie";
+  if (/\/live\//.test(path)) return "live";
+  if (/\.(mp4|mkv|avi|mov|m4v|webm)$/.test(path)) {
+    return /\bs[eé]ries?\b/i.test(group) || /\bS\d{1,2}\s*E\d{1,3}\b/i.test(name) ? "series" : "movie";
+  }
+  return "live";
+}
+
+/** URLs de EPG anunciadas no cabecalho da lista (url-tvg / x-tvg-url). */
+export function headerEpgUrls(text) {
+  const first = text.slice(0, 2000).split(/\r?\n/).find((l) => /^#EXTM3U/i.test(l.trim())) || "";
+  const m = /(?:url-tvg|x-tvg-url)="([^"]+)"/i.exec(first);
+  return m ? m[1].split(",").map((u) => u.trim()).filter((u) => /^https?:\/\//i.test(u)) : [];
 }
 
 /** Junta varias listas em um unico M3U. Fontes com erro viram comentario. */

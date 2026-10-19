@@ -21,7 +21,19 @@ function sourceHandler(req, res) {
   if (req.url === "/live/seg/1.ts") return res.writeHead(200, { "Content-Type": "video/mp2t" }).end("TSDATA");
   if (req.url === "/hls.m3u") {
     const port = source.address().port;
-    return res.end(`#EXTM3U\n#EXTINF:-1 group-title="Ao vivo",Canal HLS\nhttp://127.0.0.1:${port}/live/index.m3u8\n`);
+    return res.end(
+      `#EXTM3U url-tvg="http://127.0.0.1:${port}/epg.xml"\n` +
+        `#EXTINF:-1 tvg-id="hls.br" group-title="Ao vivo",Canal HLS\nhttp://127.0.0.1:${port}/live/index.m3u8\n` +
+        `#EXTINF:-1 group-title="Filmes Acao",Filme X\nhttp://127.0.0.1:${port}/movie/u/p/10.mp4\n` +
+        `#EXTINF:-1 group-title="Series Drama",Serie Y S01 E01\nhttp://127.0.0.1:${port}/series/u/p/20.mkv\n`,
+    );
+  }
+  if (req.url === "/epg.xml") {
+    const fmt = (d) => d.toISOString().replace(/[-:T]/g, "").slice(0, 14) + " +0000";
+    const now = Date.now();
+    return res.end(
+      `<tv><programme start="${fmt(new Date(now - 600000))}" stop="${fmt(new Date(now + 600000))}" channel="hls.br"><title>Jornal &amp; Cia</title></programme></tv>`,
+    );
   }
   res.end(SOURCE_M3U);
 }
@@ -120,8 +132,15 @@ test("reprodutor: login do cliente, canais e proxy assinado", async () => {
   assert.equal((await call("GET", "/api/player/me")).body.username, "ana");
 
   const channels = await call("GET", "/api/player/channels");
-  assert.equal(channels.body.length, 1);
-  const [ch] = channels.body;
+  assert.deepEqual(channels.body.playlists.map((p) => p.name), ["HLS"]);
+  assert.equal(channels.body.channels.length, 3);
+  const ch = channels.body.channels.find((c) => c.kind === "live");
+  assert.equal(ch.epg_id, "hls.br");
+  assert.deepEqual(channels.body.channels.map((c) => c.kind).sort(), ["live", "movie", "series"]);
+
+  const epg = await call("GET", "/api/player/epg?ids=hls.br,outro");
+  assert.equal(epg.body["hls.br"][0].title, "Jornal & Cia");
+  assert.equal(epg.body.outro, undefined);
   assert.equal(ch.name, "Canal HLS");
   assert.equal(ch.group, "Ao vivo");
   assert.equal(ch.type, "hls");
@@ -139,4 +158,46 @@ test("reprodutor: login do cliente, canais e proxy assinado", async () => {
 
   cookie = "";
   assert.equal((await call("GET", ch.src)).status, 401);
+});
+
+test("controle parental e ativacao por codigo do aparelho", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const client = await call("POST", "/api/clients", { username: "bia", password: "pw" });
+  const adminCookie = cookie;
+
+  // Aparelho novo: registra codigo e ainda nao esta vinculado
+  cookie = "";
+  const device = { device_id: "aa:bb:cc:00:11:22", device_key: "123456" };
+  assert.equal((await call("POST", "/api/player/device/register", device)).body.linked, false);
+  assert.equal((await call("POST", "/api/player/device/register", { ...device, device_key: "999999" })).status, 409);
+  assert.equal((await call("GET", "/api/player/device/status?device_id=AA:BB:CC:00:11:22&device_key=123456")).body.linked, false);
+
+  // Revendedor ve o pendente e vincula ao cliente
+  cookie = adminCookie;
+  const pending = await call("GET", "/api/devices/pending");
+  assert.equal(pending.body[0].device_id, "AA:BB:CC:00:11:22");
+  await call("POST", "/api/devices", { client_id: client.body.id, mac: device.device_id, device_key: device.device_key });
+  assert.equal((await call("GET", "/api/devices/pending")).body.length, 0);
+
+  // Aparelho consulta de novo e ja entra logado
+  cookie = "";
+  const status = await call("GET", "/api/player/device/status?device_id=AA:BB:CC:00:11:22&device_key=123456");
+  assert.equal(status.body.linked, true);
+  assert.equal((await call("GET", "/api/player/me")).body.username, "bia");
+
+  // PIN padrao 0000, troca e grupos bloqueados
+  assert.equal((await call("POST", "/api/player/pin/verify", { pin: "1111" })).status, 403);
+  assert.equal((await call("POST", "/api/player/pin/verify", { pin: "0000" })).status, 200);
+  assert.equal((await call("POST", "/api/player/pin", { current: "0000", pin: "12" })).status, 400);
+  assert.equal((await call("POST", "/api/player/pin", { current: "0000", pin: "4321" })).status, 200);
+  assert.equal((await call("POST", "/api/player/locked-groups", { pin: "0000", groups: ["Adultos"] })).status, 403);
+  await call("POST", "/api/player/locked-groups", { pin: "4321", groups: ["Adultos", "Adultos"] });
+  assert.deepEqual((await call("GET", "/api/player/settings")).body, { custom_pin: true, locked_groups: ["Adultos"] });
+
+  // Revendedor reseta o PIN
+  cookie = adminCookie;
+  const reset = await call("PUT", `/api/clients/${client.body.id}`, { reset_pin: true });
+  assert.equal(reset.body.custom_pin, false);
+  assert.equal(reset.body.parental_pin_hash, undefined);
 });

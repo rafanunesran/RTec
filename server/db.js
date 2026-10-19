@@ -65,7 +65,25 @@ CREATE TABLE IF NOT EXISTS devices (
   last_seen_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Aparelhos que abriram o reprodutor e aguardam o revendedor vincular a um cliente
+CREATE TABLE IF NOT EXISTS pending_devices (
+  device_id TEXT PRIMARY KEY,
+  device_key TEXT NOT NULL,
+  user_agent TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
+
+// Migracoes simples: adiciona colunas novas em bancos ja existentes.
+function addColumn(table, column, definition) {
+  const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+  if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+// Controle parental: PIN (hash) e grupos bloqueados escolhidos pelo cliente.
+addColumn("clients", "parental_pin_hash", "TEXT NOT NULL DEFAULT ''");
+addColumn("clients", "locked_groups", "TEXT NOT NULL DEFAULT '[]'");
 
 export function seedAdmin() {
   const count = db.prepare("SELECT COUNT(*) AS n FROM admins").get().n;

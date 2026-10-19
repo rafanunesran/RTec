@@ -15,6 +15,7 @@ export type Client = {
   created_at: string;
   playlist_ids: number[];
   device_count: number;
+  custom_pin: boolean;
   links: Links;
 };
 
@@ -72,10 +73,21 @@ export type Channel = {
   logo: string;
   src: string;
   type: "hls" | "mpegts" | "file";
+  kind: "live" | "movie" | "series";
+  epg_id: string;
+  playlist_id: number;
   alt: string;
 };
 
-export type ClientProfile = { name: string; username: string; expires_at: string | null };
+export type ChannelsResponse = { playlists: { id: number; name: string }[]; channels: Channel[] };
+
+export type Programme = { start: string; stop: string; title: string; desc: string };
+
+export type PendingDevice = { device_id: string; device_key: string; user_agent: string; created_at: string };
+
+export type PlayerSettings = { custom_pin: boolean; locked_groups: string[] };
+
+export type ClientProfile = { name: string; username: string; expires_at: string | null; max_devices: number };
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {

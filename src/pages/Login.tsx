@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { Loader2, Lock, User } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
@@ -9,18 +9,19 @@ import Logo from "@/components/Logo";
 export default function Login() {
   const { admin, login } = useAuth();
   const navigate = useNavigate();
+  const from = (useLocation().state as { from?: string } | null)?.from || "/admin";
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
 
-  if (admin) return <Navigate to="/admin" replace />;
+  if (admin) return <Navigate to={from} replace />;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     try {
       await login(username, password);
-      navigate("/admin");
+      navigate(from, { replace: true });
     } catch (err) {
       toast.error((err as Error).message);
     } finally {

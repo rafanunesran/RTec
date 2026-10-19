@@ -128,6 +128,13 @@ export default function Clients() {
     load();
   };
 
+  const resetPin = async (c: Client) => {
+    const updated = await api.put<Client>(`/api/clients/${c.id}`, { reset_pin: true });
+    setEditing(updated);
+    toast.success("PIN voltou para 0000");
+    load();
+  };
+
   const togglePlaylist = (id: number) =>
     setForm((f) => ({
       ...f,
@@ -264,6 +271,18 @@ export default function Clients() {
               </div>
             )}
           </Field>
+
+          {editing?.custom_pin && (
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div>
+                <div className="text-sm font-medium">PIN parental personalizado</div>
+                <div className="text-xs text-muted-foreground">Se o cliente esqueceu, volte para o padrao 0000</div>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={() => resetPin(editing)}>
+                Resetar PIN
+              </Button>
+            </div>
+          )}
 
           <Field label="Observacoes">
             <Textarea className="font-sans" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />

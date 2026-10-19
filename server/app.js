@@ -7,7 +7,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { db } from "./db.js";
-import { buildMergedM3u, countChannels, loadPlaylistText, parseEntries, sourceUrl } from "./m3u.js";
+import { buildMergedM3u, countChannels, headerEpgUrls, loadPlaylistText, parseEntries, sourceUrl } from "./m3u.js";
+import { nowNext } from "./epg.js";
 
 function loadSecret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
@@ -86,7 +87,7 @@ function rewriteHls(text, baseUrl, clientId) {
 }
 
 function clientProfile(c) {
-  return { name: c.name, username: c.username, expires_at: c.expires_at };
+  return { name: c.name, username: c.username, expires_at: c.expires_at, max_devices: c.max_devices };
 }
 
 function requireClient(req, _res, next) {
@@ -119,7 +120,8 @@ function touchClient(id) {
 function serializeClient(c) {
   const playlistIds = db.prepare("SELECT playlist_id FROM client_playlists WHERE client_id = ?").all(c.id).map((r) => r.playlist_id);
   const deviceCount = db.prepare("SELECT COUNT(*) AS n FROM devices WHERE client_id = ?").get(c.id).n;
-  return { ...c, active: !!c.active, playlist_ids: playlistIds, device_count: deviceCount, valid: isClientValid(c) };
+  const { parental_pin_hash, locked_groups: _locked, ...rest } = c;
+  return { ...rest, active: !!c.active, playlist_ids: playlistIds, device_count: deviceCount, valid: isClientValid(c), custom_pin: !!parental_pin_hash };
 }
 
 function setClientPlaylists(clientId, ids) {
@@ -274,6 +276,8 @@ export function createApp() {
         .run(c.name, c.username, c.password, c.active, c.max_devices, c.expires_at, c.notes, existing.id),
     );
     setClientPlaylists(existing.id, req.body.playlist_ids);
+    // O revendedor pode voltar o PIN parental para o padrao (0000) quando o cliente esquecer.
+    if (req.body.reset_pin) db.prepare("UPDATE clients SET parental_pin_hash = '' WHERE id = ?").run(existing.id);
     const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(existing.id);
     res.json({ ...serializeClient(row), links: clientLinks(req, row) });
   });
@@ -393,11 +397,21 @@ export function createApp() {
     };
   }
 
+  app.get("/api/devices/pending", requireAdmin, (_req, res) => {
+    res.json(db.prepare("SELECT * FROM pending_devices ORDER BY created_at DESC").all());
+  });
+
+  app.delete("/api/devices/pending/:id", requireAdmin, (req, res) => {
+    db.prepare("DELETE FROM pending_devices WHERE device_id = ?").run(normalizeMac(req.params.id));
+    res.json({ ok: true });
+  });
+
   app.post("/api/devices", requireAdmin, (req, res) => {
     const d = readDeviceBody(req.body || {});
     const { lastInsertRowid } = uniqueGuard(() =>
       db.prepare("INSERT INTO devices (client_id, mac, device_key, label) VALUES (?, ?, ?, ?)").run(d.client_id, d.mac, d.device_key, d.label),
     );
+    db.prepare("DELETE FROM pending_devices WHERE device_id = ?").run(d.mac);
     res.status(201).json(db.prepare("SELECT * FROM devices WHERE id = ?").get(lastInsertRowid));
   });
 
@@ -442,6 +456,7 @@ export function createApp() {
       const c = req.client;
       touchClient(c.id);
       const channels = [];
+      const playlists = [];
       for (const p of clientPlaylists(c.id)) {
         let text;
         try {
@@ -449,24 +464,113 @@ export function createApp() {
         } catch {
           continue;
         }
+        playlists.push({ id: p.id, name: p.name });
         for (const e of parseEntries(text, Infinity)) {
           if (!/^https?:\/\//i.test(e.url)) continue;
           channels.push({
-            id: crypto.createHash("sha1").update(e.url).digest("hex").slice(0, 12),
+            id: crypto.createHash("sha1").update(`${p.id}|${e.url}`).digest("hex").slice(0, 12),
             name: e.name,
             group: e.group || p.name,
             logo: /^https?:\/\//i.test(e.logo) ? proxyUrl(c.id, e.logo) : "",
             src: proxyUrl(c.id, e.url),
             type: streamType(e.url),
+            kind: e.kind,
+            epg_id: e.tvg_id,
+            playlist_id: p.id,
             // Servidores Xtream entregam o mesmo canal em HLS; usado quando o aparelho nao toca MPEG-TS (ex: iPhone).
             alt: /\/live\/.+\.ts$/i.test(e.url.split("?")[0]) ? proxyUrl(c.id, e.url.replace(/\.ts(\?|$)/i, ".m3u8$1")) : "",
           });
         }
       }
       res.setHeader("Cache-Control", "no-store");
-      res.json(channels);
+      res.json({ playlists, channels });
     }),
   );
+
+  // Guia de programacao: agora / a seguir para os canais pedidos (ids tvg-id separados por virgula).
+  app.get(
+    "/api/player/epg",
+    requireClient,
+    wrap(async (req, res) => {
+      const ids = String(req.query.ids || "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 300);
+      const urls = new Set();
+      for (const p of clientPlaylists(req.client.id)) {
+        if (p.epg_url) urls.add(p.epg_url);
+        try {
+          headerEpgUrls(await loadPlaylistText(p)).forEach((u) => urls.add(u));
+        } catch {
+          /* lista fora do ar: segue sem o EPG dela */
+        }
+      }
+      res.json(ids.length && urls.size ? await nowNext([...urls], ids) : {});
+    }),
+  );
+
+  // ---------- Controle parental (PIN) ----------
+  const DEFAULT_PIN = "0000";
+  const checkPin = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pin || ""), c.parental_pin_hash) : String(pin || "") === DEFAULT_PIN);
+
+  app.get("/api/player/settings", requireClient, (req, res) => {
+    res.json({ custom_pin: !!req.client.parental_pin_hash, locked_groups: JSON.parse(req.client.locked_groups || "[]") });
+  });
+
+  app.post("/api/player/pin/verify", requireClient, (req, res) => {
+    if (!checkPin(req.client, req.body?.pin)) throw new HttpError(403, "PIN incorreto");
+    res.json({ ok: true });
+  });
+
+  app.post("/api/player/pin", requireClient, (req, res) => {
+    const { current, pin } = req.body || {};
+    if (!checkPin(req.client, current)) throw new HttpError(403, "PIN atual incorreto");
+    if (!/^\d{4,8}$/.test(String(pin || ""))) throw new HttpError(400, "O PIN deve ter de 4 a 8 numeros");
+    db.prepare("UPDATE clients SET parental_pin_hash = ? WHERE id = ?").run(bcrypt.hashSync(String(pin), 10), req.client.id);
+    res.json({ ok: true });
+  });
+
+  app.post("/api/player/locked-groups", requireClient, (req, res) => {
+    const { pin, groups } = req.body || {};
+    if (!checkPin(req.client, pin)) throw new HttpError(403, "PIN incorreto");
+    if (!Array.isArray(groups)) throw new HttpError(400, "Lista de grupos invalida");
+    const clean = [...new Set(groups.map((g) => String(g).slice(0, 200)))].slice(0, 500);
+    db.prepare("UPDATE clients SET locked_groups = ? WHERE id = ?").run(JSON.stringify(clean), req.client.id);
+    res.json({ locked_groups: clean });
+  });
+
+  // ---------- Ativacao por codigo do aparelho (Device ID + Device Key, com QR code) ----------
+  // O reprodutor gera ID e chave, registra aqui e fica consultando ate o revendedor vincular a um cliente.
+  app.post("/api/player/device/register", (req, res) => {
+    const id = normalizeMac(req.body?.device_id);
+    const key = String(req.body?.device_key || "");
+    if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(id) || !/^\d{6}$/.test(key)) throw new HttpError(400, "Codigo do aparelho invalido");
+    const linked = db.prepare("SELECT device_key FROM devices WHERE mac = ?").get(id);
+    if (linked && linked.device_key !== key) throw new HttpError(409, "Este ID ja pertence a outro aparelho");
+    if (!linked) {
+      db.prepare("DELETE FROM pending_devices WHERE created_at < datetime('now', '-7 days')").run();
+      const pending = db.prepare("SELECT device_key FROM pending_devices WHERE device_id = ?").get(id);
+      if (pending && pending.device_key !== key) throw new HttpError(409, "Este ID ja pertence a outro aparelho");
+      if (!pending) {
+        db.prepare("INSERT INTO pending_devices (device_id, device_key, user_agent) VALUES (?, ?, ?)").run(
+          id,
+          key,
+          String(req.get("user-agent") || "").slice(0, 300),
+        );
+      }
+    }
+    res.json({ device_id: id, linked: !!linked });
+  });
+
+  app.get("/api/player/device/status", (req, res) => {
+    const id = normalizeMac(req.query.device_id);
+    const d = db.prepare("SELECT * FROM devices WHERE mac = ?").get(id);
+    if (!d || d.device_key !== String(req.query.device_key || "")) return res.json({ linked: false });
+    const c = db.prepare("SELECT * FROM clients WHERE id = ?").get(d.client_id);
+    if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor.");
+    db.prepare("UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?").run(d.id);
+    touchClient(c.id);
+    const token = jwt.sign({ cid: c.id, pw: passwordFingerprint(c) }, JWT_SECRET, { expiresIn: "30d" });
+    res.cookie(CLIENT_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 30 * 24 * 3600 * 1000 });
+    res.json({ linked: true, profile: clientProfile(c) });
+  });
 
   // Repassa streams e logos pelo servidor: evita bloqueio de CORS e de conteudo http em site https.
   // So aceita URLs assinadas pelo proprio servidor para o cliente logado (nao e um proxy aberto).
