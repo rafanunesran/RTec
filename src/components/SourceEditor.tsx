@@ -99,7 +99,7 @@ export default function SourceEditor({ value, onChange }: { value: Source; onCha
           {(
             [
               ["auto", "Automatico (recomendado)", "Links https tocam direto; links http passam pelo servidor."],
-              ["direct", "Sempre direto", "Nao gasta banda do servidor. So funciona com https e CORS liberado."],
+              ["direct", "Direto (so https)", "Links https tocam direto da fonte. Links http sempre passam pelo servidor."],
               ["proxy", "Sempre pelo servidor", "Toca tudo, mas todo o video consome a banda da Vercel."],
             ] as const
           ).map(([mode, label, desc]) => (

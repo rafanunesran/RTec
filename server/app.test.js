@@ -229,26 +229,26 @@ test("controle parental (PIN)", async () => {
   assert.equal(reset.body.parental_pin_hash, undefined);
 });
 
-test("modo direto: canais apontam para a fonte, preferindo HLS no Xtream", async () => {
+test("modo direto: so links https tocam direto; http sempre passa pelo servidor", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
-  const port = source.address().port;
   const p = await call("POST", "/api/playlists", {
     name: "Direta",
     kind: "manual",
     playback: "direct",
-    content: `#EXTM3U\n#EXTINF:-1,Xtream TS\nhttp://127.0.0.1:${port}/live/u/p/7.ts\n`,
+    content: "#EXTM3U\n#EXTINF:-1,Xtream TS\nhttps://cdn.example/live/u/p/7.ts\n#EXTINF:-1,Canal http\nhttp://cdn.example/canal.m3u8\n",
   });
   assert.equal(p.body.playback, "direct");
   assert.equal((await call("POST", "/api/playlists", { name: "X", kind: "manual", playback: "outro", content: "#EXTINF:-1,a\nhttp://a" })).status, 400);
   await call("POST", "/api/clients", { username: "dani", password: "pw", playlist_ids: [p.body.id] });
   cookie = "";
   await call("POST", "/api/player/login", { username: "dani", password: "pw" });
-  const [ch] = (await call("GET", "/api/player/channels")).body.channels;
-  assert.equal(ch.src, `http://127.0.0.1:${port}/live/u/p/7.m3u8`);
-  assert.equal(ch.type, "hls");
-  assert.equal(ch.alt, `http://127.0.0.1:${port}/live/u/p/7.ts`);
-  assert.equal(ch.alt_type, "mpegts");
+  const [xt, plain] = (await call("GET", "/api/player/channels")).body.channels;
+  assert.equal(xt.src, "https://cdn.example/live/u/p/7.m3u8", "Xtream https direto prefere HLS");
+  assert.equal(xt.type, "hls");
+  assert.equal(xt.alt, "https://cdn.example/live/u/p/7.ts");
+  assert.equal(xt.alt_type, "mpegts");
+  assert.match(plain.src, /^\/api\/player\/proxy\?/, "http nunca vai direto, mesmo no modo direto");
 });
 
 test("recuperacao do admin: ADMIN_RESET_PASSWORD redefine a senha uma vez por valor", async () => {
@@ -307,13 +307,13 @@ test("lista propria do cliente: colar no cadastro, testar e assistir", async () 
   // Trocar para lista colada
   cookie = adminCookie;
   const updated = await call("PUT", `/api/clients/${client.body.id}`, {
-    source: { kind: "manual", content: "#EXTM3U\n#EXTINF:-1,Colado\nhttp://example.com/c.m3u8", playback: "direct" },
+    source: { kind: "manual", content: "#EXTM3U\n#EXTINF:-1,Colado\nhttps://example.com/c.m3u8", playback: "direct" },
   });
   assert.equal(updated.body.source.url, "");
   cookie = "";
   await call("POST", "/api/player/login", { username: "edu", password: "pw" });
   const after = await call("GET", "/api/player/channels");
-  assert.deepEqual(after.body.channels.map((c) => [c.name, c.src]), [["Colado", "http://example.com/c.m3u8"]]);
+  assert.deepEqual(after.body.channels.map((c) => [c.name, c.src]), [["Colado", "https://example.com/c.m3u8"]]);
 });
 
 test("reprodutor mostra por que a lista nao carregou", async () => {

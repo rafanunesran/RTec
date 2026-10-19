@@ -15,7 +15,7 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
       hls.on(Hls.Events.ERROR, (_e, data) => {
         if (!data.fatal) return;
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else onFail("Canal fora do ar ou indisponivel no momento.");
+        else onFail(`Canal fora do ar ou indisponivel no momento. (${data.details}${data.response?.code ? ` ${data.response.code}` : ""})`);
       });
       hls.loadSource(src);
       hls.attachMedia(video);
@@ -29,7 +29,9 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
     const { default: mpegts } = await import("mpegts.js");
     if (!mpegts.getFeatureList().mseLivePlayback) throw new Unsupported();
     const player = mpegts.createPlayer({ type: "mpegts", isLive: true, url: src }, { enableStashBuffer: false, liveBufferLatencyChasing: true });
-    player.on(mpegts.Events.ERROR, () => onFail("Canal fora do ar ou formato nao suportado neste aparelho."));
+    player.on(mpegts.Events.ERROR, (type: string, detail: string, info?: { code?: number; msg?: string }) =>
+      onFail(`Canal fora do ar ou formato nao suportado neste aparelho. (${detail || type}${info?.code ? ` ${info.code}` : ""})`),
+    );
     player.attachMediaElement(video);
     player.load();
     return () => {

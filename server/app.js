@@ -21,9 +21,9 @@ const DEFAULT_PLAYBACK = process.env.DEFAULT_PLAYBACK || "auto";
 const PLAYBACK_MODES = ["auto", "direct", "proxy"];
 
 function viaProxy(mode, url) {
-  if (mode === "proxy") return true;
-  if (mode === "direct") return false;
-  return !/^https:/i.test(url);
+  // Link http nunca toca direto: o navegador bloqueia http dentro de um site https.
+  if (!/^https:/i.test(url)) return true;
+  return mode === "proxy";
 }
 
 let JWT_SECRET = process.env.JWT_SECRET || "";
@@ -830,10 +830,12 @@ export function createApp() {
       let upstream;
       try {
         upstream = await fetch(url, { headers, signal: controller.signal, redirect: "follow" });
-      } catch {
+      } catch (err) {
+        if (!controller.signal.aborted) console.warn(`[rtec] Proxy: falha ao conectar em ${new URL(url).host}: ${err.cause?.code || err.message}`);
         if (!res.headersSent && !controller.signal.aborted) res.status(502).json({ error: "Falha ao conectar na fonte" });
         return;
       }
+      if (!upstream.ok) console.warn(`[rtec] Proxy: fornecedor respondeu HTTP ${upstream.status} para ${new URL(url).host} (cliente ${req.client.username})`);
       const type = upstream.headers.get("content-type") || "";
       if (/mpegurl/i.test(type) || /\.m3u8$/i.test(new URL(upstream.url).pathname)) {
         const text = await upstream.text();
