@@ -74,7 +74,7 @@ Os clientes baixam em `https://SEU-SITE/download/rtec-tv.apk` (o reprodutor most
 2. Em **Networking > Virtual Cloud Network > Security List**, adicione regras de entrada TCP para as portas **80** e **443** (origem `0.0.0.0/0`).
 3. Escolha um segredo (ex: gere em https://www.random.org/strings) e, no terminal da instancia, rode:
    ```bash
-   curl -fsSL https://SEU-SITE.vercel.app/proxy/install.sh | sudo bash -s -- https://SEU-SITE.vercel.app SEU_SEGREDO
+   curl -fsSL https://raw.githubusercontent.com/rafanunesran/RTec/main/public/proxy/install.sh | sudo bash -s -- SEU_SEGREDO
    ```
 4. O instalador mostra um endereco `https://IP.sslip.io`. Na Vercel, adicione `STREAM_PROXY_URL` (esse endereco) e `PROXY_SECRET` (o mesmo segredo) e faca **Redeploy**.
 

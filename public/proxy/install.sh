@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Instala o servidor de video do RTec numa VPS Ubuntu (ex: Oracle Cloud "Always Free").
 # Uso (no terminal da VPS):
-#   curl -fsSL https://SEU-SITE.vercel.app/proxy/install.sh | sudo bash -s -- https://SEU-SITE.vercel.app SEU_PROXY_SECRET
+#   curl -fsSL https://raw.githubusercontent.com/rafanunesran/RTec/main/public/proxy/install.sh | sudo bash -s -- SEU_PROXY_SECRET
 # Ao final, mostra o endereco https para colocar em STREAM_PROXY_URL na Vercel.
 set -euo pipefail
 
-SITE="${1:?Informe o endereco do site, ex: https://rtec.vercel.app}"
-SECRET="${2:?Informe o PROXY_SECRET (o mesmo que vai na Vercel)}"
-SITE="${SITE%/}"
+SECRET="${1:?Informe o PROXY_SECRET (o mesmo que vai na Vercel)}"
+# De onde baixar o server.mjs (padrao: o repositorio no GitHub; pode ser o proprio site: https://SEU-SITE/proxy)
+SRC="${2:-https://raw.githubusercontent.com/rafanunesran/RTec/main/public/proxy}"
+SRC="${SRC%/}"
 [ "$(id -u)" = 0 ] || { echo "Rode com sudo"; exit 1; }
 
 echo "==> Descobrindo o IP publico"
@@ -31,7 +32,7 @@ fi
 
 echo "==> Baixando o servidor de video"
 mkdir -p /opt/rtec-proxy
-curl -fsSL "$SITE/proxy/server.mjs" -o /opt/rtec-proxy/server.mjs
+curl -fsSL "$SRC/server.mjs" -o /opt/rtec-proxy/server.mjs
 cat > /etc/rtec-proxy.env <<ENV
 PROXY_SECRET=$SECRET
 PORT=8080
