@@ -384,6 +384,10 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
   const movies = (await call("GET", "/api/player/xtream/items?section=movie&category=20")).body;
   assert.equal(movies[0].logo, "https://img.example/f.jpg", "logo https vai direto");
   assert.equal((await call("GET", "/api/player/xtream/items?section=movie")).status, 400);
+  const allMovies = (await call("GET", "/api/player/xtream/items?section=movie&limit=10&q=teste")).body;
+  assert.equal(allMovies.total, 1, "Todos: catalogo inteiro em paginas, com busca");
+  assert.equal(allMovies.items[0].name, "Filme Teste");
+  assert.equal((await call("GET", "/api/player/xtream/items?section=movie&limit=10&skip=20")).body.total, 0, "pula categorias bloqueadas");
 
   // Filme pelo proxy: entregue em pedacos de 1 MB
   const first = await fetch(base + movies[0].src, { headers: { cookie, range: "bytes=0-" } });

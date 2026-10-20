@@ -733,11 +733,20 @@ export function createApp() {
       const section = String(req.query.section || "");
       if (!["live", "movie", "series"].includes(section)) throw new HttpError(400, "Secao invalida");
       const category = String(req.query.category || "");
-      if (!category && section !== "live") throw new HttpError(400, "Escolha uma categoria");
+      // Filmes e series sem categoria ("Todos"): o catalogo inteiro e grande demais para uma resposta,
+      // entao vai em paginas (limit/offset), com busca (q) e sem as categorias bloqueadas (skip).
+      const limit = Math.min(500, Math.max(0, Number(req.query.limit) || 0));
+      if (!category && section !== "live" && !limit) throw new HttpError(400, "Escolha uma categoria");
       const [cats, list] = await Promise.all([xtream.categories(creds, section), xtream.items(creds, section, category)]);
       const names = new Map(cats.map((x) => [x.id, x.name]));
+      const toChannel = (it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "", isApp(req));
       res.setHeader("Cache-Control", "no-store");
-      res.json(list.map((it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "", isApp(req))));
+      if (!limit) return res.json(list.map(toChannel));
+      const skip = new Set(String(req.query.skip || "").split(",").filter(Boolean));
+      const q = String(req.query.q || "").trim().toLowerCase();
+      const found = list.filter((it) => !skip.has(it.category_id) && (!q || it.name.toLowerCase().includes(q)));
+      const offset = Math.max(0, Number(req.query.offset) || 0);
+      res.json({ total: found.length, items: found.slice(offset, offset + limit).map(toChannel) });
     }),
   );
 

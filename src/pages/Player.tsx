@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, Clapperboard, Download, Film, Heart, KeyRound, Loader2, Lock, Play, Radio, Search, Settings, Share, SquarePlus, Tv } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, Clapperboard, Download, Film, Heart, History, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, Search, Settings, Share, SquarePlus, Tv, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
@@ -11,7 +11,9 @@ import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
 
 const FAVORITES = "__favoritos__";
+const HISTORY = "__historico__";
 const PAGE = 200;
+const HISTORY_MAX = 60;
 const ADULT = /(adult|xxx|\+18|18\+|adulto|er[oó]tic|hot\b|sexy|porn)/i;
 
 type Section = Channel["kind"];
@@ -164,6 +166,7 @@ function InstallButton({ compact }: { compact?: boolean }) {
 }
 
 type Group = { key: string; name: string };
+type XtPage = { key: string; items: Channel[]; total: number; loading: boolean; error: string };
 type Episode = Channel & { season: number; episode: number };
 type OpenSeries = { name: string; episodes: Episode[] | null };
 
@@ -180,6 +183,9 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [limit, setLimit] = useState(PAGE);
   const [series, setSeries] = useState<OpenSeries | null>(null);
   const [favorites, setFavorites] = useState<Channel[]>(() => load("rtec:favs", []));
+  const [history, setHistory] = useState<Channel[]>(() => load("rtec:history", []));
+  const [xtPage, setXtPage] = useState<XtPage | null>(null); // Xtream: "Todos" de filmes/series, em paginas
+  const [searchTerm, setSearchTerm] = useState("");
   const [unlocked, setUnlocked] = useState(false);
   const [pinFor, setPinFor] = useState<null | (() => void)>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -267,18 +273,49 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     return out;
   }, [xt, catalog, channels, playlistId]);
 
-  // No Xtream, filmes e series sempre abrem numa categoria (o catalogo inteiro e grande demais).
-  const needsCategory = xt && section !== "live";
+  // Ao trocar de secao ou de lista, volta para "Todos".
   useEffect(() => {
     setSeries(null);
-    setGroup(needsCategory ? (groups.find((g) => !isLocked(g.name))?.key ?? "") : "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section, playlistId, xt, needsCategory, groups.length]);
+    setGroup("");
+  }, [section, playlistId, xt]);
 
-  // Carrega a categoria do Xtream quando necessario (ao vivo: todos os canais de uma vez).
-  const xtKey = xt && group !== FAVORITES ? `${section}:${section === "live" ? "" : group}` : "";
+  // Busca com atraso, usada no "Todos" do Xtream (a busca roda no servidor).
   useEffect(() => {
-    if (!xtKey || xtItems[xtKey] || (needsCategory && !group)) return;
+    const t = setTimeout(() => setSearchTerm(query.trim()), 400);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const special = group === FAVORITES || group === HISTORY;
+  // Xtream: "Todos" de filmes e series vem do servidor em paginas; o resto, por categoria
+  // (ao vivo: todos os canais de uma vez, filtrados aqui).
+  const pagedAll = xt && section !== "live" && !group;
+  const xtKey = xt && !special && !pagedAll ? `${section}:${section === "live" ? "" : group}` : "";
+  const skipIds = useMemo(() => groups.filter((g) => isLocked(g.name)).map((g) => g.key).join(","), [groups, isLocked]);
+  const pageKey = pagedAll ? `${section}|${searchTerm}|${skipIds}` : "";
+
+  const loadPage = useCallback(
+    (key: string, offset: number) => {
+      const [sec, q, skip] = key.split("|");
+      setXtPage((p) => (offset && p?.key === key ? { ...p, loading: true } : { key, items: [], total: 0, loading: true, error: "" }));
+      const params = new URLSearchParams({ section: sec, limit: String(PAGE), offset: String(offset), q, skip });
+      api
+        .get<{ total: number; items: Channel[] }>(`/api/player/xtream/items?${params}`)
+        .then((res) =>
+          setXtPage((p) => (p?.key === key ? { key, items: offset ? [...p.items, ...res.items] : res.items, total: res.total, loading: false, error: "" } : p)),
+        )
+        .catch((err) => {
+          if (!handleAuthError(err)) setXtPage((p) => (p?.key === key ? { ...p, loading: false, error: (err as Error).message } : p));
+        });
+    },
+    [handleAuthError],
+  );
+
+  useEffect(() => {
+    if (pageKey) loadPage(pageKey, 0);
+  }, [pageKey, loadPage]);
+
+  useEffect(() => {
+    if (!xtKey || xtItems[xtKey]) return;
     setXtItems((m) => ({ ...m, [xtKey]: "loading" }));
     const [sec, cat] = xtKey.split(":");
     api
@@ -287,16 +324,20 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
       .catch((err) => {
         if (!handleAuthError(err)) setXtItems((m) => ({ ...m, [xtKey]: { error: (err as Error).message } }));
       });
-  }, [xtKey, xtItems, needsCategory, group, handleAuthError]);
+  }, [xtKey, xtItems, handleAuthError]);
 
   const xtState = xtKey ? xtItems[xtKey] : undefined;
-  const loading = catalog === null || (!xt && data === null) || xtState === "loading";
-  const loadError = xtState && typeof xtState === "object" && "error" in xtState ? xtState.error : "";
+  const pageState = pagedAll && xtPage?.key === pageKey ? xtPage : null;
+  const loading =
+    catalog === null || (!xt && data === null) || xtState === "loading" || (pagedAll && (!pageState || (pageState.loading && !pageState.items.length)));
+  const loadError = xtState && typeof xtState === "object" && "error" in xtState ? xtState.error : (pageState?.error ?? "");
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     let list: Channel[];
     if (group === FAVORITES) list = favorites.filter((c) => c.kind === section);
+    else if (group === HISTORY) list = history.filter((c) => c.kind === section);
+    else if (pagedAll) return pageState?.items ?? [];
     else if (xt) {
       list = Array.isArray(xtState) ? xtState : [];
       if (section === "live") list = list.filter((c) => (group ? c.group === groups.find((g) => g.key === group)?.name : !isLocked(c.group)));
@@ -306,7 +347,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
       );
     }
     return q ? list.filter((c) => c.name.toLowerCase().includes(q)) : list;
-  }, [group, favorites, section, xt, xtState, groups, isLocked, channels, playlistId, query]);
+  }, [group, favorites, history, section, pagedAll, pageState, xt, xtState, groups, isLocked, channels, playlistId, query]);
 
   // Series: no Xtream cada item e uma serie (episodios vem da API); nas listas M3U, agrupa pelo nome.
   const seriesList = useMemo(() => {
@@ -367,6 +408,11 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     withPin(() => {
       setCurrent(c);
       save("rtec:current", c);
+      setHistory((old) => {
+        const next = [c, ...old.filter((h) => h.id !== c.id)].slice(0, HISTORY_MAX);
+        save("rtec:history", next);
+        return next;
+      });
       if (window.innerWidth < 1024) window.scrollTo({ top: 0, behavior: "smooth" });
     }, c.group);
 
@@ -386,7 +432,22 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const upNext = current?.epg_id ? epg[current.epg_id]?.slice(1, 3) : undefined;
   const sourceErrors = xt ? catalog?.errors : data?.errors;
   const empty = xt ? sections.every((s) => !counts[s.key]) : channels.length === 0;
-  const total = section === "series" && !series ? seriesList.length : visible.length;
+  const total = pagedAll ? (pageState?.total ?? 0) : section === "series" && !series ? seriesList.length : visible.length;
+  const cap = pagedAll ? Infinity : limit;
+  const clearHistory = () => {
+    const next = history.filter((h) => h.kind !== section);
+    setHistory(next);
+    save("rtec:history", next);
+  };
+
+  const groupLabel =
+    group === FAVORITES ? "Favoritos" : group === HISTORY ? "Histórico" : group ? (groups.find((g) => g.key === group)?.name ?? group) : "Todos";
+  const menuOptions: MenuOption[] = [
+    { key: "", name: "Todos", icon: <LayoutGrid /> },
+    { key: FAVORITES, name: "Favoritos", icon: <Heart />, count: favorites.filter((c) => c.kind === section).length },
+    { key: HISTORY, name: "Histórico", icon: <History />, count: history.filter((c) => c.kind === section).length },
+    ...groups.map((g) => ({ key: g.key, name: g.name, locked: isLocked(g.name) })),
+  ];
 
   return (
     <div className="flex min-h-[100dvh] flex-col">
@@ -463,25 +524,23 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
             <Input
               className="pl-9"
               aria-label="Buscar"
-              placeholder={section === "live" ? "Buscar canal..." : needsCategory ? "Buscar nesta categoria..." : section === "movie" ? "Buscar filme..." : "Buscar série..."}
+              placeholder={group ? `Buscar em ${groupLabel}...` : section === "live" ? "Buscar canal..." : section === "movie" ? "Buscar filme..." : "Buscar série..."}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-          <div className="scrollbar-none -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 lg:mx-0 lg:px-0">
-            {!needsCategory && (
-              <Chip active={!group} onClick={() => setGroup("")}>
-                Todos
-              </Chip>
+          <div className="flex items-center gap-2">
+            <CategoryMenu
+              label={groupLabel}
+              value={group}
+              options={menuOptions}
+              onSelect={(o) => (o.locked ? withPin(() => setGroup(o.key), o.name) : setGroup(o.key))}
+            />
+            {group === HISTORY && history.some((h) => h.kind === section) && (
+              <Button variant="ghost" size="sm" onClick={clearHistory}>
+                Limpar
+              </Button>
             )}
-            <Chip active={group === FAVORITES} onClick={() => setGroup(FAVORITES)}>
-              <Heart className="h-3 w-3" /> Favoritos
-            </Chip>
-            {groups.map((g) => (
-              <Chip key={g.key} active={group === g.key} onClick={() => withPin(() => setGroup(g.key), g.name)}>
-                {isLocked(g.name) && <Lock className="h-3 w-3 text-warning" />} {g.name}
-              </Chip>
-            ))}
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto lg:pr-1">
@@ -547,12 +606,14 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
             ) : visible.length === 0 ? (
               group === FAVORITES ? (
                 <EmptyState icon={<Heart className="h-6 w-6" />} title="Sem favoritos ainda" text="Toque no coração de um canal para salvá-lo aqui." />
+              ) : group === HISTORY ? (
+                <EmptyState icon={<History className="h-6 w-6" />} title="Histórico vazio" text="O que você assistir aparece aqui, do mais recente para o mais antigo." />
               ) : (
                 <EmptyState icon={<Search className="h-6 w-6" />} title="Nada encontrado" text="Tente outro termo ou outra categoria." />
               )
             ) : section === "live" ? (
               <ul className="space-y-1">
-                {visible.slice(0, limit).map((c) => (
+                {visible.slice(0, cap).map((c) => (
                   <ChannelRow
                     key={c.id}
                     channel={c}
@@ -564,15 +625,21 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                   />
                 ))}
               </ul>
-            ) : section === "movie" || group === FAVORITES ? (
-              <PosterGrid items={visible.slice(0, limit)} activeId={current?.id} onSelect={play} />
+            ) : section === "movie" || special ? (
+              <PosterGrid items={visible.slice(0, cap)} activeId={current?.id} onSelect={play} />
             ) : (
-              <PosterGrid items={seriesList.slice(0, limit).map((s) => ({ ...s, id: s.key }))} onSelect={openSeries} />
+              <PosterGrid items={seriesList.slice(0, cap).map((s) => ({ ...s, id: s.key }))} onSelect={openSeries} />
             )}
-            {!series && total > limit && (
+            {!loading && !series && total > (pagedAll ? visible.length : limit) && (
               <div className="py-3">
-                <Button variant="outline" className="w-full" onClick={() => setLimit((l) => l + PAGE)}>
-                  Mostrar mais ({total - limit})
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  disabled={!!pageState?.loading}
+                  onClick={() => (pagedAll ? loadPage(pageKey, visible.length) : setLimit((l) => l + PAGE))}
+                >
+                  {pageState?.loading && <Loader2 className="animate-spin" />}
+                  Mostrar mais ({total - (pagedAll ? visible.length : limit)})
                 </Button>
               </div>
             )}
@@ -715,16 +782,110 @@ function ChannelLogo({ channel: c }: { channel: Channel }) {
   );
 }
 
-function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+type MenuOption = { key: string; name: string; icon?: ReactNode; count?: number; locked?: boolean };
+
+/** Botao que abre o menu flutuante de categorias (Todos, Favoritos, Historico e as categorias da lista). */
+function CategoryMenu({ label, value, options, onSelect }: { label: string; value: string; options: MenuOption[]; onSelect: (o: MenuOption) => void }) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent | TouchEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) setFilter("");
+  }, [open]);
+
+  const fixed = options.filter((o) => o.icon);
+  const cats = options.filter((o) => !o.icon && o.name.toLowerCase().includes(filter.trim().toLowerCase()));
+  const pick = (o: MenuOption) => {
+    setOpen(false);
+    onSelect(o);
+  };
+
+  const item = (o: MenuOption) => (
+    <li key={o.key || "__todos__"}>
+      <button
+        type="button"
+        role="option"
+        aria-selected={value === o.key}
+        onClick={() => pick(o)}
+        className={cn(
+          "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors",
+          value === o.key ? "bg-primary/15 text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+        )}
+      >
+        {o.icon && <span className={cn("[&_svg]:h-4 [&_svg]:w-4", value === o.key && "text-primary")}>{o.icon}</span>}
+        <span className="min-w-0 flex-1 truncate">{o.name}</span>
+        {o.locked && <Lock className="h-3.5 w-3.5 shrink-0 text-warning" />}
+        {!!o.count && <span className="shrink-0 rounded-full bg-muted px-1.5 text-[11px] tabular-nums">{o.count}</span>}
+        {value === o.key && <Check className="h-4 w-4 shrink-0 text-primary" />}
+      </button>
+    </li>
+  );
+
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
-        active ? "border-primary/50 bg-primary/15 text-foreground" : "text-muted-foreground hover:text-foreground",
+    <div ref={ref} className="relative min-w-0 flex-1">
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "flex h-10 w-full items-center gap-2 rounded-lg border bg-card/60 px-3 text-left text-sm transition-colors hover:border-muted-foreground/30",
+          open && "border-primary/60 ring-2 ring-ring/40",
+        )}
+      >
+        <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Categoria</span>
+        <span className="min-w-0 flex-1 truncate font-semibold">{label}</span>
+        <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <>
+          {/* No celular o menu abre como painel de baixo para cima; no computador, logo abaixo do botao. */}
+          <div className="fixed inset-0 z-40 animate-fade-in bg-background/70 backdrop-blur-sm sm:hidden" onClick={() => setOpen(false)} />
+          <div className="fixed inset-x-0 bottom-0 z-50 animate-rise-in overflow-hidden rounded-t-3xl border bg-card pb-[env(safe-area-inset-bottom)] shadow-2xl sm:absolute sm:bottom-auto sm:top-full sm:z-40 sm:mt-2 sm:animate-pop-in sm:rounded-2xl sm:pb-0">
+            <div className="flex items-center justify-between border-b px-4 py-3 sm:hidden">
+              <span className="font-semibold">Categorias</span>
+              <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent" aria-label="Fechar">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <ul role="listbox" aria-label="Categorias" className="max-h-[70dvh] overflow-y-auto p-1.5 sm:max-h-[min(60vh,420px)]">
+              {fixed.map(item)}
+              {options.length > fixed.length && (
+                <>
+                  <li className="my-1.5 border-t" aria-hidden />
+                  {options.length - fixed.length > 8 && (
+                    <li className="relative px-1 pb-1.5">
+                      <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-[calc(50%+3px)] text-muted-foreground" />
+                      <Input className="h-9 pl-9 pr-8" placeholder="Filtrar categorias" aria-label="Filtrar categorias" value={filter} onChange={(e) => setFilter(e.target.value)} />
+                      {filter && (
+                        <button type="button" onClick={() => setFilter("")} className="absolute right-3 top-1/2 -translate-y-[calc(50%+3px)] text-muted-foreground hover:text-foreground" aria-label="Limpar filtro">
+                          <X className="h-4 w-4" />
+                        </button>
+                      )}
+                    </li>
+                  )}
+                  {cats.length ? cats.map(item) : <li className="px-3 py-4 text-center text-sm text-muted-foreground">Nenhuma categoria encontrada</li>}
+                </>
+              )}
+            </ul>
+          </div>
+        </>
       )}
-    >
-      {children}
-    </button>
+    </div>
   );
 }
