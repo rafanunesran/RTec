@@ -74,8 +74,8 @@ systemctl daemon-reload
 systemctl enable --now rtec-proxy
 systemctl restart caddy
 
-echo "==> Ligando o servico que mantem a maquina ativa (a Oracle recolhe maquinas gratis paradas)"
-curl -fsSL "$SRC/keepalive.sh" | bash || echo "    (nao consegui ligar agora; rode depois: curl -fsSL $SRC/keepalive.sh | sudo bash)"
+echo "==> Instalando o vigia de atividade (a Oracle recolhe maquinas gratis paradas)"
+curl -fsSL "$SRC/guard.sh" | RTEC_GUARD_SRC="$SRC/guard.sh" bash -s -- install || echo "    (nao consegui agora; rode depois: curl -fsSL $SRC/guard.sh | sudo bash -s -- install)"
 
 echo "==> Testando"
 sleep 5

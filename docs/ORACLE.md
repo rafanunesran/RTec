@@ -49,12 +49,16 @@ Projeto → **Settings** → **Environment Variables**:
 - `PROXY_SECRET` = o mesmo segredo usado no comando
 Depois **Deployments** → **⋯** → **Redeploy**.
 
-## Manter a maquina ativa
-O instalador ja liga um servico leve (~25% de CPU, prioridade minima) para a Oracle nao recolher a maquina por inatividade.
+## Manter a maquina ativa (vigia)
+A Oracle recolhe maquinas gratis que passam 7 dias com CPU abaixo de 20% (95o percentil, ou seja, ~8,4 h/semana acima de 20% ja basta).
+O instalador liga um **vigia**: anota o uso a cada 10 min e, toda madrugada (02:00 de Brasilia), se nos ultimos 3 dias
+menos de 8% do tempo passou de 20%, roda um teste leve de 3 h (~30% de CPU, prioridade minima).
+
 Em maquinas instaladas antes, rode uma vez dentro da maquina:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rafanunesran/RTec/main/public/proxy/keepalive.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/rafanunesran/RTec/main/public/proxy/guard.sh | sudo bash -s -- install
 ```
+Ver a situacao: `sudo rtec-guard status`
 
 ## Problemas
 - Sem "PRONTO!": confira o passo 2 e rode `sudo systemctl restart caddy`.
