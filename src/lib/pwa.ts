@@ -61,7 +61,7 @@ export function useApkAvailable() {
   useEffect(() => {
     if (isNativeApp()) return;
     fetch(APK_URL, { method: "HEAD" })
-      .then((r) => setOk(r.ok && !/text\/html/i.test(r.headers.get("content-type") || "")))
+      .then((r) => setOk(r.ok && Number(r.headers.get("content-length") || 0) > 500_000))
       .catch(() => {});
   }, []);
   return ok;
