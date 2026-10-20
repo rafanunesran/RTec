@@ -11,7 +11,9 @@ NAME="rtec-video"
 KEY="$HOME/.ssh/rtec"
 
 echo "==> Preparando"
+mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
 [ -f "$KEY" ] || ssh-keygen -t ed25519 -N "" -f "$KEY" -C rtec >/dev/null
+[ -f "$KEY.pub" ] || { echo "Nao consegui criar a chave de acesso em $KEY"; exit 1; }
 AD="$(oci iam availability-domain list --compartment-id "$C" --query 'data[0].name' --raw-output)"
 SUBNET="$(oci network subnet list --compartment-id "$C" --all --query "data[?contains(\"display-name\", 'public')].id | [0]" --raw-output)"
 if [ -z "$SUBNET" ] || [ "$SUBNET" = "null" ]; then
@@ -44,7 +46,13 @@ while true; do
       ID="$(launch VM.Standard.E2.1.Micro "$IMG_E2")"
     fi
     if [ -n "$ID" ] && [ "$ID" != "null" ]; then
-      IP="$(oci compute instance list-vnics --instance-id "$ID" --query 'data[0]."public-ip"' --raw-output)"
+      # O IP publico aparece alguns segundos depois da maquina ligar.
+      IP=""
+      for _ in $(seq 1 30); do
+        IP="$(oci compute instance list-vnics --instance-id "$ID" --query 'data[0]."public-ip"' --raw-output 2>/dev/null)"
+        [ -n "$IP" ] && [ "$IP" != "null" ] && break
+        sleep 5
+      done
       echo
       echo "MAQUINA CRIADA! ($shape)  IP publico: $IP"
       echo "Para entrar nela, rode aqui mesmo no Cloud Shell:"
