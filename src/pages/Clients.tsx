@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Copy, Dices, KeyRound, Pencil, Plus, Search, Trash2, Users } from "lucide-react";
+import { Copy, Dices, KeyRound, Pencil, Plus, Search, Trash2, Users, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Client, type Playlist } from "@/lib/api";
 import { copy, formatDate } from "@/lib/utils";
@@ -27,6 +27,16 @@ const emptyForm = (): Form => ({
   expires_at: addDays(30),
   notes: "",
   playlist_ids: [],
+});
+
+type QuickForm = { url: string; name: string; username: string; password: string; expires_at: string };
+
+const emptyQuick = (): QuickForm => ({
+  url: "",
+  name: "",
+  username: `cliente${Math.floor(1000 + Math.random() * 9000)}`,
+  password: randomPass(),
+  expires_at: addDays(30),
 });
 
 function randomPass() {
@@ -61,6 +71,8 @@ export default function Clients() {
   const [form, setForm] = useState<Form>(emptyForm);
   const [linksFor, setLinksFor] = useState<Client | null>(null);
   const [busy, setBusy] = useState(false);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quick, setQuick] = useState<QuickForm>(emptyQuick);
 
   const load = () => api.get<Client[]>("/api/clients").then(setClients);
 
@@ -114,6 +126,45 @@ export default function Clients() {
     }
   };
 
+  const openQuick = () => {
+    setQuick(emptyQuick());
+    setQuickOpen(true);
+  };
+
+  // Adicao rapida: cria a lista com o link M3U do cliente e ja libera para o login novo.
+  const saveQuick = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    let playlist: Playlist | null = null;
+    try {
+      playlist = await api.post<Playlist>("/api/playlists", {
+        name: quick.name || quick.username,
+        kind: "m3u_url",
+        url: quick.url.trim(),
+      });
+      const saved = await api.post<Client>("/api/clients", {
+        name: quick.name,
+        username: quick.username,
+        password: quick.password,
+        active: true,
+        max_devices: 1,
+        expires_at: quick.expires_at ? new Date(quick.expires_at).toISOString() : null,
+        notes: "",
+        playlist_ids: [playlist.id],
+      });
+      toast.success("Cliente criado");
+      setQuickOpen(false);
+      await load();
+      api.get<Playlist[]>("/api/playlists").then(setPlaylists);
+      setLinksFor(saved);
+    } catch (err) {
+      if (playlist) await api.del(`/api/playlists/${playlist.id}`).catch(() => {});
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const remove = async (c: Client) => {
     if (!confirm(`Excluir o cliente "${c.username}"? Os dispositivos dele tambem serao removidos.`)) return;
     await api.del(`/api/clients/${c.id}`);
@@ -140,9 +191,14 @@ export default function Clients() {
         title="Clientes"
         description="Crie logins e senhas e defina quais listas cada cliente recebe"
         action={
-          <Button variant="gradient" onClick={openNew}>
-            <Plus /> Novo cliente
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={openNew}>
+              <Plus /> Novo cliente
+            </Button>
+            <Button variant="gradient" onClick={openQuick}>
+              <Zap /> Adicao rapida
+            </Button>
+          </div>
         }
       />
 
@@ -157,10 +213,10 @@ export default function Clients() {
         <EmptyState
           icon={<Users className="h-6 w-6" />}
           title="Nenhum cliente ainda"
-          text="Crie o primeiro login e senha para disponibilizar suas listas M3U."
+          text="Cole o link M3U do cliente para criar o login dele."
           action={
-            <Button variant="gradient" onClick={openNew}>
-              <Plus /> Criar cliente
+            <Button variant="gradient" onClick={openQuick}>
+              <Zap /> Adicao rapida
             </Button>
           }
         />
@@ -287,6 +343,48 @@ export default function Clients() {
             </Button>
             <Button variant="gradient" disabled={busy}>
               Salvar
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+
+      <Dialog open={quickOpen} onClose={() => setQuickOpen(false)} title="Adicao rapida" description="Cole o link M3U do cliente. A lista e o login sao criados juntos." wide>
+        <form onSubmit={saveQuick} className="space-y-5">
+          <Field label="Link M3U do cliente">
+            <Input autoFocus type="url" value={quick.url} onChange={(e) => setQuick({ ...quick, url: e.target.value })} placeholder="http://servidor/get.php?username=...&password=...&type=m3u_plus" required />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Nome (opcional)">
+              <Input value={quick.name} onChange={(e) => setQuick({ ...quick, name: e.target.value })} placeholder="Joao da Silva" />
+            </Field>
+            <Field label="Usuario" hint="Letras, numeros, ponto, _ ou -">
+              <Input value={quick.username} onChange={(e) => setQuick({ ...quick, username: e.target.value })} required />
+            </Field>
+            <Field label="Senha">
+              <div className="flex gap-2">
+                <Input value={quick.password} onChange={(e) => setQuick({ ...quick, password: e.target.value })} className="font-mono" />
+                <Button type="button" variant="outline" size="icon" title="Gerar senha" onClick={() => setQuick({ ...quick, password: randomPass() })}>
+                  <Dices />
+                </Button>
+              </div>
+            </Field>
+            <Field label="Validade">
+              <Input type="datetime-local" value={quick.expires_at} onChange={(e) => setQuick({ ...quick, expires_at: e.target.value })} />
+              <div className="flex flex-wrap gap-1">
+                {[1, 7, 30, 90, 365].map((d) => (
+                  <Button key={d} type="button" size="sm" variant="outline" onClick={() => setQuick({ ...quick, expires_at: addDays(d) })}>
+                    +{d}d
+                  </Button>
+                ))}
+              </div>
+            </Field>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setQuickOpen(false)}>
+              Cancelar
+            </Button>
+            <Button variant="gradient" disabled={busy}>
+              Criar cliente
             </Button>
           </div>
         </form>
