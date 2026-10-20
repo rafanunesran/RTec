@@ -78,7 +78,7 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
         stop = s;
         video.play().catch(() => {});
       } catch (err) {
-        if (err instanceof Unsupported) fail("Este aparelho nao suporta o formato deste canal.");
+        if (err instanceof Unsupported) fail("Este aparelho não suporta o formato deste canal.");
         else fail("Falha ao iniciar o reprodutor.");
       }
     };
@@ -110,11 +110,13 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
   }, [channel]);
 
   return (
-    <div className="relative aspect-video w-full overflow-hidden bg-black sm:rounded-xl">
+    <div className="relative aspect-video w-full overflow-hidden bg-black lg:rounded-2xl lg:ring-1 lg:ring-border">
       <video ref={videoRef} className="h-full w-full" controls playsInline autoPlay />
       {!channel && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted-foreground">
-          <Tv className="h-10 w-10" />
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-glow text-muted-foreground">
+          <div className="grid h-14 w-14 place-items-center rounded-2xl bg-muted ring-1 ring-border">
+            <Tv className="h-6 w-6" />
+          </div>
           <span className="text-sm">Escolha um canal para assistir</span>
         </div>
       )}
@@ -124,8 +126,8 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
         </div>
       )}
       {state === "error" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 p-6 text-center">
-          <AlertTriangle className="h-8 w-8 text-amber-400" />
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/95 p-6 text-center">
+          <AlertTriangle className="h-8 w-8 text-warning" />
           <span className="text-sm text-white/90">{error}</span>
         </div>
       )}

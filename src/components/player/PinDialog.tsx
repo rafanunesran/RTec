@@ -6,7 +6,7 @@ import { Button, Dialog, Input } from "@/components/ui";
 /** Pede o PIN parental e confere no servidor. */
 export default function PinDialog({
   open,
-  title = "Conteudo protegido",
+  title = "Conteúdo protegido",
   onClose,
   onSuccess,
 }: {
@@ -40,22 +40,34 @@ export default function PinDialog({
   };
 
   return (
-    <Dialog open={open} onClose={onClose} title={title} description="Digite o PIN de controle parental (padrao: 0000)">
-      <form onSubmit={submit} className="space-y-4">
-        <div className="relative">
-          <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-          <Input
-            autoFocus
-            type="password"
-            inputMode="numeric"
-            maxLength={8}
-            className="pl-9 text-center font-mono text-lg tracking-[0.5em]"
-            value={pin}
-            onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
-          />
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={title}
+      description="Digite o PIN de controle parental (padrão: 0000)"
+      icon={
+        <div className="grid h-12 w-12 place-items-center rounded-2xl bg-warning/15 text-warning ring-1 ring-warning/30">
+          <Lock className="h-5 w-5" />
         </div>
-        {error && <p className="text-sm text-destructive">{error}</p>}
-        <Button variant="gradient" className="w-full" disabled={busy || pin.length < 4}>
+      }
+    >
+      <form onSubmit={submit} className="space-y-4">
+        <Input
+          autoFocus
+          type="password"
+          inputMode="numeric"
+          aria-label="PIN"
+          placeholder="••••"
+          maxLength={8}
+          className="h-16 text-center font-mono text-3xl tracking-[0.5em]"
+          value={pin}
+          onChange={(e) => {
+            setPin(e.target.value.replace(/\D/g, ""));
+            setError("");
+          }}
+        />
+        {error && <p className="text-center text-sm text-destructive">{error}</p>}
+        <Button variant="gradient" size="lg" className="w-full" disabled={busy || pin.length < 4}>
           Desbloquear
         </Button>
       </form>

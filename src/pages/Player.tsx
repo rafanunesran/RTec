@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowLeft, Clapperboard, Download, Film, Heart, KeyRound, Loader2, Lock, Radio, Search, Settings, Share, SquarePlus, Tv, UserRound } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { ArrowLeft, Clapperboard, Download, Film, Heart, KeyRound, Loader2, Lock, MonitorSmartphone, Play, Radio, Search, Settings, Share, SquarePlus, Tv, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { useInstall } from "@/lib/pwa";
 import { cn, formatDate } from "@/lib/utils";
-import { Button, Card, Dialog, Field, Input, Select } from "@/components/ui";
+import { Button, Dialog, EmptyState, Field, Input, Select, Skeleton } from "@/components/ui";
 import Logo from "@/components/Logo";
 import VideoPlayer from "@/components/VideoPlayer";
 import DeviceActivation from "@/components/player/DeviceActivation";
@@ -20,7 +20,7 @@ type Section = Channel["kind"];
 const sections: { key: Section; label: string; icon: typeof Tv }[] = [
   { key: "live", label: "TV ao vivo", icon: Radio },
   { key: "movie", label: "Filmes", icon: Film },
-  { key: "series", label: "Series", icon: Clapperboard },
+  { key: "series", label: "Séries", icon: Clapperboard },
 ];
 
 function load<T>(key: string, fallback: T): T {
@@ -90,41 +90,43 @@ function PlayerLogin({ onLogin }: { onLogin: (p: ClientProfile) => void }) {
   };
 
   return (
-    <div className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden p-4">
-      <div className="pointer-events-none absolute -left-32 -top-32 h-96 w-96 rounded-full bg-violet-600/30 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-32 -right-32 h-96 w-96 rounded-full bg-pink-600/20 blur-3xl" />
-      <Card className="relative w-full max-w-md p-8">
-        <div className="mb-6 flex justify-center">
-          <Logo subtitle="TV ao vivo, filmes e series" />
+    <div className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden px-4 py-10">
+      <div className="pointer-events-none absolute inset-0 bg-glow" />
+      <div className="relative w-full max-w-md animate-rise-in">
+        <div className="mb-8 flex flex-col items-center text-center">
+          <Logo className="scale-125" />
+          <p className="mt-5 text-sm text-muted-foreground">TV ao vivo, filmes e séries em qualquer tela.</p>
         </div>
-        <div className="mb-6 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
-          <Tab active={mode === "password"} onClick={() => setMode("password")}>
-            <UserRound className="h-4 w-4" /> Usuario e senha
-          </Tab>
-          <Tab active={mode === "device"} onClick={() => setMode("device")}>
-            <KeyRound className="h-4 w-4" /> Codigo do aparelho
-          </Tab>
+        <div className="rounded-3xl border bg-card/80 p-6 shadow-card backdrop-blur-xl sm:p-8">
+          <div role="tablist" className="mb-6 grid grid-cols-2 gap-1 rounded-xl bg-muted p-1">
+            <Tab active={mode === "password"} onClick={() => setMode("password")}>
+              <UserRound className="h-4 w-4" /> Usuário e senha
+            </Tab>
+            <Tab active={mode === "device"} onClick={() => setMode("device")}>
+              <MonitorSmartphone className="h-4 w-4" /> Código do aparelho
+            </Tab>
+          </div>
+          {mode === "password" ? (
+            <form onSubmit={submit} className="space-y-4">
+              <Field label="Usuário">
+                <Input className="h-11" value={username} onChange={(e) => setUsername(e.target.value)} autoCapitalize="none" autoComplete="username" required />
+              </Field>
+              <Field label="Senha">
+                <Input className="h-11" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
+              </Field>
+              <Button variant="gradient" size="lg" className="w-full" disabled={busy}>
+                {busy ? <Loader2 className="animate-spin" /> : <KeyRound />}
+                Entrar
+              </Button>
+            </form>
+          ) : (
+            <DeviceActivation onLinked={onLogin} />
+          )}
         </div>
-        {mode === "password" ? (
-          <form onSubmit={submit} className="space-y-4">
-            <Field label="Usuario">
-              <Input value={username} onChange={(e) => setUsername(e.target.value)} autoCapitalize="none" autoComplete="username" required />
-            </Field>
-            <Field label="Senha">
-              <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
-            </Field>
-            <Button variant="gradient" className="w-full" disabled={busy}>
-              {busy && <Loader2 className="animate-spin" />}
-              Entrar
-            </Button>
-          </form>
-        ) : (
-          <DeviceActivation onLinked={onLogin} />
-        )}
         <div className="mt-6 flex justify-center">
           <InstallButton />
         </div>
-      </Card>
+      </div>
     </div>
   );
 }
@@ -133,10 +135,12 @@ function Tab({ active, onClick, children }: { active: boolean; onClick: () => vo
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
       className={cn(
-        "flex items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-medium transition-colors sm:text-sm",
-        active ? "bg-background text-foreground shadow" : "text-muted-foreground hover:text-foreground",
+        "flex items-center justify-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold transition-all sm:text-sm",
+        active ? "bg-card text-foreground shadow-card ring-1 ring-border" : "text-muted-foreground hover:text-foreground",
       )}
     >
       {children}
@@ -160,14 +164,14 @@ function InstallButton({ compact }: { compact?: boolean }) {
               Abra este site no <b>Safari</b> e toque em <Share className="inline h-4 w-4" /> <b>Compartilhar</b>.
             </>,
             <>
-              Escolha <SquarePlus className="inline h-4 w-4" /> <b>Adicionar a Tela de Inicio</b>.
+              Escolha <SquarePlus className="inline h-4 w-4" /> <b>Adicionar à Tela de Início</b>.
             </>,
             <>
               Toque em <b>Adicionar</b>. O app aparece na tela inicial.
             </>,
           ].map((step, i) => (
             <li key={i} className="flex items-center gap-3">
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/15 font-semibold text-primary">{i + 1}</span>
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand font-bold text-white">{i + 1}</span>
               <span>{step}</span>
             </li>
           ))}
@@ -192,6 +196,17 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [pinFor, setPinFor] = useState<null | (() => void)>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [epg, setEpg] = useState<Record<string, Programme[]>>({});
+  const headerRef = useRef<HTMLElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(108);
+
+  // No celular o player fica fixo logo abaixo do cabecalho (altura varia com o seletor de listas).
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setHeaderHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const handleAuthError = useCallback(
     (err: unknown) => {
@@ -315,74 +330,85 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
 
   return (
     <div className="flex min-h-[100dvh] flex-col">
-      <header className="sticky top-0 z-30 flex items-center gap-3 border-b bg-background/90 px-4 py-3 backdrop-blur">
-        <Logo subtitle={profile.name || profile.username} />
-        <div className="ml-auto flex items-center gap-1">
-          <InstallButton compact />
-          <Button variant="ghost" size="icon" onClick={() => setSettingsOpen(true)} title="Configuracoes">
-            <Settings />
-          </Button>
+      <header ref={headerRef} className="glass sticky top-0 z-30 border-b">
+        <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-3 px-4 lg:px-6">
+          <Logo />
+          <div className="ml-auto flex items-center gap-2">
+            <span className="hidden max-w-[180px] truncate text-sm text-muted-foreground sm:block">
+              Olá, <span className="font-semibold text-foreground">{profile.name || profile.username}</span>
+            </span>
+            <InstallButton compact />
+            <Button variant="ghost" size="icon" onClick={() => setSettingsOpen(true)} title="Configurações" aria-label="Configurações">
+              <Settings className="!size-5" />
+            </Button>
+          </div>
+        </div>
+        <div className="mx-auto flex max-w-[1600px] items-center gap-3 px-4 pb-3 lg:px-6">
+          <nav className="scrollbar-none flex flex-1 gap-1 overflow-x-auto">
+            {sections
+              .filter((s) => counts[s.key] > 0 || s.key === "live")
+              .map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => setSection(key)}
+                  aria-pressed={section === key}
+                  className={cn(
+                    "flex shrink-0 items-center gap-2 rounded-full px-4 py-1.5 text-sm font-semibold transition-all",
+                    section === key ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                  )}
+                >
+                  <Icon className="h-4 w-4" /> {label}
+                  <span className={cn("rounded-full px-1.5 text-[11px] tabular-nums", section === key ? "bg-background/15" : "bg-muted")}>{counts[key]}</span>
+                </button>
+              ))}
+          </nav>
+          {(data?.playlists.length ?? 0) > 1 && (
+            <Select value={playlistId} onChange={(e) => setPlaylistId(e.target.value)} aria-label="Lista" className="h-9 w-[150px] shrink-0 text-xs sm:w-[190px]">
+              <option value="">Todas as listas</option>
+              {data!.playlists.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          )}
         </div>
       </header>
 
-      <nav className="flex gap-1 overflow-x-auto border-b px-4 lg:px-6 [&::-webkit-scrollbar]:hidden">
-        {sections
-          .filter((s) => counts[s.key] > 0 || s.key === "live")
-          .map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              onClick={() => setSection(key)}
-              className={cn(
-                "flex shrink-0 items-center gap-2 border-b-2 px-3 py-3 text-sm font-medium transition-colors",
-                section === key ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <Icon className="h-4 w-4" /> {label}
-              <span className="text-xs text-muted-foreground">{counts[key]}</span>
-            </button>
-          ))}
-        {(data?.playlists.length ?? 0) > 1 && (
-          <Select value={playlistId} onChange={(e) => setPlaylistId(e.target.value)} className="my-2 ml-auto h-8 w-auto shrink-0 text-xs">
-            <option value="">Todas as listas</option>
-            {data!.playlists.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
-        )}
-      </nav>
-
-      <div className="mx-auto grid w-full max-w-7xl flex-1 gap-4 lg:grid-cols-[1fr_400px] lg:gap-6 lg:p-6">
-        <section className="sticky top-[65px] z-20 self-start bg-background lg:static">
+      <div className="mx-auto grid w-full max-w-[1600px] flex-1 gap-4 lg:grid-cols-[1fr_400px] lg:gap-6 lg:p-6">
+        <section className="sticky z-20 self-start bg-background lg:static" style={{ top: headerHeight }}>
           <VideoPlayer channel={current} />
-          <div className="flex items-start justify-between gap-3 px-4 py-3 lg:px-0">
-            <div className="min-w-0 flex-1">
-              <h1 className="truncate font-semibold">{current?.name ?? "Nada em reproducao"}</h1>
-              <p className="truncate text-xs text-muted-foreground">
-                {current?.group ?? (profile.expires_at ? `Acesso valido ate ${formatDate(profile.expires_at)}` : `${channels.length} itens disponiveis`)}
-              </p>
-              {nowPlaying && <EpgNow programme={nowPlaying} next={upNext} />}
+          <div className="space-y-3 px-4 py-3 lg:px-0 lg:pt-5">
+            <div className="flex items-center gap-3">
+              {current && <ChannelLogo channel={current} />}
+              <div className="min-w-0 flex-1">
+                <h1 className="truncate text-base font-bold tracking-tight lg:text-xl">{current?.name ?? "Nada em reprodução"}</h1>
+                <p className="truncate text-xs text-muted-foreground">
+                  {current?.group ?? (profile.expires_at ? `Acesso válido até ${formatDate(profile.expires_at)}` : `${channels.length} itens disponíveis`)}
+                </p>
+              </div>
+              {current && (
+                <Button variant="ghost" size="icon" onClick={() => toggleFavorite(current.id)} title="Favorito" aria-label="Favorito">
+                  <Heart className={cn(favorites.includes(current.id) && "fill-destructive text-destructive")} />
+                </Button>
+              )}
             </div>
-            {current && (
-              <Button variant="ghost" size="icon" onClick={() => toggleFavorite(current.id)} title="Favorito">
-                <Heart className={cn(favorites.includes(current.id) && "fill-pink-500 text-pink-500")} />
-              </Button>
-            )}
+            {nowPlaying && <EpgNow programme={nowPlaying} next={upNext} />}
           </div>
         </section>
 
-        <section className="flex min-w-0 flex-col gap-3 px-4 pb-6 lg:max-h-[calc(100dvh-170px)] lg:px-0 lg:pb-0">
+        <section className="flex min-w-0 flex-col gap-3 px-4 pb-6 lg:sticky lg:top-[124px] lg:h-[calc(100dvh-148px)] lg:px-0 lg:pb-0">
           <div className="relative">
-            <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               className="pl-9"
-              placeholder={section === "live" ? "Buscar canal" : section === "movie" ? "Buscar filme" : "Buscar serie"}
+              aria-label="Buscar"
+              placeholder={section === "live" ? "Buscar canal..." : section === "movie" ? "Buscar filme..." : "Buscar série..."}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-          <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 lg:mx-0 lg:px-0 [&::-webkit-scrollbar]:hidden">
+          <div className="scrollbar-none -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 lg:mx-0 lg:px-0">
             <Chip active={!group} onClick={() => setGroup("")}>
               Todos
             </Chip>
@@ -391,22 +417,32 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
             </Chip>
             {groups.map((g) => (
               <Chip key={g} active={group === g} onClick={() => withPin(() => setGroup(g), g)}>
-                {isLocked(g) && <Lock className="h-3 w-3" />} {g}
+                {isLocked(g) && <Lock className="h-3 w-3 text-warning" />} {g}
               </Chip>
             ))}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border bg-card/50">
+          <div className="min-h-0 flex-1 overflow-y-auto lg:pr-1">
             {data === null ? (
-              <div className="flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" /> Carregando...
-              </div>
+              <ul className="space-y-1">
+                {Array.from({ length: 7 }).map((_, i) => (
+                  <li key={i} className="flex items-center gap-3 p-2">
+                    <Skeleton className="h-11 w-14 rounded-xl" />
+                    <div className="flex-1 space-y-2">
+                      <Skeleton className="h-3 w-2/3" />
+                      <Skeleton className="h-3 w-1/2" />
+                    </div>
+                  </li>
+                ))}
+              </ul>
             ) : visible.length === 0 ? (
-              <div className="p-10 text-center text-sm text-muted-foreground">
-                {group === FAVORITES ? "Toque no coracao para adicionar aos favoritos." : "Nada encontrado aqui."}
-              </div>
+              group === FAVORITES ? (
+                <EmptyState icon={<Heart className="h-6 w-6" />} title="Sem favoritos ainda" text="Toque no coração de um canal para salvá-lo aqui." />
+              ) : (
+                <EmptyState icon={<Search className="h-6 w-6" />} title="Nada encontrado" text="Tente outro termo ou outro grupo." />
+              )
             ) : section === "live" ? (
-              <ul className="divide-y">
+              <ul className="space-y-1">
                 {visible.slice(0, limit).map((c) => (
                   <ChannelRow
                     key={c.id}
@@ -423,15 +459,16 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
               <PosterGrid items={visible.slice(0, limit)} activeId={current?.id} onSelect={play} />
             ) : openSeries ? (
               <div>
-                <button onClick={() => setSeries(null)} className="flex w-full items-center gap-2 border-b px-3 py-3 text-sm font-medium hover:bg-muted/40">
-                  <ArrowLeft className="h-4 w-4" /> {openSeries.name}
-                </button>
-                <ul className="divide-y">
+                <Button variant="ghost" size="sm" onClick={() => setSeries(null)} className="mb-2">
+                  <ArrowLeft /> Voltar
+                </Button>
+                <h2 className="mb-3 px-1 text-lg font-bold tracking-tight">{openSeries.name}</h2>
+                <ul className="space-y-1">
                   {openSeries.episodes.map((e) => (
                     <ChannelRow
                       key={e.id}
                       channel={e}
-                      label={e.episode ? `T${e.season} · Episodio ${e.episode}` : e.name}
+                      label={e.episode ? `T${e.season} · Episódio ${e.episode}` : e.name}
                       active={current?.id === e.id}
                       favorite={favorites.includes(e.id)}
                       onPlay={() => play(e)}
@@ -442,12 +479,12 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
               </div>
             ) : (
               <PosterGrid
-                items={seriesList.slice(0, limit).map((s) => ({ id: s.name, name: s.name, logo: s.logo, sub: `${s.episodes.length} episodio(s)` }))}
+                items={seriesList.slice(0, limit).map((s) => ({ id: s.name, name: s.name, logo: s.logo, sub: `${s.episodes.length} episódio(s)` }))}
                 onSelect={(s) => setSeries(s.id)}
               />
             )}
             {!openSeries && (section === "series" ? seriesList.length : visible.length) > limit && (
-              <div className="p-3">
+              <div className="py-3">
                 <Button variant="outline" className="w-full" onClick={() => setLimit((l) => l + PAGE)}>
                   Mostrar mais
                 </Button>
@@ -485,24 +522,31 @@ function EpgNow({ programme, next }: { programme: Programme; next?: Programme[] 
   const pct = Math.min(100, Math.max(0, ((Date.now() - start) / (stop - start)) * 100));
   const time = (iso: string) => new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
   return (
-    <div className="mt-3 space-y-2">
-      <div className="flex items-center gap-2 text-sm">
-        <span className="rounded bg-red-500/90 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">Agora</span>
-        <span className="truncate font-medium">{programme.title}</span>
-        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-          {time(programme.start)} - {time(programme.stop)}
-        </span>
-      </div>
-      <div className="h-1 overflow-hidden rounded-full bg-muted">
-        <div className="gradient-brand h-full" style={{ width: `${pct}%` }} />
-      </div>
-      {programme.desc && <p className="line-clamp-2 text-xs text-muted-foreground">{programme.desc}</p>}
-      {next?.map((p) => (
-        <div key={p.start} className="flex gap-2 text-xs text-muted-foreground">
-          <span className="w-10 shrink-0">{time(p.start)}</span>
-          <span className="truncate">{p.title}</span>
+    <div className="grid gap-3 sm:grid-cols-[2fr_1fr]">
+      <div className="rounded-xl border bg-card p-4">
+        <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider">
+          <span className="text-brand">Agora</span>
+          <span className="tabular-nums text-muted-foreground">
+            {time(programme.start)} – {time(programme.stop)}
+          </span>
         </div>
-      ))}
+        <div className="mt-1 truncate font-semibold">{programme.title}</div>
+        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
+          <div className="h-full rounded-full bg-brand" style={{ width: `${pct}%` }} />
+        </div>
+        {programme.desc && <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{programme.desc}</p>}
+      </div>
+      {!!next?.length && (
+        <div className="hidden rounded-xl border bg-card/50 p-4 sm:block">
+          <div className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">A seguir</div>
+          {next.map((p) => (
+            <div key={p.start} className="mt-1.5 flex gap-2 text-sm">
+              <span className="w-11 shrink-0 tabular-nums text-muted-foreground">{time(p.start)}</span>
+              <span className="truncate font-semibold">{p.title}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -525,22 +569,17 @@ function ChannelRow({
   onFavorite: () => void;
 }) {
   return (
-    <li className={cn("flex items-center", active && "bg-primary/10")}>
-      <button onClick={onPlay} className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left hover:bg-muted/40">
-        <div className="flex h-10 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted">
-          {c.logo ? (
-            <img src={c.logo} alt="" loading="lazy" className="h-full w-full object-contain p-1" onError={(e) => (e.currentTarget.style.display = "none")} />
-          ) : (
-            <Tv className="h-4 w-4 text-muted-foreground" />
-          )}
-        </div>
+    <li className={cn("flex items-center rounded-xl transition-colors", active ? "bg-primary/10 ring-1 ring-primary/40" : "hover:bg-accent")}>
+      <button onClick={onPlay} className="flex min-w-0 flex-1 items-center gap-3 rounded-xl p-2 text-left">
+        <ChannelLogo channel={c} />
         <div className="min-w-0">
-          <div className={cn("truncate text-sm font-medium", active && "text-primary")}>{label ?? c.name}</div>
+          <div className={cn("truncate text-sm font-semibold", active && "text-primary")}>{label ?? c.name}</div>
           <div className="truncate text-xs text-muted-foreground">{now ? `Agora: ${now}` : c.group}</div>
         </div>
+        {active && <Play className="ml-auto h-3.5 w-3.5 shrink-0 fill-primary text-primary" />}
       </button>
-      <button onClick={onFavorite} className="p-3 text-muted-foreground hover:text-pink-500" aria-label="Favorito">
-        <Heart className={cn("h-4 w-4", favorite && "fill-pink-500 text-pink-500")} />
+      <button onClick={onFavorite} className="rounded-lg p-3 text-muted-foreground transition-colors hover:text-destructive" aria-label="Favorito">
+        <Heart className={cn("h-4 w-4", favorite && "fill-destructive text-destructive")} />
       </button>
     </li>
   );
@@ -550,13 +589,13 @@ type PosterItem = { id: string; name: string; logo: string; sub?: string };
 
 function PosterGrid<T extends PosterItem>({ items, activeId, onSelect }: { items: T[]; activeId?: string; onSelect: (item: T) => void }) {
   return (
-    <div className="grid grid-cols-3 gap-3 p-3 sm:grid-cols-4 lg:grid-cols-3">
+    <div className="grid grid-cols-3 gap-3 pb-1 pt-1 sm:grid-cols-4 lg:grid-cols-3">
       {items.map((item) => (
         <button key={item.id} onClick={() => onSelect(item)} className="group text-left">
           <div
             className={cn(
-              "flex aspect-[2/3] items-center justify-center overflow-hidden rounded-md bg-muted ring-primary transition group-hover:ring-2",
-              activeId === item.id && "ring-2",
+              "relative flex aspect-[2/3] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-b from-secondary to-card ring-1 ring-border transition-all duration-300 group-hover:-translate-y-1 group-hover:shadow-glow group-hover:ring-primary/50",
+              activeId === item.id && "ring-2 ring-primary",
             )}
           >
             {item.logo ? (
@@ -564,11 +603,28 @@ function PosterGrid<T extends PosterItem>({ items, activeId, onSelect }: { items
             ) : (
               <Film className="h-6 w-6 text-muted-foreground" />
             )}
+            <span className="absolute inset-0 grid place-items-center bg-background/30 opacity-0 transition-opacity group-hover:opacity-100">
+              <span className="grid h-10 w-10 place-items-center rounded-full bg-foreground text-background">
+                <Play className="h-4 w-4 fill-current" />
+              </span>
+            </span>
           </div>
-          <div className="mt-1.5 line-clamp-2 text-xs font-medium">{item.name}</div>
+          <div className="mt-2 line-clamp-2 text-xs font-semibold">{item.name}</div>
           {item.sub && <div className="text-[11px] text-muted-foreground">{item.sub}</div>}
         </button>
       ))}
+    </div>
+  );
+}
+
+function ChannelLogo({ channel: c }: { channel: Channel }) {
+  return (
+    <div className="flex h-11 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-muted ring-1 ring-border">
+      {c.logo ? (
+        <img src={c.logo} alt="" loading="lazy" className="h-full w-full object-contain p-1" onError={(e) => (e.currentTarget.style.display = "none")} />
+      ) : (
+        <Tv className="h-4 w-4 text-muted-foreground" />
+      )}
     </div>
   );
 }
@@ -578,8 +634,8 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
     <button
       onClick={onClick}
       className={cn(
-        "flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-        active ? "border-transparent gradient-brand text-white" : "text-muted-foreground hover:bg-muted",
+        "flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
+        active ? "border-primary/50 bg-primary/15 text-foreground" : "text-muted-foreground hover:text-foreground",
       )}
     >
       {children}

@@ -1,16 +1,17 @@
 import { Tv } from "lucide-react";
+import { cn } from "@/lib/utils";
 
-export default function Logo({ subtitle = "IPTV Panel" }: { subtitle?: string }) {
+export default function Logo({ subtitle, className }: { subtitle?: string; className?: string }) {
   return (
-    <div className="flex items-center gap-3">
-      <div className="gradient-brand flex h-10 w-10 items-center justify-center rounded-xl shadow-lg shadow-primary/30">
-        <Tv className="h-5 w-5 text-white" />
+    <div className={cn("flex min-w-0 items-center gap-2.5", className)}>
+      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand shadow-glow">
+        <Tv className="h-[18px] w-[18px] text-white" strokeWidth={2.5} />
       </div>
-      <div className="leading-tight">
-        <div className="text-lg font-bold tracking-tight">
-          R<span className="gradient-text">Tec</span>
+      <div className="min-w-0 leading-tight">
+        <div className="text-lg font-extrabold tracking-tight">
+          R<span className="text-brand">Tec</span>
         </div>
-        <div className="text-xs text-muted-foreground">{subtitle}</div>
+        {subtitle && <div className="truncate text-xs text-muted-foreground">{subtitle}</div>}
       </div>
     </div>
   );

@@ -71,7 +71,7 @@ Enderecos: reprodutor do cliente em `/`, painel do administrador em `/admin`.
 
 ## Editando o visual no Lovable
 
-O frontend (`src/`) usa a mesma estrutura dos projetos Lovable. Para continuar editando o visual pelo Lovable, conecte este repositorio ao Lovable via GitHub. O backend (`server/`) precisa rodar em um servidor Node (VPS, Railway, Render etc.), pois o Lovable hospeda so o frontend.
+O frontend (`src/`) usa a mesma estrutura dos projetos Lovable. O visual atual (tema escuro, gradiente violeta → ciano, fonte Plus Jakarta Sans) foi desenhado no Lovable e portado para cá mantendo a lógica e a API; as cores ficam como tokens HSL em `src/index.css` e `tailwind.config.js`. Para continuar editando o visual pelo Lovable, conecte este repositorio ao Lovable via GitHub. O backend (`server/`) precisa rodar em um servidor Node (VPS, Railway, Render etc.), pois o Lovable hospeda so o frontend.
 
 ## Estrutura
 

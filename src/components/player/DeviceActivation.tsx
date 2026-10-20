@@ -3,7 +3,7 @@ import QRCode from "qrcode";
 import { Loader2 } from "lucide-react";
 import { api, type ClientProfile } from "@/lib/api";
 import { activationUrl, getDeviceIdentity } from "@/lib/device";
-import { copy } from "@/lib/utils";
+import CopyRow from "@/components/CopyRow";
 
 /** Mostra Device ID + Key e QR code; consulta o servidor ate o revendedor vincular o aparelho. */
 export default function DeviceActivation({ onLinked }: { onLinked: (p: ClientProfile) => void }) {
@@ -14,7 +14,7 @@ export default function DeviceActivation({ onLinked }: { onLinked: (p: ClientPro
   linked.current = onLinked;
 
   useEffect(() => {
-    QRCode.toDataURL(activationUrl(device), { margin: 1, width: 220, color: { dark: "#0a0a0c", light: "#ffffff" } }).then(setQr);
+    QRCode.toDataURL(activationUrl(device), { margin: 1, width: 220, color: { dark: "#0b0b10", light: "#ffffff" } }).then(setQr);
     api.post("/api/player/device/register", device).catch((err) => setError((err as Error).message));
 
     let stopped = false;
@@ -37,28 +37,26 @@ export default function DeviceActivation({ onLinked }: { onLinked: (p: ClientPro
   }, [device]);
 
   return (
-    <div className="space-y-5 text-center">
-      <p className="text-sm text-muted-foreground">
-        Envie estes dados ao seu revendedor ou peca para ele escanear o QR code. A tela entra sozinha assim que o aparelho for ativado.
-      </p>
-      <div className="grid grid-cols-2 gap-3">
-        <button onClick={() => copy(device.device_id, "ID copiado")} className="rounded-lg border bg-muted/40 p-3 hover:bg-muted">
-          <div className="text-xs text-muted-foreground">Device ID</div>
-          <div className="mt-1 break-all font-mono text-xs font-semibold sm:text-sm">{device.device_id}</div>
-        </button>
-        <button onClick={() => copy(device.device_key, "Chave copiada")} className="rounded-lg border bg-muted/40 p-3 hover:bg-muted">
-          <div className="text-xs text-muted-foreground">Device Key</div>
-          <div className="mt-1 font-mono text-lg font-semibold tracking-[0.3em]">{device.device_key}</div>
-        </button>
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+        <div className="min-w-0 space-y-3">
+          <CopyRow label="Device ID" value={device.device_id} toastLabel="ID copiado" />
+          <CopyRow label="Device Key" value={device.device_key} toastLabel="Chave copiada" large />
+        </div>
+        <div className="mx-auto grid aspect-square w-40 place-items-center rounded-xl bg-white p-2 sm:w-[132px]">
+          {qr ? <img src={qr} alt="QR code de ativação" className="h-full w-full" /> : <Loader2 className="h-5 w-5 animate-spin text-black/40" />}
+        </div>
       </div>
-      {qr && <img src={qr} alt="QR code de ativacao" className="mx-auto h-44 w-44 rounded-lg" />}
       {error ? (
-        <p className="text-sm text-destructive">{error}</p>
+        <p className="rounded-xl border border-destructive/40 bg-destructive/10 py-3 text-center text-sm text-destructive">{error}</p>
       ) : (
-        <p className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
-          <Loader2 className="h-3 w-3 animate-spin" /> Aguardando ativacao...
-        </p>
+        <div className="flex items-center justify-center gap-2 rounded-xl bg-muted/60 py-3 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin text-primary" /> Aguardando ativação...
+        </div>
       )}
+      <p className="text-center text-xs text-muted-foreground">
+        Envie estes dados ao seu revendedor ou peça para ele escanear o QR code. A tela entra sozinha assim que o aparelho for ativado.
+      </p>
     </div>
   );
 }

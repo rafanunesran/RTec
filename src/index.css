@@ -2,40 +2,47 @@
 @tailwind components;
 @tailwind utilities;
 
+/* RTec: tema escuro, tokens HSL, gradiente de marca violeta -> ciano */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 4%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 4%;
-    --muted: 240 5% 96%;
-    --muted-foreground: 240 4% 46%;
-    --border: 240 6% 90%;
-    --input: 240 6% 90%;
-    --ring: 262 83% 58%;
-    --primary: 262 83% 58%;
+    --background: 240 14% 5%;
+    --foreground: 240 10% 96%;
+    --card: 240 12% 8%;
+    --card-foreground: 240 10% 96%;
+    --secondary: 240 9% 14%;
+    --accent: 240 9% 15%;
+    --muted: 240 9% 12%;
+    --muted-foreground: 240 6% 62%;
+    --border: 240 8% 16%;
+    --input: 240 8% 18%;
+    --ring: 262 83% 66%;
+    --primary: 262 83% 66%;
     --primary-foreground: 0 0% 100%;
-    --destructive: 0 72% 51%;
-    --success: 142 71% 45%;
-  }
-  .dark {
-    --background: 240 10% 4%;
-    --foreground: 0 0% 98%;
-    --card: 240 8% 7%;
-    --card-foreground: 0 0% 98%;
-    --muted: 240 5% 14%;
-    --muted-foreground: 240 5% 65%;
-    --border: 240 4% 16%;
-    --input: 240 4% 18%;
-    --ring: 262 83% 62%;
-    --primary: 262 83% 62%;
-    --primary-foreground: 0 0% 100%;
-    --destructive: 0 63% 50%;
-    --success: 142 71% 45%;
+    --brand-2: 189 94% 55%;
+    --destructive: 0 78% 60%;
+    --success: 152 68% 48%;
+    --warning: 38 95% 58%;
+    --sidebar: 240 14% 6.5%;
+    --sidebar-accent: 240 9% 13%;
+    --sidebar-border: 240 8% 14%;
   }
   * { @apply border-border; }
+  html { color-scheme: dark; }
   body { @apply bg-background text-foreground font-sans antialiased; }
+  input[type="checkbox"] { accent-color: hsl(var(--primary)); }
 }
 
-.gradient-brand { background-image: linear-gradient(135deg, #8b5cf6 0%, #ec4899 100%); }
-.gradient-text { @apply bg-clip-text text-transparent gradient-brand; }
+@layer utilities {
+  .bg-brand { background-image: linear-gradient(120deg, hsl(var(--primary)), hsl(var(--brand-2))); }
+  .text-brand { @apply bg-clip-text text-transparent bg-brand; }
+  .bg-glow {
+    background-image: radial-gradient(60% 50% at 50% 0%, hsl(var(--primary) / 0.18), transparent 70%),
+      radial-gradient(40% 40% at 90% 10%, hsl(var(--brand-2) / 0.12), transparent 70%);
+  }
+  .glass {
+    background-color: hsl(var(--background) / 0.72);
+    backdrop-filter: blur(16px) saturate(140%);
+  }
+  .scrollbar-none { scrollbar-width: none; }
+  .scrollbar-none::-webkit-scrollbar { display: none; }
+}

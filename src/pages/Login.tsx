@@ -1,9 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
-import { Loader2, Lock, User } from "lucide-react";
+import { Loader2, LogIn } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
-import { Button, Card, Field, Input } from "@/components/ui";
+import { Button, Field, Input } from "@/components/ui";
 import Logo from "@/components/Logo";
 
 export default function Login() {
@@ -30,42 +30,33 @@ export default function Login() {
   };
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden p-4">
-      <div className="pointer-events-none absolute -left-32 -top-32 h-96 w-96 rounded-full bg-violet-600/30 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-32 -right-32 h-96 w-96 rounded-full bg-pink-600/20 blur-3xl" />
-      <Card className="relative w-full max-w-md p-8">
-        <div className="mb-8 flex flex-col items-center gap-4 text-center">
-          <Logo />
+    <div className="relative flex min-h-[100dvh] items-center justify-center px-4 py-10">
+      <div className="pointer-events-none absolute inset-0 bg-glow" />
+      <div className="relative w-full max-w-sm animate-rise-in">
+        <Logo className="mb-8 justify-center" />
+        <form onSubmit={submit} className="space-y-4 rounded-3xl border bg-card/80 p-7 shadow-card backdrop-blur-xl">
           <div>
-            <h1 className="text-xl font-semibold">Acesso do administrador</h1>
-            <p className="text-sm text-muted-foreground">Gerencie clientes, logins e listas M3U</p>
+            <h1 className="text-xl font-bold">Painel do revendedor</h1>
+            <p className="text-sm text-muted-foreground">Entre para gerenciar clientes, logins e listas M3U.</p>
           </div>
-        </div>
-        <form onSubmit={submit} className="space-y-4">
-          <Field label="Usuario">
-            <div className="relative">
-              <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-              <Input className="pl-9" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required />
-            </div>
+          <Field label="Usuário">
+            <Input className="h-11" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus required />
           </Field>
           <Field label="Senha">
-            <div className="relative">
-              <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-              <Input className="pl-9" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            </div>
+            <Input className="h-11" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
           </Field>
-          <Button variant="gradient" className="w-full" disabled={busy}>
-            {busy && <Loader2 className="animate-spin" />}
+          <Button variant="gradient" size="lg" className="w-full" disabled={busy}>
+            {busy ? <Loader2 className="animate-spin" /> : <LogIn />}
             Entrar
           </Button>
         </form>
         <p className="mt-6 text-center text-sm text-muted-foreground">
-          E cliente?{" "}
-          <a href="/" className="font-medium text-primary hover:underline">
+          É cliente?{" "}
+          <a href="/" className="font-semibold text-foreground hover:text-primary">
             Abrir o reprodutor
           </a>
         </p>
-      </Card>
+      </div>
     </div>
   );
 }

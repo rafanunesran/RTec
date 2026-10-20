@@ -1,10 +1,33 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Activity, ListVideo, MonitorSmartphone, UserCheck, UserX, Users } from "lucide-react";
 import { api, type Stats } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { Card } from "@/components/ui";
+import { Card, Skeleton, StatCard } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
+
+const steps: [string, ReactNode][] = [
+  [
+    "Cadastre uma lista",
+    <>
+      Adicione sua fonte em <Link to="/admin/listas" className="font-medium text-primary hover:underline">Listas M3U</Link> (URL M3U, Xtream ou conteúdo colado).
+    </>,
+  ],
+  [
+    "Crie o cliente",
+    <>
+      Em <Link to="/admin/clientes" className="font-medium text-primary hover:underline">Clientes</Link>, defina usuário, senha, validade e as listas liberadas.
+    </>,
+  ],
+  ["Envie o acesso", "Copie a mensagem pronta: o cliente assiste no navegador e pode instalar o app no celular."],
+  [
+    "Ative aparelhos",
+    <>
+      Opcional: vincule a TV do cliente pelo Device ID e chave em{" "}
+      <Link to="/admin/dispositivos" className="font-medium text-primary hover:underline">Dispositivos</Link>.
+    </>,
+  ],
+];
 
 export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -14,67 +37,73 @@ export default function Dashboard() {
   }, []);
 
   const cards = [
-    { label: "Clientes", value: stats?.clients, icon: Users, to: "/admin/clientes" },
-    { label: "Ativos", value: stats?.active_clients, icon: UserCheck, to: "/admin/clientes" },
-    { label: "Expirados", value: stats?.expired_clients, icon: UserX, to: "/admin/clientes" },
-    { label: "Listas M3U", value: stats?.playlists, icon: ListVideo, to: "/admin/listas" },
-    { label: "Dispositivos", value: stats?.devices, icon: MonitorSmartphone, to: "/admin/dispositivos" },
-  ];
+    { label: "Clientes", value: stats?.clients, icon: <Users />, to: "/admin/clientes", tone: "primary" },
+    { label: "Ativos", value: stats?.active_clients, icon: <UserCheck />, to: "/admin/clientes", tone: "success" },
+    { label: "Expirados", value: stats?.expired_clients, icon: <UserX />, to: "/admin/clientes", tone: "destructive" },
+    { label: "Listas M3U", value: stats?.playlists, icon: <ListVideo />, to: "/admin/listas", tone: "info" },
+    { label: "Dispositivos", value: stats?.devices, icon: <MonitorSmartphone />, to: "/admin/dispositivos", tone: "warning" },
+  ] as const;
 
   return (
     <>
-      <PageHeader title="Painel" description="Visao geral do seu servico IPTV" />
+      <PageHeader title="Painel" description="Visão geral do seu serviço IPTV" />
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-        {cards.map(({ label, value, icon: Icon, to }) => (
-          <Link key={label} to={to}>
-            <Card className="p-5 transition-colors hover:border-primary/50">
-              <div className="flex items-center justify-between text-muted-foreground">
-                <span className="text-sm">{label}</span>
-                <Icon className="h-4 w-4" />
-              </div>
-              <div className="mt-3 text-3xl font-bold">{value ?? "—"}</div>
-            </Card>
+        {cards.map(({ label, value, icon, to, tone }, i) => (
+          <Link key={label} to={to} className={i === 0 ? "col-span-2 lg:col-span-1" : undefined}>
+            <StatCard label={label} value={value} icon={icon} tone={tone} />
           </Link>
         ))}
       </div>
 
-      <Card className="mt-8 p-6">
-        <div className="mb-4 flex items-center gap-2">
-          <Activity className="h-4 w-4 text-primary" />
-          <h2 className="font-semibold">Acessos recentes</h2>
-        </div>
-        {stats?.recent.length ? (
-          <ul className="divide-y">
-            {stats.recent.map((r) => (
-              <li key={r.id} className="flex items-center justify-between py-3 text-sm">
-                <span>
-                  <span className="font-medium">{r.name || r.username}</span>
-                  <span className="ml-2 text-muted-foreground">@{r.username}</span>
-                </span>
-                <span className="text-muted-foreground">{formatDate(r.last_access_at)}</span>
+      <div className="mt-6 grid gap-6 lg:grid-cols-[3fr_2fr]">
+        <Card className="p-6">
+          <h2 className="mb-4 flex items-center gap-2 font-semibold">
+            <Activity className="h-4 w-4 text-primary" /> Acessos recentes
+          </h2>
+          {!stats ? (
+            <div className="space-y-4">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <Skeleton className="h-9 w-9 rounded-full" />
+                  <Skeleton className="h-4 flex-1" />
+                </div>
+              ))}
+            </div>
+          ) : stats.recent.length ? (
+            <ul className="divide-y">
+              {stats.recent.map((r) => (
+                <li key={r.id} className="flex items-center gap-3 py-3">
+                  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-muted text-xs font-bold uppercase">
+                    {(r.name || r.username).slice(0, 2)}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold">{r.name || r.username}</div>
+                    <div className="truncate text-xs text-muted-foreground">@{r.username}</div>
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">{formatDate(r.last_access_at)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">Nenhum acesso ainda. Crie um cliente e envie os dados de acesso para ele.</p>
+          )}
+        </Card>
+
+        <Card className="p-6">
+          <h2 className="mb-5 font-semibold">Como funciona</h2>
+          <ol className="space-y-5">
+            {steps.map(([title, text], i) => (
+              <li key={title} className="flex gap-4">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand text-sm font-bold text-white">{i + 1}</span>
+                <div>
+                  <div className="text-sm font-semibold">{title}</div>
+                  <div className="text-sm text-muted-foreground">{text}</div>
+                </div>
               </li>
             ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-muted-foreground">Nenhum acesso ainda. Crie um cliente e envie o link M3U para ele.</p>
-        )}
-      </Card>
-
-      <Card className="mt-8 p-6">
-        <h2 className="mb-3 font-semibold">Como funciona</h2>
-        <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
-          <li>
-            Cadastre suas fontes em <Link to="/admin/listas" className="text-primary">Listas M3U</Link> (URL M3U, servidor Xtream ou conteudo colado).
-          </li>
-          <li>
-            Crie um <Link to="/admin/clientes" className="text-primary">cliente</Link> com login e senha, validade e as listas que ele pode acessar.
-          </li>
-          <li>Envie ao cliente o endereco do site com o login e a senha: ele assiste direto no navegador e pode instalar o app no celular.</li>
-          <li>
-            Opcional: ative o aparelho do cliente pelo MAC e chave em <Link to="/admin/dispositivos" className="text-primary">Dispositivos</Link>.
-          </li>
-        </ol>
-      </Card>
+          </ol>
+        </Card>
+      </div>
     </>
   );
 }
