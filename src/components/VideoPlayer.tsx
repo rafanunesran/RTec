@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Loader2, Tv } from "lucide-react";
+import { AlertTriangle, Loader2, RotateCw, Tv, VolumeX } from "lucide-react";
 import type { Channel } from "@/lib/api";
 import { watchFullscreenOrientation } from "@/lib/orientation";
 
@@ -29,7 +29,18 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
   if (type === "mpegts") {
     const { default: mpegts } = await import("mpegts.js");
     if (!mpegts.getFeatureList().mseLivePlayback) throw new Unsupported();
-    const player = mpegts.createPlayer({ type: "mpegts", isLive: true, url: src }, { enableStashBuffer: false, liveBufferLatencyChasing: true });
+    const player = mpegts.createPlayer(
+      { type: "mpegts", isLive: true, url: src, cors: true, withCredentials: false },
+      {
+        enableWorker: true,
+        enableStashBuffer: true, // junta um pouco de video antes de tocar: comeca mais rapido e trava menos
+        stashInitialSize: 384 * 1024,
+        lazyLoad: false,
+        autoCleanupSourceBuffer: true,
+        liveBufferLatencyChasing: false, // pular para o "ao vivo" toda hora deixa o video carregando sem parar
+        liveSync: false,
+      },
+    );
     player.on(mpegts.Events.ERROR, (type: string, detail: string, info?: { code?: number; msg?: string }) => onFail(describe(info?.code, detail || type)));
     player.attachMediaElement(video);
     player.load();
@@ -78,6 +89,8 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
   const videoRef = useRef<HTMLVideoElement>(null);
   const [state, setState] = useState<"idle" | "loading" | "playing" | "error">("idle");
   const [error, setError] = useState("");
+  const [muted, setMuted] = useState(false); // navegador bloqueou o som no inicio
+  const [attempt, setAttempt] = useState(0); // "Tentar novamente"
 
   useEffect(() => watchFullscreenOrientation(), []);
 
@@ -97,19 +110,37 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
     let reconnects = 0;
     let firstError = ""; // o motivo da primeira tentativa e o mais util
     let lastSaved = 0;
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearTimers = () => {
+      clearTimeout(watchdog);
+      clearTimeout(stallTimer);
+    };
+    // Toca; se o navegador bloquear o som automatico, comeca sem som e mostra o aviso.
+    const tryPlay = () =>
+      video.play().catch((err: DOMException) => {
+        if (err?.name !== "NotAllowedError" || cancelled) return;
+        video.muted = true;
+        setMuted(true);
+        video.play().catch(() => {});
+      });
 
     setState("loading");
     setError("");
+    setMuted(false);
 
     const start = async (src: string, type: Channel["type"]) => {
       active = { src, type };
       stop?.();
       stop = undefined;
+      clearTimers();
+      // Se nao comecar a tocar em alguns segundos, passa para o proximo caminho (plano B).
+      watchdog = setTimeout(() => !cancelled && fail("O canal não começou a tocar (sem imagem depois de 15 s)."), channel!.kind === "live" ? 15000 : 25000);
       try {
         const s = await attach(video, src, type, fail);
         if (cancelled) return s();
         stop = s;
-        video.play().catch(() => {});
+        tryPlay();
       } catch (err) {
         if (err instanceof Unsupported) fail("Este aparelho não suporta o formato deste canal.");
         else fail("Falha ao iniciar o reprodutor.");
@@ -119,6 +150,7 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
     // Se o formato original falhar, tenta a versao alternativa do mesmo canal (HLS <-> MPEG-TS no Xtream).
     function fail(msg: string) {
       if (cancelled) return;
+      clearTimers();
       // Ao vivo que ja estava tocando e caiu (ex: limite de tempo do servidor): reconecta sozinho.
       if (channel!.kind === "live" && playedAt) {
         if (Date.now() - playedAt > 20000) reconnects = 0;
@@ -148,10 +180,19 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
     }
 
     const onPlaying = () => {
+      clearTimers();
       playedAt ||= Date.now();
       setState("playing");
     };
-    const onWaiting = () => setState((s) => (s === "error" ? s : "loading"));
+    const onWaiting = () => {
+      setState((s) => (s === "error" ? s : "loading"));
+      // Ao vivo travado no "carregando" depois de ja ter tocado: reconecta.
+      if (channel!.kind === "live" && playedAt) {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => !cancelled && video.paused === false && fail("O sinal travou."), 12000);
+      }
+    };
+    const onCanPlay = () => video.paused && tryPlay();
     const onEnded = () => (channel!.kind === "live" ? fail("A transmissao foi encerrada.") : cb.current.onEnded?.());
     const onMeta = () => {
       const at = cb.current.startAt;
@@ -171,6 +212,7 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
     video.addEventListener("loadedmetadata", onMeta);
     video.addEventListener("timeupdate", onTime);
     video.addEventListener("pause", onPause);
+    video.addEventListener("canplay", onCanPlay);
     start(channel.src, channel.type);
 
     return () => {
@@ -181,10 +223,12 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
       video.removeEventListener("loadedmetadata", onMeta);
       video.removeEventListener("timeupdate", onTime);
       video.removeEventListener("pause", onPause);
+      video.removeEventListener("canplay", onCanPlay);
+      clearTimers();
       onPause();
       stop?.();
     };
-  }, [channel]);
+  }, [channel, attempt]);
 
   return (
     <div className={className ?? "relative aspect-video w-full overflow-hidden bg-black lg:rounded-2xl lg:ring-1 lg:ring-border"}>
@@ -206,7 +250,25 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/95 p-6 text-center">
           <AlertTriangle className="h-8 w-8 text-warning" />
           <span className="text-sm text-white/90">{error}</span>
+          <button
+            onClick={() => setAttempt((n) => n + 1)}
+            className="mt-1 flex items-center gap-2 rounded-full bg-white px-5 py-2.5 text-sm font-bold text-black hover:bg-white/90"
+          >
+            <RotateCw className="h-4 w-4" /> Tentar novamente
+          </button>
         </div>
+      )}
+      {muted && state === "playing" && (
+        <button
+          onClick={() => {
+            const v = videoRef.current;
+            if (v) v.muted = false;
+            setMuted(false);
+          }}
+          className="absolute bottom-16 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/75 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/20"
+        >
+          <VolumeX className="h-4 w-4" /> Toque para ativar o som
+        </button>
       )}
     </div>
   );

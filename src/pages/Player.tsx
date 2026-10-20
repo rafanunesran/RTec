@@ -369,7 +369,10 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
 
   useEffect(() => setLimit(PAGE), [group, query, section, playlistId]);
 
+  const pushNav = () => window.history.pushState({ rtecNav: true }, "");
+
   const openSeries = (s: (typeof seriesList)[number]) => {
+    pushNav();
     if (s.episodes) return setSeries({ key: s.key, name: s.name, logo: s.logo, episodes: s.episodes });
     setSeries({ key: s.key, name: s.name, logo: s.logo, episodes: null });
     api
@@ -487,9 +490,49 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   }, [allKey]);
 
   const goSection = (k: Section) => {
+    pushNav();
     setPage("section");
     setSection(k);
   };
+
+  // Botao voltar (celular, TV Box e navegador): fecha o player -> sai da serie -> volta ao Inicio -> sai do app.
+  const navRef = useRef({ page, series, current });
+  navRef.current = { page, series, current };
+  const goBackInApp = () => {
+    const n = navRef.current;
+    if (n.current) setCurrent(null);
+    else if (n.series) setSeries(null);
+    else if (n.page !== "home") setPage("home");
+    else return false;
+    return true;
+  };
+  useEffect(() => {
+    // Navegador: cada tela aberta deixa um passo no historico (pushNav); o "voltar" desfaz um passo.
+    const onPop = () => {
+      if (navRef.current.current) return; // o player trata o proprio voltar
+      goBackInApp();
+    };
+    window.addEventListener("popstate", onPop);
+    // App Android: o botao/gesto voltar passa por aqui; so sai do app quando ja esta no Inicio.
+    let removeBack: (() => void) | undefined;
+    let alive = true;
+    import("@capacitor/app")
+      .then(({ App }) =>
+        App.addListener("backButton", () => {
+          if (!goBackInApp()) App.exitApp();
+        }).then((h) => {
+          if (alive) removeBack = () => void h.remove();
+          else void h.remove();
+        }),
+      )
+      .catch(() => {});
+    return () => {
+      alive = false;
+      window.removeEventListener("popstate", onPop);
+      removeBack?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Abre uma serie a partir das paginas Inicio/Tudo.
   const openSeriesFrom = (c: Channel) => {
@@ -598,7 +641,10 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
             ).map(([key, label, Icon]) => (
               <button
                 key={key}
-                onClick={() => setPage(key)}
+                onClick={() => {
+                  if (key !== page) pushNav();
+                  setPage(key);
+                }}
                 aria-pressed={page === key}
                 className={cn(
                   "flex shrink-0 items-center gap-2 rounded-full px-4 py-1.5 text-sm font-semibold transition-all",
@@ -644,7 +690,10 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                 history={history}
                 loading={catalog === null}
                 onOpen={openItem}
-                onExplore={() => setPage("all")}
+                onExplore={() => {
+                  pushNav();
+                  setPage("all");
+                }}
                 onClear={() => {
                   setHistory([]);
                   save("rtec:history", []);
