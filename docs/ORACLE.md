@@ -49,6 +49,13 @@ Projeto → **Settings** → **Environment Variables**:
 - `PROXY_SECRET` = o mesmo segredo usado no comando
 Depois **Deployments** → **⋯** → **Redeploy**.
 
+## Manter a maquina ativa
+O instalador ja liga um servico leve (~25% de CPU, prioridade minima) para a Oracle nao recolher a maquina por inatividade.
+Em maquinas instaladas antes, rode uma vez dentro da maquina:
+```bash
+curl -fsSL https://raw.githubusercontent.com/rafanunesran/RTec/main/public/proxy/keepalive.sh | sudo bash
+```
+
 ## Problemas
 - Sem "PRONTO!": confira o passo 2 e rode `sudo systemctl restart caddy`.
 - Ver se esta rodando: `sudo systemctl status rtec-proxy` (deve mostrar *active (running)*).

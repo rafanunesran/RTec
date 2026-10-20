@@ -74,6 +74,9 @@ systemctl daemon-reload
 systemctl enable --now rtec-proxy
 systemctl restart caddy
 
+echo "==> Ligando o servico que mantem a maquina ativa (a Oracle recolhe maquinas gratis paradas)"
+curl -fsSL "$SRC/keepalive.sh" | bash || echo "    (nao consegui ligar agora; rode depois: curl -fsSL $SRC/keepalive.sh | sudo bash)"
+
 echo "==> Testando"
 sleep 5
 if curl -fsS "https://$DOMAIN/health" >/dev/null 2>&1; then
