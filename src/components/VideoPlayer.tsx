@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2, Tv } from "lucide-react";
 import type { Channel } from "@/lib/api";
+import { watchFullscreenOrientation } from "@/lib/orientation";
 
 type Stop = () => void;
 
@@ -60,6 +61,8 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [state, setState] = useState<"idle" | "loading" | "playing" | "error">("idle");
   const [error, setError] = useState("");
+
+  useEffect(() => watchFullscreenOrientation(), []);
 
   useEffect(() => {
     const video = videoRef.current;
