@@ -1,23 +1,20 @@
 # RTec IPTV Panel
 
-Painel web para criar **logins e senhas** de clientes, cadastrar e **disponibilizar listas M3U**, e ativar dispositivos por **MAC + chave** (no modelo do Duplecast IPTV).
+Painel web para criar **logins e senhas** de clientes, colar a **lista M3U de cada cliente** e deixar ele assistir no **reprodutor web/app** (inspirado no Duplecast IPTV).
 
 Frontend no stack do Lovable (Vite + React + TypeScript + Tailwind, componentes no estilo shadcn/ui), backend Node.js (Express) com banco **Firebase Firestore** e deploy na **Vercel**, tudo nos planos gratuitos.
 
 ## Funcionalidades
 
 - **Login do administrador** (sessao em cookie httpOnly, senha com bcrypt, troca de senha).
-- **Clientes**: usuario, senha (gerador automatico), validade (+1/7/30/90/365 dias), limite de dispositivos, bloqueio, observacoes e quais listas cada um recebe.
-- **Listas M3U** de tres tipos:
-  - URL M3U existente;
-  - servidor Xtream Codes (servidor + usuario + senha);
-  - conteudo manual (colar texto ou enviar arquivo `.m3u`).
-  - Botao **Testar**: carrega a lista e mostra canais, grupos e logos. EPG (XMLTV) opcional.
-- **Entrega ao cliente**: todas as listas liberadas sao mescladas em um unico M3U:
+- **Clientes**: usuario, senha (gerador automatico), validade (+1/7/30/90/365 dias), bloqueio, observacoes e a lista do cliente.
+- **Cliente rapido**: cole o link `get.php?username=...&password=...` do fornecedor e o cliente e criado com o mesmo usuario, senha e validade da conta no fornecedor.
+- **Formato Xtream**: links `get.php` e logins Xtream carregam pelo `player_api.php`, por categoria (TV ao vivo, filmes, series e episodios), em vez de baixar a lista M3U inteira (que em fornecedores grandes passa de 70 MB). Guia de programacao pelo `get_short_epg`.
+- **Lista propria por cliente**, colada no cadastro do cliente: link M3U do fornecedor, login Xtream Codes (servidor + usuario + senha; tambem XUI.One/OneStream) ou o conteudo do arquivo `.m3u`. Botao **Testar lista** mostra quantos canais, filmes e episodios a lista tem antes de salvar. EPG (XMLTV) opcional e modo de reproducao (direto da fonte ou pelo servidor).
+- **Entrega ao cliente** (para apps IPTV externos): a lista do cliente tambem sai em:
   - `GET /get.php?username=USUARIO&password=SENHA&type=m3u_plus` (formato aceito pela maioria dos apps IPTV);
   - `GET /m3u/<token>.m3u` (link curto, pode ser regenerado);
   - botao "Copiar mensagem para o cliente" com todos os dados.
-- **Ativacao por aparelho (modelo Duplecast)**: no reprodutor o cliente escolhe "Codigo do aparelho" e ve um **Device ID**, uma **Device Key** e um **QR code**. O revendedor escaneia o QR (abre o painel ja preenchido) ou digita os dados em Dispositivos; o aparelho entra sozinho assim que e vinculado. Aparelhos aguardando aparecem em "Aguardando ativacao". Apps externos podem consultar `GET /api/device/playlists?mac=ID&key=CHAVE`.
 - **Reprodutor do cliente** (`/`): o cliente entra com usuario e senha e ve **apenas** os canais das listas dele, separados por grupo, com busca e favoritos, e assiste direto no navegador (HLS via hls.js, MPEG-TS via mpegts.js, MP4/MKV nativo). Canais Xtream `.ts` caem automaticamente para `.m3u8` em aparelhos que nao tocam TS (iPhone).
 - **Secoes TV ao vivo / Filmes / Series** (detectadas pelo padrao Xtream `/live/`, `/movie/`, `/series/` ou extensao do arquivo). Series sao agrupadas por nome com temporadas e episodios (`S01 E02`). Seletor de lista quando o cliente tem mais de uma.
 - **Guia de programacao (EPG)**: "Agora / A seguir" com barra de progresso, usando o XMLTV cadastrado na lista ou o `url-tvg` do cabecalho M3U (aceita `.gz`).
@@ -34,7 +31,7 @@ Frontend no stack do Lovable (Vite + React + TypeScript + Tailwind, componentes 
 3. Na aba **Regras** do Firestore, cole o conteudo de `firestore.rules` (bloqueia todo acesso direto; so o servidor acessa) e publique.
 4. **Engrenagem > Configuracoes do projeto > Contas de servico > Gerar nova chave privada**. Baixa um arquivo `.json`: guarde com cuidado e **nunca** coloque no GitHub.
 
-As colecoes (`admins`, `clients`, `playlists`, `devices`, `pending_devices`, `config`) sao criadas sozinhas no primeiro acesso. Nao precisa criar indices.
+As colecoes (`admins`, `clients`, `config`) sao criadas sozinhas no primeiro acesso. Nao precisa criar indices.
 
 ### 2. Vercel (site + API, plano Hobby gratuito)
 1. Acesse https://vercel.com, entre com o GitHub e clique em **Add New > Project > Import** no repositorio `RTec` (branch `main`).
@@ -48,9 +45,40 @@ As colecoes (`admins`, `clients`, `playlists`, `devices`, `pending_devices`, `co
 Cada `git push` na `main` faz um novo deploy automatico.
 
 ### Limites dos planos gratuitos (importante)
+- **Modo automatico de reproducao**: links `https` tocam direto da fonte; links `http` (a maioria dos fornecedores IPTV) passam pelo servidor, porque o navegador bloqueia `http` dentro de um site `https`. Na Vercel, filmes sao entregues em pedacos de 8 MB e o ao vivo reconecta sozinho a cada ~50 s.
+- **Banda**: um canal ao vivo HD consome ~3 GB por hora e um filme ~1,5 GB. Com os ~100 GB/mes do plano gratis da Vercel, isso da algo como 30 horas de TV ao vivo **somando todos os clientes**.
 - **Vercel Hobby**: uso **pessoal e nao comercial** pelos termos da Vercel; ~100 GB de trafego/mes; funcoes com no maximo 60 s. Por isso as listas novas usam reproducao **direta da fonte** (o video nao passa pela Vercel). O modo **proxy** existe por lista, mas consome a banda do plano e streams `.ts` continuos sao cortados a cada 60 s; prefira HLS (`.m3u8`).
 - **Reproducao direta** exige que a fonte use `https` e libere CORS; links `http` sao bloqueados pelo navegador em sites `https`. Nesses casos use proxy (com os limites acima) ou um servidor proprio.
 - **Firestore Spark**: 50 mil leituras e 20 mil gravacoes por dia, 1 GB. O servidor usa cache e grava "ultimo acesso" no maximo a cada 5 minutos para economizar. Lista **manual** colada no painel tem limite de ~900 KB (limite de documento do Firestore); listas maiores, use URL M3U.
+
+## Video sem limite
+
+O navegador bloqueia links `http` dentro de um site `https`, entao no site o video dos fornecedores `http`
+passa pelo servidor (proxy). Na Vercel gratis isso tem limite (~100 GB/mes). Ha dois caminhos sem esse limite:
+
+### 1. App Android (Android, TV Box, Fire TV)
+O app abre o mesmo site, mas o video vai **direto do fornecedor para o aparelho**, sem passar por nenhum servidor.
+
+Gerar o APK (precisa de Java 21 e Android SDK):
+```bash
+export ANDROID_HOME=/caminho/android-sdk
+export RTEC_KEYSTORE=/caminho/rtec-release.jks RTEC_KEYSTORE_PASSWORD='senha'
+APP_URL=https://SEU-SITE.vercel.app npm run app:android
+git add public/download/rtec-tv.apk && git commit -m "App Android" && git push origin main
+```
+Os clientes baixam em `https://SEU-SITE/download/rtec-tv.apk` (o reprodutor mostra o botao "Baixar app Android").
+**Guarde o arquivo `.jks` e a senha fora do repositorio**: sem eles, uma versao nova do app nao instala por cima da antiga.
+
+### 2. Servidor de video gratis (Oracle Cloud "Always Free", ~10 TB/mes) - navegador e iPhone
+1. Crie a conta em https://www.oracle.com/cloud/free/ e uma instancia **Ubuntu** (shape Ampere A1 ou VM.Standard.E2.1.Micro).
+2. Em **Networking > Virtual Cloud Network > Security List**, adicione regras de entrada TCP para as portas **80** e **443** (origem `0.0.0.0/0`).
+3. Escolha um segredo (ex: gere em https://www.random.org/strings) e, no terminal da instancia, rode:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/rafanunesran/RTec/main/public/proxy/install.sh | sudo bash -s -- SEU_SEGREDO
+   ```
+4. O instalador mostra um endereco `https://IP.sslip.io`. Na Vercel, adicione `STREAM_PROXY_URL` (esse endereco) e `PROXY_SECRET` (o mesmo segredo) e faca **Redeploy**.
+
+O servidor de video so aceita links assinados pelo painel, com validade de 12 h.
 
 ## Rodando localmente
 
@@ -62,6 +90,8 @@ npm run dev      # API em :3001 + frontend em http://localhost:8080
 ```
 
 Sem `FIREBASE_SERVICE_ACCOUNT`, o servidor local usa um banco em memoria (os dados somem ao reiniciar). Para usar seu Firestore localmente, crie um arquivo `.env` com as variaveis de `.env.example` e rode `node --env-file=.env server/index.js`.
+
+**Esqueceu a senha ou o `ADMIN_PASSWORD` nao funcionou?** `ADMIN_PASSWORD` so vale quando o admin e criado pela primeira vez. Para redefinir, adicione na Vercel a variavel `ADMIN_RESET_PASSWORD` com a nova senha, faca **Redeploy**, entre no painel, troque a senha em Configuracoes e apague a variavel.
 
 Login inicial do painel: `admin` / `admin123` (ou `ADMIN_USER`/`ADMIN_PASSWORD`). **Troque a senha** em Configuracoes.
 
@@ -79,7 +109,7 @@ O frontend (`src/`) usa a mesma estrutura dos projetos Lovable. O visual atual (
 api/index.js     Funcao serverless da Vercel (usa o mesmo app do server/)
 server/          API Express: app.js, m3u.js, epg.js, testes
 server/store/    Banco: firestore.js (producao) e memory.js (testes/dev)
-src/pages/       Player (cliente), Login, Painel, Clientes, Listas, Dispositivos, Configuracoes
+src/pages/       Player (cliente), Login, Painel, Clientes, Configuracoes
 public/          manifest.webmanifest, sw.js e icones do app instalavel
 src/components/  UI (botoes, inputs, dialogos), layout e logo
 ```

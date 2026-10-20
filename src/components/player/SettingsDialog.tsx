@@ -1,8 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { CalendarClock, Lock, LogOut, MonitorSmartphone, ShieldCheck, User } from "lucide-react";
+import { CalendarClock, Lock, LogOut, ShieldCheck, User } from "lucide-react";
 import { toast } from "sonner";
 import { api, type ClientProfile, type PlayerSettings } from "@/lib/api";
-import { getDeviceIdentity } from "@/lib/device";
 import { formatDate } from "@/lib/utils";
 import { Button, Dialog, Field, Input } from "@/components/ui";
 
@@ -23,7 +22,6 @@ export default function SettingsDialog({
   onSettings: (s: PlayerSettings) => void;
   onLogout: () => void;
 }) {
-  const device = getDeviceIdentity();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [lockPin, setLockPin] = useState("");
@@ -60,10 +58,9 @@ export default function SettingsDialog({
   return (
     <Dialog open={open} onClose={onClose} title="Configurações" description="Sua conta e controle parental." wide>
       <div className="space-y-4">
-        <section className="grid gap-3 sm:grid-cols-3">
+        <section className="grid gap-3 sm:grid-cols-2">
           <Info icon={<User />} label="Conta" value={profile.name || profile.username} sub={profile.username} />
           <Info icon={<CalendarClock />} label="Validade" value={profile.expires_at ? formatDate(profile.expires_at) : "Sem expiração"} />
-          <Info icon={<MonitorSmartphone />} label="Aparelho" value={device.device_id} sub={`Chave ${device.device_key}`} mono />
         </section>
 
         <section className="rounded-xl border p-4">

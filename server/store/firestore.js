@@ -122,8 +122,7 @@ export function createFirestoreStore() {
     admins: new FirestoreCollection(db, "admins", ["username"]),
     clients: new FirestoreCollection(db, "clients", ["username", "token"]),
     playlists: new FirestoreCollection(db, "playlists"),
-    devices: new FirestoreCollection(db, "devices", ["mac"]),
-    pending: new FirestoreCollection(db, "pending_devices"),
+    config: new FirestoreCollection(db, "config"),
     async getOrCreateSecret(generate) {
       return db.runTransaction(async (t) => {
         const snap = await t.get(config);

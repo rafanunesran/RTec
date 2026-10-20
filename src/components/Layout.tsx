@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { ExternalLink, LayoutDashboard, ListVideo, LogOut, Menu, MonitorSmartphone, Settings, Users, X } from "lucide-react";
+import { ExternalLink, LayoutDashboard, LogOut, Menu, Settings, Users, X } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui";
@@ -9,8 +9,6 @@ import Logo from "./Logo";
 const nav = [
   { to: "/admin", label: "Painel", icon: LayoutDashboard },
   { to: "/admin/clientes", label: "Clientes", icon: Users },
-  { to: "/admin/listas", label: "Listas M3U", icon: ListVideo },
-  { to: "/admin/dispositivos", label: "Dispositivos", icon: MonitorSmartphone },
   { to: "/admin/configuracoes", label: "Configurações", icon: Settings },
 ];
 

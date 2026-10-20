@@ -8,3 +8,10 @@ data
 firebase-debug.log
 firestore-debug.log
 *-service-account*.json
+# Android
+android/app/build
+android/build
+android/.gradle
+android/local.properties
+*.jks
+*.keystore

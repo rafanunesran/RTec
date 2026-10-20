@@ -7,21 +7,38 @@ import { Readable } from "node:stream";
 import { DuplicateError, getStore } from "./store/index.js";
 import { buildMergedM3u, countChannels, headerEpgUrls, loadPlaylistText, parseEntries, sourceUrl } from "./m3u.js";
 import { nowNext } from "./epg.js";
+import * as xtream from "./xtream.js";
 
 const COOKIE = "rtec_session";
 const CLIENT_COOKIE = "rtec_player";
 const DEFAULT_PIN = "0000";
 const MAX_MANUAL_BYTES = 900 * 1024; // um documento do Firestore aceita ate 1 MB
 
-// "direct": o navegador busca o video na fonte (nao gasta banda do servidor; ideal no plano gratis da Vercel).
+// "direct": o navegador busca o video na fonte (nao gasta banda do servidor).
 // "proxy": o video passa pelo servidor (resolve CORS e links http, mas consome banda).
-const DEFAULT_PLAYBACK = process.env.DEFAULT_PLAYBACK || (process.env.VERCEL ? "direct" : "proxy");
+// "auto": links https vao direto; links http passam pelo servidor (o navegador bloqueia http em site https).
+const DEFAULT_PLAYBACK = process.env.DEFAULT_PLAYBACK || "auto";
+const PLAYBACK_MODES = ["auto", "direct", "proxy"];
+
+function viaProxy(mode, url, app = false) {
+  if (mode === "proxy") return true;
+  // No app Android o video vai direto do fornecedor para o aparelho (sem limite de banda do servidor).
+  if (app) return false;
+  // No navegador, link http nunca toca direto: e bloqueado dentro de um site https.
+  return !/^https:/i.test(url);
+}
+
+/** O app Android (WebView) se identifica com "RTecApp" no User-Agent. */
+const isApp = (req) => /\bRTecApp\b/.test(req.get("user-agent") || "");
 
 let JWT_SECRET = process.env.JWT_SECRET || "";
 
+// Na Vercel (funcoes de no maximo 60 s) o proxy entrega filmes em pedacos e corta o ao vivo antes do limite.
+const PROXY_CHUNK_BYTES = Number(process.env.PROXY_CHUNK_MB || (process.env.VERCEL ? 8 : 0)) * 1024 * 1024;
+const PROXY_MAX_SECONDS = Number(process.env.PROXY_MAX_SECONDS || (process.env.VERCEL ? 50 : 0));
+
 const randomToken = () => crypto.randomBytes(16).toString("hex");
 const randomPassword = () => crypto.randomBytes(6).toString("base64url");
-const normalizeMac = (mac) => String(mac || "").toUpperCase().replace(/[^0-9A-F]/g, "").replace(/(..)(?!$)/g, "$1:");
 const nowIso = () => new Date().toISOString();
 const byName = (a, b) => a.name.localeCompare(b.name);
 const newestFirst = (a, b) => String(b.created_at).localeCompare(String(a.created_at));
@@ -35,7 +52,7 @@ class HttpError extends Error {
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-async function unique(fn, message = "Ja existe um registro com esse valor (usuario/Device ID)") {
+async function unique(fn, message = "Ja existe um cliente com esse usuario") {
   try {
     return await fn();
   } catch (err) {
@@ -45,18 +62,43 @@ async function unique(fn, message = "Ja existe um registro com esse valor (usuar
 }
 
 // ---------- Inicializacao (segredo da sessao e primeiro admin) ----------
+const env = (name) => (process.env[name] || "").trim();
+
+/**
+ * Garante a conta do administrador:
+ * - sem nenhum admin: cria com ADMIN_USER / ADMIN_PASSWORD (padrao admin / admin123);
+ * - com ADMIN_RESET_PASSWORD: redefine a senha do ADMIN_USER uma vez para cada valor novo
+ *   (serve para recuperar o acesso pela Vercel sem mexer no banco).
+ */
+export async function ensureAdminAccount(db) {
+  const username = env("ADMIN_USER") || "admin";
+  const reset = env("ADMIN_RESET_PASSWORD");
+  if (reset) {
+    const fingerprint = crypto.createHash("sha256").update(`${username}|${reset}`).digest("hex");
+    const applied = await db.config.get("admin_reset");
+    if (applied?.fingerprint !== fingerprint) {
+      const hash = bcrypt.hashSync(reset, 10);
+      const admin = await db.admins.findOne("username", username);
+      if (admin) await db.admins.update(admin.id, { password_hash: hash });
+      else await unique(() => db.admins.create({ username, password_hash: hash })).catch(() => {});
+      await db.config.set("admin_reset", { fingerprint, applied_at: nowIso() });
+      console.log(`[rtec] Senha do admin "${username}" redefinida por ADMIN_RESET_PASSWORD.`);
+    }
+    return;
+  }
+  const admins = await db.admins.list();
+  if (admins.length > 0) return;
+  const password = env("ADMIN_PASSWORD") || "admin123";
+  await unique(() => db.admins.create({ username, password_hash: bcrypt.hashSync(password, 10) })).catch(() => {});
+  console.log(`[rtec] Admin inicial criado: ${username} / ${env("ADMIN_PASSWORD") ? "(senha de ADMIN_PASSWORD)" : password}`);
+}
+
 let ready;
 function init() {
   ready ??= (async () => {
     const db = getStore();
     if (!JWT_SECRET) JWT_SECRET = await db.getOrCreateSecret(() => crypto.randomBytes(32).toString("hex"));
-    const admins = await db.admins.list();
-    if (admins.length === 0) {
-      const username = process.env.ADMIN_USER || "admin";
-      const password = process.env.ADMIN_PASSWORD || "admin123";
-      await unique(() => db.admins.create({ username, password_hash: bcrypt.hashSync(password, 10) })).catch(() => {});
-      console.log(`[rtec] Admin inicial criado: ${username} / ${process.env.ADMIN_PASSWORD ? "(ADMIN_PASSWORD)" : password}`);
-    }
+    await ensureAdminAccount(db);
   })().catch((err) => {
     ready = undefined;
     throw err;
@@ -93,17 +135,29 @@ async function touch(collection, doc, field) {
 // Muda quando a senha do cliente muda, derrubando sessoes antigas do reprodutor.
 const passwordFingerprint = (c) => crypto.createHash("sha256").update(c.password).digest("hex").slice(0, 16);
 
-function signUrl(clientId, url) {
-  return crypto.createHmac("sha256", JWT_SECRET).update(`${clientId}|${url}`).digest("base64url").slice(0, 32);
+// Links do proxy assinados com validade: funcionam sem cookie, inclusive num servidor de video separado
+// (STREAM_PROXY_URL, ex: Oracle Cloud), que confere a assinatura com o mesmo PROXY_SECRET.
+const LINK_TTL_SECONDS = 12 * 3600;
+const proxySecret = () => process.env.PROXY_SECRET || JWT_SECRET;
+const proxyBase = () => (process.env.STREAM_PROXY_URL || "").replace(/\/+$/, "");
+
+function signUrl(clientId, exp, url) {
+  return crypto.createHmac("sha256", proxySecret()).update(`${clientId}|${exp}|${url}`).digest("base64url").slice(0, 32);
 }
 
-function verifySignature(clientId, url, sig) {
-  const expected = Buffer.from(signUrl(clientId, url));
-  const given = Buffer.from(sig);
+function verifySignature(clientId, exp, url, sig) {
+  if (!clientId || !(Number(exp) > Date.now() / 1000)) return false;
+  const expected = Buffer.from(signUrl(clientId, exp, url));
+  const given = Buffer.from(String(sig));
   return expected.length === given.length && crypto.timingSafeEqual(expected, given);
 }
 
-const proxyUrl = (clientId, url) => `/api/player/proxy?u=${encodeURIComponent(url)}&s=${signUrl(clientId, url)}`;
+function proxyUrl(clientId, url, base = proxyBase()) {
+  // Validade arredondada para a hora: o mesmo link se repete e aproveita cache do navegador.
+  const exp = Math.ceil((Date.now() / 1000 + LINK_TTL_SECONDS) / 3600) * 3600;
+  const q = new URLSearchParams({ u: url, c: clientId, e: String(exp), s: signUrl(clientId, exp, url) });
+  return `${base}/api/player/proxy?${q}`;
+}
 
 function streamType(url) {
   const pathname = url.split(/[?#]/)[0].toLowerCase();
@@ -113,21 +167,21 @@ function streamType(url) {
 }
 
 /** Reescreve uma playlist HLS para que segmentos, chaves e sub-playlists passem pelo proxy. */
-function rewriteHls(text, baseUrl, clientId) {
+function rewriteHls(text, baseUrl, clientId, base) {
   const abs = (u) => new URL(u, baseUrl).toString();
   return text
     .split(/\r?\n/)
     .map((line) => {
       const t = line.trim();
       if (!t) return line;
-      if (t.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_m, u) => `URI="${proxyUrl(clientId, abs(u))}"`);
-      return proxyUrl(clientId, abs(t));
+      if (t.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_m, u) => `URI="${proxyUrl(clientId, abs(u), base)}"`);
+      return proxyUrl(clientId, abs(t), base);
     })
     .join("\n");
 }
 
 function clientProfile(c) {
-  return { name: c.name, username: c.username, expires_at: c.expires_at, max_devices: c.max_devices };
+  return { name: c.name, username: c.username, expires_at: c.expires_at };
 }
 
 function signClientSession(res, req, c) {
@@ -160,13 +214,14 @@ const requireClient = wrap(async (req, _res, next) => {
 
 async function clientPlaylists(c) {
   const db = getStore();
-  const lists = await Promise.all((c.playlist_ids || []).map((id) => db.playlists.get(id)));
-  return lists.filter((p) => p && p.active).sort(byName);
+  const own = c.source?.kind ? [{ ...c.source, id: `own-${c.id}`, name: c.name || c.username, active: true }] : [];
+  const shared = await Promise.all((c.playlist_ids || []).map((id) => db.playlists.get(id)));
+  return [...own, ...shared.filter((p) => p && p.active).sort(byName)];
 }
 
-function serializeClient(c, deviceCount = 0) {
+function serializeClient(c) {
   const { parental_pin_hash, locked_groups: _locked, ...rest } = c;
-  return { ...rest, playlist_ids: c.playlist_ids || [], device_count: deviceCount, valid: isClientValid(c), custom_pin: !!parental_pin_hash };
+  return { ...rest, playlist_ids: c.playlist_ids || [], valid: isClientValid(c), custom_pin: !!parental_pin_hash };
 }
 
 function str(v, field, { required = false, max = 2000 } = {}) {
@@ -205,6 +260,98 @@ async function findClientByLogin(username, password) {
   return c;
 }
 
+/** Valida a fonte de canais: URL M3U, login Xtream ou conteudo M3U colado. */
+function readSource(body, existing) {
+  const kind = str(body.kind ?? existing?.kind, "tipo", { required: true });
+  if (!["m3u_url", "xtream", "manual"].includes(kind)) throw new HttpError(400, "Tipo de lista invalido");
+  const playback = str(body.playback ?? existing?.playback ?? DEFAULT_PLAYBACK, "reproducao");
+  if (!PLAYBACK_MODES.includes(playback)) throw new HttpError(400, "Modo de reproducao invalido");
+  const p = {
+    kind,
+    url: str(body.url ?? existing?.url, "url"),
+    xtream_server: str(body.xtream_server ?? existing?.xtream_server, "servidor"),
+    xtream_username: str(body.xtream_username ?? existing?.xtream_username, "usuario xtream"),
+    xtream_password: str(body.xtream_password ?? existing?.xtream_password, "senha xtream"),
+    content: String(body.content ?? existing?.content ?? ""),
+    epg_url: str(body.epg_url ?? existing?.epg_url, "epg"),
+    playback,
+  };
+  if (kind === "m3u_url" && !/^https?:\/\//i.test(p.url)) throw new HttpError(400, "Informe uma URL M3U valida (http/https)");
+  if (kind === "xtream" && (!/^https?:\/\//i.test(p.xtream_server) || !p.xtream_username || !p.xtream_password)) {
+    throw new HttpError(400, "Informe servidor (http/https), usuario e senha do Xtream");
+  }
+  if (kind === "manual" && !/#EXTINF/i.test(p.content)) throw new HttpError(400, "Cole um conteudo M3U valido (com #EXTINF)");
+  if (kind !== "manual") p.content = "";
+  if (kind !== "m3u_url") p.url = "";
+  if (kind !== "xtream") p.xtream_server = p.xtream_username = p.xtream_password = "";
+  if (Buffer.byteLength(p.content) > MAX_MANUAL_BYTES) {
+    throw new HttpError(400, "Lista colada muito grande (limite ~900 KB). Use o link M3U do fornecedor.");
+  }
+  return p;
+}
+
+async function previewSource(p) {
+  // Xtream: confere a conta e conta as categorias pela API (rapido), sem baixar a lista inteira.
+  const creds = xtream.xtreamCredentials(p);
+  if (creds) {
+    try {
+      const [account, live, movie, series] = await Promise.all([
+        xtream.accountInfo(creds),
+        ...["live", "movie", "series"].map((s) => xtream.categories(creds, s)),
+      ]);
+      return { ok: true, xtream: { ...account, categories: { live: live.length, movie: movie.length, series: series.length } } };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  }
+  try {
+    const text = await loadPlaylistText(p);
+    const all = parseEntries(text, Infinity);
+    const kinds = { live: 0, movie: 0, series: 0 };
+    all.forEach((e) => kinds[e.kind]++);
+    const groups = [...new Set(all.map((e) => e.group).filter(Boolean))];
+    return { ok: true, source: sourceUrl(p), channel_count: countChannels(text), kinds, groups, entries: all.slice(0, 100) };
+  } catch (err) {
+    return { ok: false, source: sourceUrl(p), error: err.message };
+  }
+}
+
+const MAX_M3U_ITEMS = 20000;
+
+/** Logos https vao direto; http passam pelo servidor (imagens sao pequenas). */
+const logoUrl = (clientId, url) => (!/^https?:\/\//i.test(url || "") ? "" : /^https:/i.test(url) ? url : proxyUrl(clientId, url));
+
+const hashId = (...parts) => crypto.createHash("sha1").update(parts.join("|")).digest("hex").slice(0, 12);
+
+/** Converte um item da API Xtream no formato de canal usado pelo reprodutor. */
+function xtreamChannel(c, item, group, app = false) {
+  const mode = c.source?.playback || DEFAULT_PLAYBACK;
+  const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
+  if (item.kind === "series" && item.series_id) {
+    return { id: `s${item.series_id}`, series_id: item.series_id, name: item.name, group, logo: logoUrl(c.id, item.logo), src: "", type: "file", alt: "", alt_type: "", kind: "series", epg_id: "", playlist_id: "own" };
+  }
+  return {
+    id: hashId(c.id, item.kind, item.stream_id),
+    name: item.name,
+    group,
+    logo: logoUrl(c.id, item.logo),
+    src: link(item.url),
+    type: streamType(item.url),
+    alt: item.alt_url ? link(item.alt_url) : "",
+    alt_type: item.alt_url ? streamType(item.alt_url) : "",
+    kind: item.kind,
+    epg_id: item.kind === "live" ? `xt:${item.stream_id}` : "",
+    playlist_id: "own",
+    ...(item.season ? { season: item.season, episode: item.episode } : {}),
+  };
+}
+
+function requireXtream(c) {
+  const creds = xtream.xtreamCredentials(c.source);
+  if (!creds) throw new HttpError(400, "A lista deste cliente nao e Xtream");
+  return creds;
+}
+
 const checkPin = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pin || ""), c.parental_pin_hash) : String(pin || "") === DEFAULT_PIN);
 
 export function createApp() {
@@ -220,9 +367,16 @@ export function createApp() {
   app.post(
     "/api/auth/login",
     wrap(async (req, res) => {
-      const { username, password } = req.body || {};
-      const admin = await db().admins.findOne("username", String(username || ""));
-      if (!admin || !bcrypt.compareSync(String(password || ""), admin.password_hash)) {
+      const username = String(req.body?.username || "").trim();
+      const password = String(req.body?.password || "");
+      let admin = await db().admins.findOne("username", username);
+      if (!admin && (await db().admins.list()).length === 0) {
+        // Admin apagado no Firestore com o servidor ja rodando: recria na hora.
+        await ensureAdminAccount(db());
+        admin = await db().admins.findOne("username", username);
+      }
+      if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
+        console.warn(`[rtec] Login de admin recusado para "${username}": ${admin ? "senha incorreta" : "usuario nao existe"}`);
         throw new HttpError(401, "Usuario ou senha invalidos");
       }
       const token = jwt.sign({ id: admin.id, username: admin.username }, JWT_SECRET, { expiresIn: "7d" });
@@ -258,13 +412,12 @@ export function createApp() {
     "/api/stats",
     requireAdmin,
     wrap(async (_req, res) => {
-      const [clients, playlists, devices] = await Promise.all([db().clients.list(), db().playlists.list(), db().devices.list()]);
+      const [clients, playlists] = await Promise.all([db().clients.list(), db().playlists.list()]);
       res.json({
         clients: clients.length,
         active_clients: clients.filter(isClientValid).length,
         expired_clients: clients.filter((c) => c.expires_at && new Date(c.expires_at) <= new Date()).length,
-        playlists: playlists.length,
-        devices: devices.length,
+        playlists: clients.filter((c) => c.source?.kind).length + playlists.length,
         recent: clients
           .filter((c) => c.last_access_at)
           .sort((a, b) => b.last_access_at.localeCompare(a.last_access_at))
@@ -275,19 +428,14 @@ export function createApp() {
   );
 
   // ---------- Clientes (login/senha) ----------
-  async function clientResponse(req, c) {
-    const devices = await db().devices.where("client_id", "==", c.id);
-    return { ...serializeClient(c, devices.length), links: clientLinks(req, c) };
-  }
+  const clientResponse = (req, c) => ({ ...serializeClient(c), links: clientLinks(req, c) });
 
   app.get(
     "/api/clients",
     requireAdmin,
     wrap(async (req, res) => {
-      const [clients, devices] = await Promise.all([db().clients.list(), db().devices.list()]);
-      const counts = {};
-      for (const d of devices) counts[d.client_id] = (counts[d.client_id] || 0) + 1;
-      res.json(clients.sort(newestFirst).map((c) => ({ ...serializeClient(c, counts[c.id] || 0), links: clientLinks(req, c) })));
+      const clients = await db().clients.list();
+      res.json(clients.sort(newestFirst).map((c) => clientResponse(req, c)));
     }),
   );
 
@@ -303,12 +451,14 @@ export function createApp() {
       const found = await Promise.all(ids.map((id) => db().playlists.get(id)));
       playlistIds = ids.filter((_id, i) => found[i]);
     }
+    let source = existing?.source ?? null;
+    if (body.source !== undefined) source = body.source && body.source.kind ? readSource(body.source) : null;
     return {
+      source,
       name: str(body.name ?? existing?.name, "nome", { max: 120 }),
       username,
       password,
       active: !!(body.active ?? existing?.active ?? true),
-      max_devices: Math.max(1, Number(body.max_devices ?? existing?.max_devices ?? 1) || 1),
       expires_at: expires ? new Date(expires).toISOString() : null,
       notes: str(body.notes ?? existing?.notes, "observacoes"),
       playlist_ids: playlistIds,
@@ -323,7 +473,45 @@ export function createApp() {
       const c = await unique(() =>
         db().clients.create({ ...data, token: randomToken(), last_access_at: null, parental_pin_hash: "", locked_groups: [] }),
       );
-      res.status(201).json(await clientResponse(req, c));
+      res.status(201).json(clientResponse(req, c));
+    }),
+  );
+
+  // Cliente rapido: cola o link do fornecedor e o cliente nasce com o mesmo usuario, senha e validade da lista.
+  app.post(
+    "/api/clients/quick",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const link = String(req.body?.link || "").trim();
+      const creds = xtream.parseXtreamLink(link);
+      if (!creds) throw new HttpError(400, "Cole um link no formato http://servidor/get.php?username=...&password=...");
+      let account = null;
+      try {
+        account = await xtream.accountInfo(creds);
+      } catch (err) {
+        throw new HttpError(400, err.message);
+      }
+      const username = creds.username.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 64) || `cliente${crypto.randomInt(1000, 9999)}`;
+      const source = readSource({ kind: "xtream", xtream_server: creds.server, xtream_username: creds.username, xtream_password: creds.password, playback: DEFAULT_PLAYBACK });
+      const c = await unique(
+        () =>
+          db().clients.create({
+            name: String(req.body?.name || "").trim().slice(0, 120) || creds.username,
+            username,
+            password: creds.password,
+            active: true,
+            expires_at: account.expires_at,
+            notes: account.max_connections ? `Fornecedor: ${account.max_connections} tela(s) simultanea(s)` : "",
+            source,
+            playlist_ids: [],
+            token: randomToken(),
+            last_access_at: null,
+            parental_pin_hash: "",
+            locked_groups: [],
+          }),
+        `Ja existe um cliente com o usuario "${username}"`,
+      );
+      res.status(201).json(clientResponse(req, c));
     }),
   );
 
@@ -338,7 +526,7 @@ export function createApp() {
       if (req.body?.reset_pin) patch.parental_pin_hash = "";
       const c = await unique(() => db().clients.update(existing.id, patch));
       forgetClient(existing.id);
-      res.json(await clientResponse(req, c));
+      res.json(clientResponse(req, c));
     }),
   );
 
@@ -348,7 +536,7 @@ export function createApp() {
     wrap(async (req, res) => {
       const c = await db().clients.update(req.params.id, { token: randomToken() });
       if (!c) throw new HttpError(404, "Cliente nao encontrado");
-      res.json(await clientResponse(req, c));
+      res.json(clientResponse(req, c));
     }),
   );
 
@@ -356,41 +544,26 @@ export function createApp() {
     "/api/clients/:id",
     requireAdmin,
     wrap(async (req, res) => {
-      await db().devices.deleteWhere("client_id", "==", req.params.id);
       await db().clients.delete(req.params.id);
       forgetClient(req.params.id);
       res.json({ ok: true });
     }),
   );
 
-  // ---------- Listas (fontes M3U) ----------
+  // Testa uma lista (do formulario do cliente) antes de salvar.
+  app.post(
+    "/api/source/preview",
+    requireAdmin,
+    wrap(async (req, res) => res.json(await previewSource(readSource(req.body || {})))),
+  );
+
+  // ---------- Listas compartilhadas (legado: hoje cada cliente tem a propria lista) ----------
   function readPlaylistBody(body, existing) {
-    const kind = str(body.kind ?? existing?.kind, "tipo", { required: true });
-    if (!["m3u_url", "xtream", "manual"].includes(kind)) throw new HttpError(400, "Tipo de lista invalido");
-    const playback = str(body.playback ?? existing?.playback ?? DEFAULT_PLAYBACK, "reproducao");
-    if (!["direct", "proxy"].includes(playback)) throw new HttpError(400, "Modo de reproducao invalido");
-    const p = {
+    return {
+      ...readSource(body, existing),
       name: str(body.name ?? existing?.name, "nome", { required: true, max: 120 }),
-      kind,
-      url: str(body.url ?? existing?.url, "url"),
-      xtream_server: str(body.xtream_server ?? existing?.xtream_server, "servidor"),
-      xtream_username: str(body.xtream_username ?? existing?.xtream_username, "usuario xtream"),
-      xtream_password: str(body.xtream_password ?? existing?.xtream_password, "senha xtream"),
-      content: String(body.content ?? existing?.content ?? ""),
-      epg_url: str(body.epg_url ?? existing?.epg_url, "epg"),
-      playback,
       active: !!(body.active ?? existing?.active ?? true),
     };
-    if (kind === "m3u_url" && !/^https?:\/\//i.test(p.url)) throw new HttpError(400, "Informe uma URL M3U valida (http/https)");
-    if (kind === "xtream" && (!/^https?:\/\//i.test(p.xtream_server) || !p.xtream_username || !p.xtream_password)) {
-      throw new HttpError(400, "Informe servidor (http/https), usuario e senha do Xtream");
-    }
-    if (kind === "manual" && !/#EXTINF/i.test(p.content)) throw new HttpError(400, "Cole um conteudo M3U valido (com #EXTINF)");
-    if (kind !== "manual") p.content = "";
-    if (Buffer.byteLength(p.content) > MAX_MANUAL_BYTES) {
-      throw new HttpError(400, "Lista manual muito grande (limite ~900 KB). Hospede o arquivo e use o tipo URL M3U.");
-    }
-    return p;
   }
 
   async function playlistResponse(p, clients) {
@@ -452,94 +625,7 @@ export function createApp() {
     wrap(async (req, res) => {
       const p = await db().playlists.get(req.params.id);
       if (!p) throw new HttpError(404, "Lista nao encontrada");
-      try {
-        const text = await loadPlaylistText(p);
-        const all = parseEntries(text, Infinity);
-        const groups = [...new Set(all.map((e) => e.group).filter(Boolean))];
-        res.json({ ok: true, source: sourceUrl(p), channel_count: countChannels(text), groups, entries: all.slice(0, 100) });
-      } catch (err) {
-        res.json({ ok: false, source: sourceUrl(p), error: err.message });
-      }
-    }),
-  );
-
-  // ---------- Dispositivos (Device ID + Device Key) ----------
-  app.get(
-    "/api/devices",
-    requireAdmin,
-    wrap(async (_req, res) => {
-      const [devices, clients] = await Promise.all([db().devices.list(), db().clients.list()]);
-      const byId = new Map(clients.map((c) => [c.id, c]));
-      res.json(
-        devices
-          .sort(newestFirst)
-          .map((d) => ({ ...d, client_username: byId.get(d.client_id)?.username ?? "?", client_name: byId.get(d.client_id)?.name ?? "" })),
-      );
-    }),
-  );
-
-  async function readDeviceBody(body, existing) {
-    const mac = normalizeMac(body.mac ?? existing?.mac);
-    if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) throw new HttpError(400, "Device ID invalido (ex: 00:1A:2B:3C:4D:5E)");
-    const clientId = String(body.client_id ?? existing?.client_id ?? "");
-    const client = clientId && (await db().clients.get(clientId));
-    if (!client) throw new HttpError(400, "Selecione um cliente valido");
-    const used = (await db().devices.where("client_id", "==", clientId)).filter((d) => d.id !== existing?.id).length;
-    if (used >= client.max_devices) throw new HttpError(400, `Cliente atingiu o limite de ${client.max_devices} dispositivo(s)`);
-    return {
-      mac,
-      client_id: clientId,
-      device_key: str(body.device_key ?? existing?.device_key, "chave", { max: 64 }) || String(crypto.randomInt(100000, 999999)),
-      label: str(body.label ?? existing?.label, "descricao", { max: 120 }),
-    };
-  }
-
-  app.get(
-    "/api/devices/pending",
-    requireAdmin,
-    wrap(async (_req, res) => {
-      const pending = await db().pending.list();
-      res.json(pending.sort(newestFirst).map(({ id, ...p }) => ({ device_id: id, ...p })));
-    }),
-  );
-
-  app.delete(
-    "/api/devices/pending/:id",
-    requireAdmin,
-    wrap(async (req, res) => {
-      await db().pending.delete(normalizeMac(req.params.id));
-      res.json({ ok: true });
-    }),
-  );
-
-  app.post(
-    "/api/devices",
-    requireAdmin,
-    wrap(async (req, res) => {
-      const data = await readDeviceBody(req.body || {});
-      const d = await unique(() => db().devices.create({ ...data, last_seen_at: null }));
-      await db().pending.delete(d.mac);
-      res.status(201).json(d);
-    }),
-  );
-
-  app.put(
-    "/api/devices/:id",
-    requireAdmin,
-    wrap(async (req, res) => {
-      const existing = await db().devices.get(req.params.id);
-      if (!existing) throw new HttpError(404, "Dispositivo nao encontrado");
-      const data = await readDeviceBody(req.body || {}, existing);
-      res.json(await unique(() => db().devices.update(existing.id, data)));
-    }),
-  );
-
-  app.delete(
-    "/api/devices/:id",
-    requireAdmin,
-    wrap(async (req, res) => {
-      await db().devices.delete(req.params.id);
-      res.json({ ok: true });
+      res.json(await previewSource(p));
     }),
   );
 
@@ -571,27 +657,32 @@ export function createApp() {
       await touch("clients", c, "last_access_at");
       const channels = [];
       const playlists = [];
-      for (const p of await clientPlaylists(c)) {
+      const errors = [];
+      const sources = await clientPlaylists(c);
+      for (const p of sources) {
         let text;
         try {
           text = await loadPlaylistText(p);
-        } catch {
+        } catch (err) {
+          console.warn(`[rtec] Lista do cliente "${c.username}" falhou: ${err.message}`);
+          errors.push(err.message);
           continue;
         }
         playlists.push({ id: p.id, name: p.name });
-        const viaProxy = (p.playback || DEFAULT_PLAYBACK) === "proxy";
-        const link = (url) => (viaProxy ? proxyUrl(c.id, url) : url);
+        const mode = p.playback || DEFAULT_PLAYBACK;
+        const app = isApp(req);
+        const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
         for (const e of parseEntries(text, Infinity)) {
           if (!/^https?:\/\//i.test(e.url)) continue;
           // Servidores Xtream entregam o mesmo canal em HLS (.m3u8), que toca em mais aparelhos (ex: iPhone).
           const hlsUrl = /\/live\/.+\.ts$/i.test(e.url.split("?")[0]) ? e.url.replace(/\.ts(\?|$)/i, ".m3u8$1") : "";
           // Sem proxy, o navegador vai direto na fonte: prefere HLS, que costuma funcionar melhor assim.
-          const [main, alt] = !viaProxy && hlsUrl ? [hlsUrl, e.url] : [e.url, hlsUrl];
+          const [main, alt] = !viaProxy(mode, e.url, app) && hlsUrl ? [hlsUrl, e.url] : [e.url, hlsUrl];
           channels.push({
             id: crypto.createHash("sha1").update(`${p.id}|${e.url}`).digest("hex").slice(0, 12),
             name: e.name,
             group: e.group || p.name,
-            logo: /^https?:\/\//i.test(e.logo) ? link(e.logo) : "",
+            logo: logoUrl(c.id, e.logo),
             src: link(main),
             type: streamType(main),
             alt: alt ? link(alt) : "",
@@ -603,7 +694,61 @@ export function createApp() {
         }
       }
       res.setHeader("Cache-Control", "no-store");
-      res.json({ playlists, channels });
+      if (channels.length > MAX_M3U_ITEMS) {
+        return res.json({
+          playlists,
+          channels: [],
+          errors: [`A lista tem ${channels.length.toLocaleString("pt-BR")} itens, grande demais para carregar de uma vez. Cadastre no formato Xtream (servidor, usuario e senha).`],
+        });
+      }
+      res.json({ playlists, channels, errors, no_source: sources.length === 0 });
+    }),
+  );
+
+  // Catalogo: no formato Xtream o reprodutor carrega por categoria; nas demais listas usa /channels.
+  app.get(
+    "/api/player/catalog",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      await touch("clients", c, "last_access_at");
+      const creds = xtream.xtreamCredentials(c.source);
+      if (!creds) return res.json({ mode: "m3u" });
+      try {
+        const [live, movie, series] = await Promise.all(["live", "movie", "series"].map((s) => xtream.categories(creds, s)));
+        res.json({ mode: "xtream", sections: { live, movie, series } });
+      } catch (err) {
+        console.warn(`[rtec] Xtream do cliente "${c.username}" falhou: ${err.message}`);
+        res.json({ mode: "xtream", sections: { live: [], movie: [], series: [] }, errors: [err.message] });
+      }
+    }),
+  );
+
+  app.get(
+    "/api/player/xtream/items",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      const creds = requireXtream(c);
+      const section = String(req.query.section || "");
+      if (!["live", "movie", "series"].includes(section)) throw new HttpError(400, "Secao invalida");
+      const category = String(req.query.category || "");
+      if (!category && section !== "live") throw new HttpError(400, "Escolha uma categoria");
+      const [cats, list] = await Promise.all([xtream.categories(creds, section), xtream.items(creds, section, category)]);
+      const names = new Map(cats.map((x) => [x.id, x.name]));
+      res.setHeader("Cache-Control", "no-store");
+      res.json(list.map((it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "", isApp(req))));
+    }),
+  );
+
+  app.get(
+    "/api/player/xtream/series/:id",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      const episodes = await xtream.seriesEpisodes(requireXtream(c), req.params.id);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(episodes.map((ep) => xtreamChannel(c, ep, String(req.query.name || ""), isApp(req))));
     }),
   );
 
@@ -612,7 +757,20 @@ export function createApp() {
     "/api/player/epg",
     requireClient,
     wrap(async (req, res) => {
-      const ids = String(req.query.ids || "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 300);
+      const all = String(req.query.ids || "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 300);
+      // Canais Xtream ("xt:<id>"): programacao curta direto da API do fornecedor (limitado por pedido).
+      const xtIds = all.filter((id) => id.startsWith("xt:")).slice(0, 25);
+      const ids = all.filter((id) => !id.startsWith("xt:"));
+      const out = {};
+      const creds = xtIds.length ? xtream.xtreamCredentials(req.client.source) : null;
+      if (creds) {
+        await Promise.all(
+          xtIds.map(async (id) => {
+            out[id] = await xtream.shortEpg(creds, id.slice(3)).catch(() => []);
+          }),
+        );
+      }
+      if (!ids.length) return res.json(out);
       const urls = new Set();
       for (const p of await clientPlaylists(req.client)) {
         if (p.epg_url) urls.add(p.epg_url);
@@ -622,7 +780,7 @@ export function createApp() {
           /* lista fora do ar: segue sem o EPG dela */
         }
       }
-      res.json(ids.length && urls.size ? await nowNext([...urls], ids) : {});
+      res.json({ ...out, ...(urls.size ? await nowNext([...urls], ids) : {}) });
     }),
   );
 
@@ -663,71 +821,50 @@ export function createApp() {
     }),
   );
 
-  // ---------- Ativacao por codigo do aparelho (Device ID + Device Key, com QR code) ----------
-  // O reprodutor gera ID e chave, registra aqui e fica consultando ate o revendedor vincular a um cliente.
-  app.post(
-    "/api/player/device/register",
-    wrap(async (req, res) => {
-      const id = normalizeMac(req.body?.device_id);
-      const key = String(req.body?.device_key || "");
-      if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(id) || !/^\d{6}$/.test(key)) throw new HttpError(400, "Codigo do aparelho invalido");
-      const linked = await db().devices.findOne("mac", id);
-      if (linked && linked.device_key !== key) throw new HttpError(409, "Este ID ja pertence a outro aparelho");
-      if (!linked) {
-        const pending = await db().pending.get(id);
-        if (pending && pending.device_key !== key) throw new HttpError(409, "Este ID ja pertence a outro aparelho");
-        if (!pending) {
-          const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-          await db().pending.deleteWhere("created_at", "<", weekAgo);
-          await db().pending.set(id, { device_key: key, user_agent: String(req.get("user-agent") || "").slice(0, 300), created_at: nowIso() });
-        }
-      }
-      res.json({ device_id: id, linked: !!linked });
-    }),
-  );
-
-  app.get(
-    "/api/player/device/status",
-    wrap(async (req, res) => {
-      const d = await db().devices.findOne("mac", normalizeMac(req.query.device_id));
-      if (!d || d.device_key !== String(req.query.device_key || "")) return res.json({ linked: false });
-      const c = await getClient(d.client_id);
-      if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor.");
-      await touch("devices", d, "last_seen_at");
-      await touch("clients", c, "last_access_at");
-      signClientSession(res, req, c);
-      res.json({ linked: true, profile: clientProfile(c) });
-    }),
-  );
-
   // Repassa streams e logos pelo servidor (listas no modo "proxy"): evita bloqueio de CORS e de conteudo
   // http em site https. So aceita URLs assinadas pelo proprio servidor para o cliente logado.
   app.get(
     "/api/player/proxy",
-    requireClient,
     wrap(async (req, res) => {
       const url = String(req.query.u || "");
-      if (!/^https?:\/\//i.test(url) || !verifySignature(req.client.id, url, String(req.query.s || ""))) {
-        throw new HttpError(403, "Link invalido");
+      const clientId = String(req.query.c || "");
+      if (!/^https?:\/\//i.test(url) || !verifySignature(clientId, req.query.e, url, req.query.s || "")) {
+        throw new HttpError(403, "Link invalido ou expirado");
       }
+      const client = await getClient(clientId);
+      if (!isClientValid(client)) throw new HttpError(403, "Acesso expirado ou bloqueado");
+      req.client = client;
+      res.setHeader("Access-Control-Allow-Origin", "*");
       const controller = new AbortController();
       res.on("close", () => controller.abort());
       const headers = { "User-Agent": "VLC/3.0.20 LibVLC/3.0.20" };
-      if (req.headers.range) headers.Range = req.headers.range;
+      // Filmes/series: pede ao fornecedor so um pedaco por vez (o navegador busca o proximo sozinho),
+      // para cada resposta terminar rapido e caber no limite de tempo da funcao da Vercel.
+      const isFile = /\.(mp4|mkv|avi|mov|m4v|webm)$/i.test(new URL(url).pathname);
+      if (isFile && PROXY_CHUNK_BYTES) {
+        const m = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range || "bytes=0-");
+        const start = m ? Number(m[1]) : 0;
+        const end = m && m[2] ? Math.min(Number(m[2]), start + PROXY_CHUNK_BYTES - 1) : start + PROXY_CHUNK_BYTES - 1;
+        headers.Range = `bytes=${start}-${end}`;
+      } else if (req.headers.range) {
+        headers.Range = req.headers.range;
+      }
       let upstream;
       try {
         upstream = await fetch(url, { headers, signal: controller.signal, redirect: "follow" });
-      } catch {
+      } catch (err) {
+        if (!controller.signal.aborted) console.warn(`[rtec] Proxy: falha ao conectar em ${new URL(url).host}: ${err.cause?.code || err.message}`);
         if (!res.headersSent && !controller.signal.aborted) res.status(502).json({ error: "Falha ao conectar na fonte" });
         return;
       }
+      if (!upstream.ok) console.warn(`[rtec] Proxy: fornecedor respondeu HTTP ${upstream.status} para ${new URL(url).host} (cliente ${req.client.username})`);
       const type = upstream.headers.get("content-type") || "";
       if (/mpegurl/i.test(type) || /\.m3u8$/i.test(new URL(upstream.url).pathname)) {
         const text = await upstream.text();
         res.status(upstream.status);
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
         res.setHeader("Cache-Control", "no-store");
-        res.send(rewriteHls(text, upstream.url, req.client.id));
+        res.send(rewriteHls(text, upstream.url, req.client.id, ""));
         return;
       }
       res.status(upstream.status);
@@ -736,8 +873,11 @@ export function createApp() {
         if (v) res.setHeader(h, v);
       }
       if (!upstream.body) return res.end();
+      // Ao vivo continuo: encerra antes do limite da funcao; o reprodutor reconecta sozinho.
+      const timer = PROXY_MAX_SECONDS ? setTimeout(() => controller.abort(), PROXY_MAX_SECONDS * 1000) : null;
+      res.on("close", () => timer && clearTimeout(timer));
       Readable.fromWeb(upstream.body)
-        .on("error", () => res.destroy())
+        .on("error", () => res.end())
         .pipe(res);
     }),
   );
@@ -759,20 +899,6 @@ export function createApp() {
       const c = await db().clients.findOne("token", req.params.token);
       if (!isClientValid(c)) return res.status(401).type("text").send("Unauthorized");
       await sendM3u(res, c);
-    }),
-  );
-
-  // Ativacao por dispositivo para apps externos: o app envia ID + chave e recebe a lista.
-  app.get(
-    "/api/device/playlists",
-    wrap(async (req, res) => {
-      const d = await db().devices.findOne("mac", normalizeMac(req.query.mac));
-      if (!d || d.device_key !== String(req.query.key || "")) throw new HttpError(401, "Dispositivo nao ativado");
-      const c = await getClient(d.client_id);
-      if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado");
-      await touch("devices", d, "last_seen_at");
-      await touch("clients", c, "last_access_at");
-      res.json({ mac: d.mac, expires_at: c.expires_at, playlists: [{ name: c.name || c.username, url: clientLinks(req, c).m3u_token }] });
     }),
   );
 

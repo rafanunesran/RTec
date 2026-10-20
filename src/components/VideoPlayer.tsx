@@ -15,7 +15,7 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
       hls.on(Hls.Events.ERROR, (_e, data) => {
         if (!data.fatal) return;
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else onFail("Canal fora do ar ou indisponivel no momento.");
+        else onFail(`Canal fora do ar ou indisponivel no momento. (${data.details}${data.response?.code ? ` ${data.response.code}` : ""})`);
       });
       hls.loadSource(src);
       hls.attachMedia(video);
@@ -29,7 +29,9 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
     const { default: mpegts } = await import("mpegts.js");
     if (!mpegts.getFeatureList().mseLivePlayback) throw new Unsupported();
     const player = mpegts.createPlayer({ type: "mpegts", isLive: true, url: src }, { enableStashBuffer: false, liveBufferLatencyChasing: true });
-    player.on(mpegts.Events.ERROR, () => onFail("Canal fora do ar ou formato nao suportado neste aparelho."));
+    player.on(mpegts.Events.ERROR, (type: string, detail: string, info?: { code?: number; msg?: string }) =>
+      onFail(`Canal fora do ar ou formato nao suportado neste aparelho. (${detail || type}${info?.code ? ` ${info.code}` : ""})`),
+    );
     player.attachMediaElement(video);
     player.load();
     return () => {
@@ -65,11 +67,15 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
     let stop: Stop | undefined;
     let cancelled = false;
     let triedAlt = false;
+    let active = { src: channel.src, type: channel.type };
+    let playedAt = 0; // quando comecou a tocar (para saber se a queda foi depois de funcionar)
+    let reconnects = 0;
 
     setState("loading");
     setError("");
 
     const start = async (src: string, type: Channel["type"]) => {
+      active = { src, type };
       stop?.();
       stop = undefined;
       try {
@@ -86,6 +92,17 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
     // Se o formato original falhar, tenta a versao alternativa do mesmo canal (HLS <-> MPEG-TS no Xtream).
     function fail(msg: string) {
       if (cancelled) return;
+      // Ao vivo que ja estava tocando e caiu (ex: limite de tempo do servidor): reconecta sozinho.
+      if (channel!.kind === "live" && playedAt) {
+        if (Date.now() - playedAt > 20000) reconnects = 0;
+        if (reconnects < 5) {
+          reconnects++;
+          playedAt = 0;
+          setState("loading");
+          setTimeout(() => !cancelled && start(active.src, active.type), 500);
+          return;
+        }
+      }
       if (channel!.alt && !triedAlt) {
         triedAlt = true;
         start(channel!.alt, channel!.alt_type || "hls");
@@ -95,16 +112,22 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
       setState("error");
     }
 
-    const onPlaying = () => setState("playing");
+    const onPlaying = () => {
+      playedAt ||= Date.now();
+      setState("playing");
+    };
     const onWaiting = () => setState((s) => (s === "error" ? s : "loading"));
+    const onEnded = () => channel!.kind === "live" && fail("A transmissao foi encerrada.");
     video.addEventListener("playing", onPlaying);
     video.addEventListener("waiting", onWaiting);
+    video.addEventListener("ended", onEnded);
     start(channel.src, channel.type);
 
     return () => {
       cancelled = true;
       video.removeEventListener("playing", onPlaying);
       video.removeEventListener("waiting", onWaiting);
+      video.removeEventListener("ended", onEnded);
       stop?.();
     };
   }, [channel]);

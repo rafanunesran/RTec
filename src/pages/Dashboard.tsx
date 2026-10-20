@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Activity, ListVideo, MonitorSmartphone, UserCheck, UserX, Users } from "lucide-react";
+import { Activity, ListVideo, UserCheck, UserX, Users } from "lucide-react";
 import { api, type Stats } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Card, Skeleton, StatCard } from "@/components/ui";
@@ -8,25 +8,13 @@ import PageHeader from "@/components/PageHeader";
 
 const steps: [string, ReactNode][] = [
   [
-    "Cadastre uma lista",
-    <>
-      Adicione sua fonte em <Link to="/admin/listas" className="font-medium text-primary hover:underline">Listas M3U</Link> (URL M3U, Xtream ou conteúdo colado).
-    </>,
-  ],
-  [
     "Crie o cliente",
     <>
-      Em <Link to="/admin/clientes" className="font-medium text-primary hover:underline">Clientes</Link>, defina usuário, senha, validade e as listas liberadas.
+      Em <Link to="/admin/clientes" className="font-medium text-primary hover:underline">Clientes</Link>, defina login, senha e validade e cole a lista M3U
+      dele (link, login Xtream ou o conteúdo do arquivo). Use "Testar lista" antes de salvar.
     </>,
   ],
-  ["Envie o acesso", "Copie a mensagem pronta: o cliente assiste no navegador e pode instalar o app no celular."],
-  [
-    "Ative aparelhos",
-    <>
-      Opcional: vincule a TV do cliente pelo Device ID e chave em{" "}
-      <Link to="/admin/dispositivos" className="font-medium text-primary hover:underline">Dispositivos</Link>.
-    </>,
-  ],
+  ["Envie o acesso", "Mande o endereço do site com o login e a senha: o cliente assiste no navegador e pode instalar o app no celular."],
 ];
 
 export default function Dashboard() {
@@ -40,16 +28,15 @@ export default function Dashboard() {
     { label: "Clientes", value: stats?.clients, icon: <Users />, to: "/admin/clientes", tone: "primary" },
     { label: "Ativos", value: stats?.active_clients, icon: <UserCheck />, to: "/admin/clientes", tone: "success" },
     { label: "Expirados", value: stats?.expired_clients, icon: <UserX />, to: "/admin/clientes", tone: "destructive" },
-    { label: "Listas M3U", value: stats?.playlists, icon: <ListVideo />, to: "/admin/listas", tone: "info" },
-    { label: "Dispositivos", value: stats?.devices, icon: <MonitorSmartphone />, to: "/admin/dispositivos", tone: "warning" },
+    { label: "Com lista", value: stats?.playlists, icon: <ListVideo />, to: "/admin/clientes", tone: "info" },
   ] as const;
 
   return (
     <>
       <PageHeader title="Painel" description="Visão geral do seu serviço IPTV" />
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-        {cards.map(({ label, value, icon, to, tone }, i) => (
-          <Link key={label} to={to} className={i === 0 ? "col-span-2 lg:col-span-1" : undefined}>
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        {cards.map(({ label, value, icon, to, tone }) => (
+          <Link key={label} to={to}>
             <StatCard label={label} value={value} icon={icon} tone={tone} />
           </Link>
         ))}
@@ -85,7 +72,7 @@ export default function Dashboard() {
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-muted-foreground">Nenhum acesso ainda. Crie um cliente e envie os dados de acesso para ele.</p>
+            <p className="text-sm text-muted-foreground">Nenhum acesso ainda. Crie um cliente e envie o endereço do site com o login e a senha dele.</p>
           )}
         </Card>
 

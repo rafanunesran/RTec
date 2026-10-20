@@ -1,21 +1,21 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Link2, Loader2, MessageSquareText, Pencil, Plus, RefreshCw, Search, Trash2, Users, Wand2 } from "lucide-react";
+import { Link2, Loader2, MessageSquareText, Pencil, Plus, RefreshCw, Search, Trash2, Users, Wand2, Zap } from "lucide-react";
 import { toast } from "sonner";
-import { api, type Client, type Playlist } from "@/lib/api";
+import { api, type Client, type Source } from "@/lib/api";
 import { copy, formatDate } from "@/lib/utils";
 import { Badge, Button, Card, Dialog, EmptyState, Field, Input, Skeleton, Switch, Textarea } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
 import CopyRow from "@/components/CopyRow";
+import SourceEditor, { emptySource, sourceLabel } from "@/components/SourceEditor";
 
 type Form = {
   name: string;
   username: string;
   password: string;
   active: boolean;
-  max_devices: number;
   expires_at: string;
   notes: string;
-  playlist_ids: string[];
+  source: Source;
 };
 
 const emptyForm = (): Form => ({
@@ -23,10 +23,9 @@ const emptyForm = (): Form => ({
   username: "",
   password: randomPass(),
   active: true,
-  max_devices: 1,
   expires_at: addDays(30),
   notes: "",
-  playlist_ids: [],
+  source: emptySource(),
 });
 
 function randomPass() {
@@ -54,13 +53,15 @@ function status(c: Client) {
 
 export default function Clients() {
   const [clients, setClients] = useState<Client[]>([]);
-  const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Client | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<Form>(emptyForm);
   const [linksFor, setLinksFor] = useState<Client | null>(null);
   const [busy, setBusy] = useState(false);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quick, setQuick] = useState({ link: "", name: "" });
+
   const [loaded, setLoaded] = useState(false);
 
   const load = () =>
@@ -71,7 +72,6 @@ export default function Clients() {
 
   useEffect(() => {
     load();
-    api.get<Playlist[]>("/api/playlists").then(setPlaylists);
   }, []);
 
   const filtered = useMemo(() => {
@@ -92,10 +92,9 @@ export default function Clients() {
       username: c.username,
       password: c.password,
       active: c.active,
-      max_devices: c.max_devices,
       expires_at: toLocalInput(c.expires_at),
       notes: c.notes,
-      playlist_ids: c.playlist_ids,
+      source: c.source ? { ...emptySource(), ...c.source } : emptySource(),
     });
     setFormOpen(true);
   };
@@ -104,7 +103,12 @@ export default function Clients() {
     e.preventDefault();
     setBusy(true);
     try {
-      const body = { ...form, expires_at: form.expires_at ? new Date(form.expires_at).toISOString() : null };
+      const src = form.source;
+      const blank =
+        (src.kind === "m3u_url" && !src.url.trim()) ||
+        (src.kind === "xtream" && !src.xtream_server.trim() && !src.xtream_username.trim()) ||
+        (src.kind === "manual" && !/#EXTINF/i.test(src.content));
+      const body = { ...form, source: blank ? null : src, expires_at: form.expires_at ? new Date(form.expires_at).toISOString() : null };
       const saved = editing
         ? await api.put<Client>(`/api/clients/${editing.id}`, body)
         : await api.post<Client>("/api/clients", body);
@@ -119,8 +123,25 @@ export default function Clients() {
     }
   };
 
+  const createQuick = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const created = await api.post<Client>("/api/clients/quick", { link: quick.link, name: quick.name });
+      toast.success(`Cliente ${created.username} criado`);
+      setQuickOpen(false);
+      setQuick({ link: "", name: "" });
+      await load();
+      setLinksFor(created);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const remove = async (c: Client) => {
-    if (!confirm(`Excluir o cliente "${c.username}"? Os dispositivos dele também serão removidos.`)) return;
+    if (!confirm(`Excluir o cliente "${c.username}"?`)) return;
     await api.del(`/api/clients/${c.id}`);
     toast.success("Cliente excluído");
     load();
@@ -140,12 +161,6 @@ export default function Clients() {
     load();
   };
 
-  const togglePlaylist = (id: string) =>
-    setForm((f) => ({
-      ...f,
-      playlist_ids: f.playlist_ids.includes(id) ? f.playlist_ids.filter((x) => x !== id) : [...f.playlist_ids, id],
-    }));
-
   const actions = (c: Client) => (
     <div className="flex justify-end gap-1">
       <Button size="icon-sm" variant="ghost" title="Dados de acesso" aria-label="Dados de acesso" onClick={() => setLinksFor(c)}>
@@ -160,15 +175,22 @@ export default function Clients() {
     </div>
   );
 
+  const sourceBadge = (c: Client) => (c.source ? <Badge variant="info">{sourceLabel(c.source)}</Badge> : <Badge variant="muted">Sem lista</Badge>);
+
   return (
     <>
       <PageHeader
         title="Clientes"
-        description={clients.length ? `${clients.length} cliente(s) cadastrado(s)` : "Crie logins e senhas e defina quais listas cada cliente recebe"}
+        description={clients.length ? `${clients.length} cliente(s) cadastrado(s)` : "Crie o login de cada cliente e cole a lista dele"}
         action={
-          <Button variant="gradient" onClick={openNew}>
-            <Plus /> Novo cliente
-          </Button>
+          <>
+            <Button variant="outline" onClick={openNew}>
+              <Plus /> Novo cliente
+            </Button>
+            <Button variant="gradient" onClick={() => setQuickOpen(true)}>
+              <Zap /> Cliente rápido
+            </Button>
+          </>
         }
       />
 
@@ -189,11 +211,16 @@ export default function Clients() {
         <EmptyState
           icon={<Users className="h-6 w-6" />}
           title="Nenhum cliente ainda"
-          text="Crie o primeiro login e senha para disponibilizar suas listas M3U."
+          text="Crie o primeiro cliente: login, senha e a lista M3U dele."
           action={
-            <Button variant="gradient" onClick={openNew}>
-              <Plus /> Criar cliente
-            </Button>
+            <div className="flex flex-wrap justify-center gap-2">
+              <Button variant="outline" onClick={openNew}>
+                <Plus /> Criar cliente
+              </Button>
+              <Button variant="gradient" onClick={() => setQuickOpen(true)}>
+                <Zap /> Cliente rápido
+              </Button>
+            </div>
           }
         />
       ) : filtered.length === 0 ? (
@@ -208,7 +235,7 @@ export default function Clients() {
                   <th className="px-4 py-3 font-semibold">Senha</th>
                   <th className="px-4 py-3 font-semibold">Status</th>
                   <th className="px-4 py-3 font-semibold">Validade</th>
-                  <th className="px-4 py-3 font-semibold">Listas</th>
+                  <th className="px-4 py-3 font-semibold">Lista</th>
                   <th className="hidden px-4 py-3 font-semibold lg:table-cell">Último acesso</th>
                   <th className="px-4 py-3" />
                 </tr>
@@ -223,7 +250,7 @@ export default function Clients() {
                     <td className="px-4 py-3 font-mono text-xs">{c.password}</td>
                     <td className="px-4 py-3">{status(c)}</td>
                     <td className="px-4 py-3 tabular-nums text-muted-foreground">{c.expires_at ? formatDate(c.expires_at) : "Sem validade"}</td>
-                    <td className="px-4 py-3 tabular-nums">{c.playlist_ids.length}</td>
+                    <td className="px-4 py-3">{sourceBadge(c)}</td>
                     <td className="hidden px-4 py-3 text-muted-foreground lg:table-cell">{formatDate(c.last_access_at)}</td>
                     <td className="px-4 py-3">{actions(c)}</td>
                   </tr>
@@ -251,8 +278,8 @@ export default function Clients() {
                     <div className="truncate">{c.expires_at ? formatDate(c.expires_at) : "Sem validade"}</div>
                   </div>
                   <div className="min-w-0">
-                    <div className="text-muted-foreground">Listas</div>
-                    <div>{c.playlist_ids.length}</div>
+                    <div className="mb-0.5 text-muted-foreground">Lista</div>
+                    {sourceBadge(c)}
                   </div>
                 </div>
                 <div className="mt-3 border-t pt-2">{actions(c)}</div>
@@ -263,12 +290,33 @@ export default function Clients() {
       )}
 
       <Dialog
-        open={formOpen}
-        onClose={() => setFormOpen(false)}
-        title={editing ? "Editar cliente" : "Novo cliente"}
-        description="Defina credenciais, validade e listas liberadas."
-        wide
+        open={quickOpen}
+        onClose={() => setQuickOpen(false)}
+        title="Cliente rápido"
+        description="Cole o link da lista do fornecedor. O cliente é criado com o mesmo usuário, senha e validade da lista."
       >
+        <form onSubmit={createQuick} className="space-y-4">
+          <Field label="Link da lista">
+            <Textarea
+              autoFocus
+              rows={3}
+              className="font-mono text-xs"
+              value={quick.link}
+              onChange={(e) => setQuick({ ...quick, link: e.target.value })}
+              placeholder="http://servidor/get.php?username=USUARIO&password=SENHA&type=m3u_plus"
+              required
+            />
+          </Field>
+          <Field label="Nome do cliente (opcional)">
+            <Input value={quick.name} onChange={(e) => setQuick({ ...quick, name: e.target.value })} placeholder="Se vazio, usa o usuário da lista" />
+          </Field>
+          <Button variant="gradient" size="lg" className="w-full" disabled={busy || !quick.link.trim()}>
+            {busy ? <Loader2 className="animate-spin" /> : <Zap />} Criar cliente
+          </Button>
+        </form>
+      </Dialog>
+
+      <Dialog open={formOpen} onClose={() => setFormOpen(false)} title={editing ? "Editar cliente" : "Novo cliente"} description="Defina credenciais, validade e a lista do cliente." wide>
         <form onSubmit={save} className="space-y-5">
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Nome (opcional)">
@@ -285,45 +333,30 @@ export default function Clients() {
                 </Button>
               </div>
             </Field>
-            <Field label="Limite de dispositivos">
-              <Input type="number" min={1} value={form.max_devices} onChange={(e) => setForm({ ...form, max_devices: Number(e.target.value) })} />
-            </Field>
-          </div>
-
-          <Field label="Validade" hint="Deixe vazio para não expirar">
-            <Input type="datetime-local" value={form.expires_at} onChange={(e) => setForm({ ...form, expires_at: e.target.value })} />
-            <div className="flex flex-wrap gap-1.5 pt-1">
-              {[1, 7, 30, 90, 365].map((d) => (
-                <Button key={d} type="button" size="sm" variant="outline" onClick={() => setForm({ ...form, expires_at: addDays(d) })}>
-                  +{d}d
-                </Button>
-              ))}
-            </div>
-          </Field>
-
-          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border px-4 py-3">
-            <div>
-              <div className="text-sm font-medium">Acesso liberado</div>
-              <div className="text-xs text-muted-foreground">Desative para bloquear o cliente</div>
-            </div>
-            <Switch label="Acesso liberado" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
-          </label>
-
-          <Field label="Listas liberadas">
-            {playlists.length === 0 ? (
-              <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">Cadastre listas em "Listas M3U" para liberar ao cliente.</p>
-            ) : (
-              <div className="grid gap-1 rounded-xl border p-2 sm:grid-cols-2">
-                {playlists.map((p) => (
-                  <label key={p.id} className="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-sm hover:bg-muted">
-                    <input type="checkbox" className="h-4 w-4" checked={form.playlist_ids.includes(p.id)} onChange={() => togglePlaylist(p.id)} />
-                    <span className="truncate">{p.name}</span>
-                    {!p.active && <Badge variant="muted">inativa</Badge>}
-                  </label>
+            <Field label="Validade" hint="Deixe vazio para não expirar">
+              <Input type="datetime-local" value={form.expires_at} onChange={(e) => setForm({ ...form, expires_at: e.target.value })} />
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {[1, 7, 30, 90, 365].map((d) => (
+                  <Button key={d} type="button" size="sm" variant="outline" onClick={() => setForm({ ...form, expires_at: addDays(d) })}>
+                    +{d}d
+                  </Button>
                 ))}
               </div>
-            )}
-          </Field>
+            </Field>
+            <div className="flex items-center justify-between gap-3 rounded-xl border px-4 py-3 sm:self-start">
+              <div>
+                <div className="text-sm font-medium">Acesso liberado</div>
+                <div className="text-xs text-muted-foreground">Desative para bloquear o cliente</div>
+              </div>
+              <Switch label="Acesso liberado" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-sm font-medium">Lista do cliente</div>
+            <p className="text-xs text-muted-foreground">Cole o link ou o login do fornecedor deste cliente. É só isso que ele vai ver no reprodutor.</p>
+            <SourceEditor value={form.source} onChange={(source) => setForm({ ...form, source })} />
+          </div>
 
           {editing?.custom_pin && (
             <div className="flex items-center justify-between gap-3 rounded-xl border px-4 py-3">
@@ -353,13 +386,7 @@ export default function Clients() {
         </form>
       </Dialog>
 
-      <Dialog
-        open={!!linksFor}
-        onClose={() => setLinksFor(null)}
-        title="Dados de acesso"
-        description="Toque para copiar. O cliente assiste pelo site com usuário e senha; os links M3U servem para apps IPTV externos."
-        wide
-      >
+      <Dialog open={!!linksFor} onClose={() => setLinksFor(null)} title="Dados de acesso" description="Toque para copiar. O cliente assiste pelo site com usuário e senha; os links M3U servem para apps IPTV externos." wide>
         {linksFor && (
           <div className="space-y-4">
             <div className="space-y-2">
@@ -381,7 +408,7 @@ export default function Clients() {
                 className="flex-1"
                 onClick={() =>
                   copy(
-                    `Seu acesso IPTV\nAssista em: ${linksFor.links.server}\nUsuario: ${linksFor.username}\nSenha: ${linksFor.password}\n\nNo celular, abra o link e toque em "Instalar app" para colocar na tela inicial.`,
+                    `Seu acesso IPTV\nAssista em: ${linksFor.links.server}\nUsuario: ${linksFor.username}\nSenha: ${linksFor.password}\n\nAndroid, TV Box e Fire TV: baixe o app em ${linksFor.links.server}/download/rtec-tv.apk\niPhone: abra o link no Safari e use "Adicionar a Tela de Inicio".`,
                     "Mensagem copiada",
                   )
                 }
