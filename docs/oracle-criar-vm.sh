@@ -12,7 +12,7 @@ KEY="$HOME/.ssh/rtec"
 
 echo "==> Preparando"
 mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-[ -f "$KEY" ] || ssh-keygen -t ed25519 -N "" -f "$KEY" -C rtec >/dev/null
+[ -f "$KEY" ] || ssh-keygen -t rsa -b 4096 -N "" -f "$KEY" -C rtec >/dev/null  # RSA: o Cloud Shell (modo FIPS) nao aceita ED25519
 [ -f "$KEY.pub" ] || { echo "Nao consegui criar a chave de acesso em $KEY"; exit 1; }
 AD="$(oci iam availability-domain list --compartment-id "$C" --query 'data[0].name' --raw-output)"
 # Se a maquina ja existe (rodou antes), so mostra como entrar.
