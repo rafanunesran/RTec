@@ -93,6 +93,8 @@ export type Channel = {
   episode?: number;
   alt: string;
   alt_type: "hls" | "mpegts" | "file" | "";
+  /** Link pelo servidor de video, usado se o direto falhar (app). */
+  fallback?: string;
 };
 
 export type Catalog = {

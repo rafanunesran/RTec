@@ -174,7 +174,7 @@ function InstallButton({ compact }: { compact?: boolean }) {
 type Group = { key: string; name: string };
 type XtPage = { key: string; items: Channel[]; total: number; loading: boolean; error: string };
 type Episode = Channel & { season: number; episode: number };
-type OpenSeries = { name: string; episodes: Episode[] | null };
+type OpenSeries = { key: string; name: string; logo: string; episodes: Episode[] | null };
 
 function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => void }) {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -370,11 +370,11 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   useEffect(() => setLimit(PAGE), [group, query, section, playlistId]);
 
   const openSeries = (s: (typeof seriesList)[number]) => {
-    if (s.episodes) return setSeries({ name: s.name, episodes: s.episodes });
-    setSeries({ name: s.name, episodes: null });
+    if (s.episodes) return setSeries({ key: s.key, name: s.name, logo: s.logo, episodes: s.episodes });
+    setSeries({ key: s.key, name: s.name, logo: s.logo, episodes: null });
     api
       .get<Episode[]>(`/api/player/xtream/series/${encodeURIComponent(s.key)}?name=${encodeURIComponent(s.name)}`)
-      .then((eps) => setSeries((cur) => (cur?.name === s.name ? { name: s.name, episodes: eps } : cur)))
+      .then((eps) => setSeries((cur) => (cur?.name === s.name ? { ...cur, episodes: eps } : cur)))
       .catch((err) => {
         if (!handleAuthError(err)) toast.error("Não foi possível carregar os episódios");
         setSeries(null);
@@ -514,11 +514,37 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
 
   const openItem = (c: Channel) => (c.kind === "series" && (c.series_id || c.id.startsWith("serie:")) ? openSeriesFrom(c) : play(c, null));
 
+  // Favoritar um episodio = favoritar a serie dele (abre a serie com as temporadas).
+  const seriesCard = (key: string, name: string, logo: string): Channel => ({
+    id: xt ? `s${key}` : `serie:${name}`,
+    series_id: xt ? key : undefined,
+    name,
+    group: name,
+    logo,
+    src: "",
+    type: "file",
+    alt: "",
+    alt_type: "",
+    kind: "series",
+    epg_id: "",
+    playlist_id: "own",
+  });
+  const favItem = (c: Channel): Channel => {
+    const isEpisode = c.kind === "series" && !c.series_id && !c.id.startsWith("serie:");
+    if (!isEpisode) return c;
+    if (xt && !c.parent_series) return c; // historico antigo, sem a serie de origem
+    const name = xt ? c.group : episodeInfo(c.name).series;
+    const logo = series && series.name === name ? series.logo : c.logo;
+    return seriesCard(xt ? c.parent_series! : name, name, logo);
+  };
   const isFavorite = (id: string) => favorites.some((f) => f.id === id);
+  const isFav = (c: Channel) => isFavorite(favItem(c).id);
   const toggleFavorite = (c: Channel) => {
-    const next = isFavorite(c.id) ? favorites.filter((f) => f.id !== c.id) : [...favorites, c];
+    const item = favItem(c);
+    const next = isFavorite(item.id) ? favorites.filter((f) => f.id !== item.id) : [...favorites, item];
     setFavorites(next);
     save("rtec:favs", next);
+    if (item !== c) toast.success(isFavorite(item.id) ? "Série removida dos favoritos" : "Série adicionada aos favoritos");
   };
 
   const logout = async () => {
@@ -624,7 +650,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                   save("rtec:history", []);
                 }}
                 currentId={current?.id}
-                isFavorite={isFavorite}
+                isFavorite={(id) => isFav(history.find((h) => h.id === id) ?? ({ id } as Channel))}
                 onFavorite={toggleFavorite}
                 epg={epg}
               />
@@ -707,7 +733,19 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                 <Button variant="ghost" size="sm" onClick={() => setSeries(null)} className="mb-2">
                   <ArrowLeft /> Voltar
                 </Button>
-                <h2 className="mb-3 px-1 text-lg font-bold tracking-tight">{series.name}</h2>
+                <div className="mb-3 flex items-center gap-3 px-1">
+                  {series.logo && <img src={series.logo} alt="" className="h-16 w-11 shrink-0 rounded-lg object-cover ring-1 ring-border" onError={(e) => (e.currentTarget.style.display = "none")} />}
+                  <h2 className="min-w-0 flex-1 text-lg font-bold tracking-tight">{series.name}</h2>
+                  {(() => {
+                    const card = seriesCard(xt ? series.key : series.name, series.name, series.logo);
+                    const fav = isFavorite(card.id);
+                    return (
+                      <Button variant={fav ? "secondary" : "outline"} size="sm" onClick={() => toggleFavorite(card)} aria-pressed={fav}>
+                        <Heart className={cn(fav && "fill-destructive text-destructive")} /> {fav ? "Favorita" : "Favoritar série"}
+                      </Button>
+                    );
+                  })()}
+                </div>
                 {series.episodes === null ? (
                   <div className="flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin text-primary" /> Carregando episódios...
@@ -718,9 +756,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                     seriesName={series.name}
                     currentId={current?.id}
                     xt={xt}
-                    isFavorite={isFavorite}
                     onPlay={(e) => play({ ...e, group: series.name }, series.episodes!.map((x) => ({ ...x, group: series.name })))}
-                    onFavorite={(e) => toggleFavorite({ ...e, group: series.name })}
                   />
                 )}
               </div>
@@ -773,7 +809,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
         <PlayerOverlay
           channel={current}
           next={nextEpisode}
-          favorite={isFavorite(current.id)}
+          favorite={isFav(current)}
           onFavorite={() => toggleFavorite(current)}
           onNext={(n) => play(n)}
           onClose={() => setCurrent(null)}
@@ -854,9 +890,9 @@ function ChannelRow({
   label?: string;
   now?: string;
   active: boolean;
-  favorite: boolean;
+  favorite?: boolean;
   onPlay: () => void;
-  onFavorite: () => void;
+  onFavorite?: () => void;
   progress?: number;
   badge?: ReactNode;
   sub?: string;
@@ -875,9 +911,11 @@ function ChannelRow({
         </div>
         {active && <Play className="ml-auto h-3.5 w-3.5 shrink-0 fill-primary text-primary" />}
       </button>
-      <button onClick={onFavorite} className="rounded-lg p-3 text-muted-foreground transition-colors hover:text-destructive" aria-label="Favorito">
-        <Heart className={cn("h-4 w-4", favorite && "fill-destructive text-destructive")} />
-      </button>
+      {onFavorite && (
+        <button onClick={onFavorite} className="rounded-lg p-3 text-muted-foreground transition-colors hover:text-destructive" aria-label="Favorito">
+          <Heart className={cn("h-4 w-4", favorite && "fill-destructive text-destructive")} />
+        </button>
+      )}
     </li>
   );
 }
@@ -1050,22 +1088,18 @@ function ProgressBar({ value, className }: { value: number; className?: string }
   );
 }
 
-/** Lista de episodios: marca o que ja foi assistido, o que esta tocando e quanto de cada um (barra). */
+/** Episodios por temporada: marca o que ja foi assistido, o que esta tocando e quanto de cada um (barra). */
 function EpisodeList({
   episodes,
   currentId,
   xt,
-  isFavorite,
   onPlay,
-  onFavorite,
 }: {
   episodes: Episode[];
   seriesName: string;
   currentId?: string;
   xt: boolean;
-  isFavorite: (id: string) => boolean;
   onPlay: (e: Episode) => void;
-  onFavorite: (e: Episode) => void;
 }) {
   // Ultimo episodio mexido = onde o cliente parou ("Continuar").
   const lastId = episodes.reduce<{ id: string; t: number } | null>((best, e) => {
@@ -1075,15 +1109,58 @@ function EpisodeList({
   const resume = episodes.find((e) => e.id === lastId);
   const nextUp = resume && fraction(resume.id) >= WATCHED_AT ? episodes[episodes.indexOf(resume) + 1] : resume;
 
+  const seasons = useMemo(() => [...new Set(episodes.map((e) => e.season))].sort((a, b) => a - b), [episodes]);
+  const playingSeason = episodes.find((e) => e.id === currentId)?.season;
+  const [season, setSeason] = useState<number>(() => playingSeason ?? nextUp?.season ?? seasons[0] ?? 1);
+  useEffect(() => {
+    if (!seasons.includes(season)) setSeason(seasons[0] ?? 1);
+  }, [seasons, season]);
+  const list = episodes.filter((e) => e.season === season);
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {nextUp && (
-        <Button variant="gradient" onClick={() => onPlay(nextUp)} className="w-full sm:w-auto">
+        <Button
+          variant="gradient"
+          onClick={() => {
+            setSeason(nextUp.season);
+            onPlay(nextUp);
+          }}
+          className="w-full sm:w-auto"
+        >
           <Play className="fill-current" /> {fraction(nextUp.id) > 0 ? "Continuar" : "Assistir"} T{nextUp.season} · E{nextUp.episode}
         </Button>
       )}
+      {seasons.length > 1 && (
+        <div className="scrollbar-none -mx-1 flex gap-2 overflow-x-auto px-1 pb-1" role="tablist" aria-label="Temporadas">
+          {seasons.map((n) => {
+            const eps = episodes.filter((e) => e.season === n);
+            const done = eps.filter((e) => fraction(e.id) >= WATCHED_AT).length;
+            return (
+              <button
+                key={n}
+                role="tab"
+                aria-selected={season === n}
+                onClick={() => setSeason(n)}
+                className={cn(
+                  "flex shrink-0 items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition-colors",
+                  season === n ? "border-transparent bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                )}
+              >
+                Temporada {n}
+                <span className={cn("rounded-full px-1.5 text-[11px] tabular-nums", season === n ? "bg-background/15" : "bg-muted")}>
+                  {done ? `${done}/${eps.length}` : eps.length}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <div className="text-sm font-semibold text-muted-foreground">
+        Temporada {season} · {list.length} episódio(s)
+      </div>
       <ul className="grid gap-1 md:grid-cols-2">
-        {episodes.map((e) => {
+        {list.map((e) => {
           const f = fraction(e.id);
           const watched = f >= WATCHED_AT;
           const playing = currentId === e.id;
@@ -1091,11 +1168,9 @@ function EpisodeList({
             <ChannelRow
               key={e.id}
               channel={e}
-              label={e.episode ? `T${e.season} · Episódio ${e.episode}${xt && e.name ? ` · ${e.name}` : ""}` : e.name}
+              label={e.episode ? `Episódio ${e.episode}${xt && e.name ? ` · ${e.name}` : ""}` : e.name}
               active={playing}
-              favorite={isFavorite(e.id)}
               onPlay={() => onPlay(e)}
-              onFavorite={() => onFavorite(e)}
               progress={f}
               sub={watched ? "Assistido" : f > 0 ? `${Math.round(f * 100)}% assistido` : "Não assistido"}
               badge={

@@ -91,6 +91,7 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
     let stop: Stop | undefined;
     let cancelled = false;
     let triedAlt = false;
+    let triedFallback = false;
     let active = { src: channel.src, type: channel.type };
     let playedAt = 0; // quando comecou a tocar (para saber se a queda foi depois de funcionar)
     let reconnects = 0;
@@ -130,6 +131,13 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
         }
       }
       firstError ||= msg;
+      // 1o plano B: o mesmo canal pelo servidor de video (quando o direto do app falha).
+      if (channel!.fallback && !triedFallback) {
+        triedFallback = true;
+        start(channel!.fallback, channel!.type);
+        return;
+      }
+      // 2o plano B: o outro formato do mesmo canal (HLS <-> MPEG-TS no Xtream).
       if (channel!.alt && !triedAlt) {
         triedAlt = true;
         start(channel!.alt, channel!.alt_type || "hls");

@@ -345,6 +345,8 @@ function xtreamChannel(c, item, group, app = false) {
     kind: item.kind,
     epg_id: item.kind === "live" ? `xt:${item.stream_id}` : "",
     playlist_id: "own",
+    // Ultimo recurso: se o link direto (app) falhar, tenta pelo servidor de video.
+    fallback: !viaProxy(mode, item.url, app) ? proxyUrl(c.id, item.url) : "",
     ...(item.season ? { season: item.season, episode: item.episode } : {}),
   };
 }

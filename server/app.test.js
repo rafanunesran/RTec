@@ -417,6 +417,7 @@ test("app Android recebe link direto; servidor de video externo recebe links abs
   });
   const [appCh] = await appRes.json();
   assert.equal(appCh.src, `http://127.0.0.1:${port}/live/TiaX/Sen%401/1.ts`, "no app o video vai direto do fornecedor");
+  assert.match(appCh.fallback, /^\/api\/player\/proxy\?/, "se o direto falhar, o app tenta pelo servidor");
 
   process.env.STREAM_PROXY_URL = "https://video.exemplo.com/";
   try {

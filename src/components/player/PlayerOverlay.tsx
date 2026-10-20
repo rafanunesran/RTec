@@ -4,6 +4,7 @@ import type { Channel } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { resumeAt, saveProgress } from "@/lib/progress";
 import VideoPlayer from "@/components/VideoPlayer";
+import { restorePortrait } from "@/lib/orientation";
 
 const fsElement = () =>
   document.fullscreenElement ?? (document as Document & { webkitFullscreenElement?: Element | null }).webkitFullscreenElement ?? null;
@@ -58,6 +59,8 @@ export default function PlayerOverlay({
     return () => {
       window.removeEventListener("popstate", onPop);
       exitFullscreen();
+      // Ao fechar o player, o aviso de "saiu da tela cheia" pode chegar depois: volta para retrato aqui.
+      restorePortrait();
     };
   }, []);
   const onCloseRef = useRef(onClose);
