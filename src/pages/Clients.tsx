@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Copy, Dices, Link2, Pencil, Plus, RefreshCw, Search, Trash2, Users } from "lucide-react";
+import { Copy, Dices, KeyRound, Pencil, Plus, Search, Trash2, Users } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Client, type Playlist } from "@/lib/api";
 import { copy, formatDate } from "@/lib/utils";
@@ -121,13 +121,6 @@ export default function Clients() {
     load();
   };
 
-  const regenerate = async (c: Client) => {
-    if (!confirm("Gerar um novo link curto? O link anterior deixara de funcionar.")) return;
-    const updated = await api.post<Client>(`/api/clients/${c.id}/regenerate-token`);
-    setLinksFor(updated);
-    load();
-  };
-
   const resetPin = async (c: Client) => {
     const updated = await api.put<Client>(`/api/clients/${c.id}`, { reset_pin: true });
     setEditing(updated);
@@ -199,8 +192,8 @@ export default function Clients() {
                   <td className="hidden px-4 py-3 text-muted-foreground lg:table-cell">{formatDate(c.last_access_at)}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
-                      <Button size="icon" variant="ghost" title="Links de acesso" onClick={() => setLinksFor(c)}>
-                        <Link2 />
+                      <Button size="icon" variant="ghost" title="Dados de acesso" onClick={() => setLinksFor(c)}>
+                        <KeyRound />
                       </Button>
                       <Button size="icon" variant="ghost" title="Editar" onClick={() => openEdit(c)}>
                         <Pencil />
@@ -299,21 +292,15 @@ export default function Clients() {
         </form>
       </Dialog>
 
-      <Dialog open={!!linksFor} onClose={() => setLinksFor(null)} title="Dados de acesso" description="O cliente assiste pelo site com usuario e senha. Os links M3U servem para apps IPTV externos." wide>
+      <Dialog open={!!linksFor} onClose={() => setLinksFor(null)} title="Dados de acesso" description="O cliente assiste pelo site com usuario e senha." wide>
         {linksFor && (
           <div className="space-y-4">
             <CopyRow label="Site do reprodutor" value={linksFor.links.server} />
-            <CopyRow label="Link M3U (usuario e senha)" value={linksFor.links.m3u} />
-            <CopyRow label="Link M3U curto" value={linksFor.links.m3u_token} />
-            <div className="grid gap-4 sm:grid-cols-3">
-              <CopyRow label="Servidor" value={linksFor.links.server} />
+            <div className="grid gap-4 sm:grid-cols-2">
               <CopyRow label="Usuario" value={linksFor.username} />
               <CopyRow label="Senha" value={linksFor.password} />
             </div>
-            <div className="flex flex-wrap justify-between gap-2 pt-2">
-              <Button variant="outline" size="sm" onClick={() => regenerate(linksFor)}>
-                <RefreshCw /> Gerar novo link curto
-              </Button>
+            <div className="flex justify-end pt-2">
               <Button
                 size="sm"
                 onClick={() =>
