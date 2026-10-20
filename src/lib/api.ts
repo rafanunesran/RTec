@@ -87,6 +87,8 @@ export type Channel = {
   epg_id: string;
   playlist_id: string;
   series_id?: string;
+  /** Episodio: id da serie a que pertence (para achar o proximo). */
+  parent_series?: string;
   season?: number;
   episode?: number;
   alt: string;

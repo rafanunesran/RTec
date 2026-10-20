@@ -321,6 +321,9 @@ const MAX_M3U_ITEMS = 20000;
 /** Logos https vao direto; http passam pelo servidor (imagens sao pequenas). */
 const logoUrl = (clientId, url) => (!/^https?:\/\//i.test(url || "") ? "" : /^https:/i.test(url) ? url : proxyUrl(clientId, url));
 
+/** Minusculas e sem acentos, para a busca achar "acao" em "Ação". */
+const fold = (t) => String(t).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
 const hashId = (...parts) => crypto.createHash("sha1").update(parts.join("|")).digest("hex").slice(0, 12);
 
 /** Converte um item da API Xtream no formato de canal usado pelo reprodutor. */
@@ -743,8 +746,8 @@ export function createApp() {
       res.setHeader("Cache-Control", "no-store");
       if (!limit) return res.json(list.map(toChannel));
       const skip = new Set(String(req.query.skip || "").split(",").filter(Boolean));
-      const q = String(req.query.q || "").trim().toLowerCase();
-      const found = list.filter((it) => !skip.has(it.category_id) && (!q || it.name.toLowerCase().includes(q)));
+      const q = fold(String(req.query.q || "").trim());
+      const found = list.filter((it) => !skip.has(it.category_id) && (!q || fold(it.name).includes(q)));
       const offset = Math.max(0, Number(req.query.offset) || 0);
       res.json({ total: found.length, items: found.slice(offset, offset + limit).map(toChannel) });
     }),
@@ -757,7 +760,8 @@ export function createApp() {
       const c = req.client;
       const episodes = await xtream.seriesEpisodes(requireXtream(c), req.params.id);
       res.setHeader("Cache-Control", "no-store");
-      res.json(episodes.map((ep) => xtreamChannel(c, ep, String(req.query.name || ""), isApp(req))));
+      // parent_series: permite achar o proximo episodio mesmo abrindo pelo historico.
+      res.json(episodes.map((ep) => ({ ...xtreamChannel(c, ep, String(req.query.name || ""), isApp(req)), parent_series: req.params.id })));
     }),
   );
 

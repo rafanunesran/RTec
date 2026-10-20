@@ -16,7 +16,7 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
       hls.on(Hls.Events.ERROR, (_e, data) => {
         if (!data.fatal) return;
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else onFail(`Canal fora do ar ou indisponivel no momento. (${data.details}${data.response?.code ? ` ${data.response.code}` : ""})`);
+        else onFail(describe(data.response?.code, data.details));
       });
       hls.loadSource(src);
       hls.attachMedia(video);
@@ -30,9 +30,7 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
     const { default: mpegts } = await import("mpegts.js");
     if (!mpegts.getFeatureList().mseLivePlayback) throw new Unsupported();
     const player = mpegts.createPlayer({ type: "mpegts", isLive: true, url: src }, { enableStashBuffer: false, liveBufferLatencyChasing: true });
-    player.on(mpegts.Events.ERROR, (type: string, detail: string, info?: { code?: number; msg?: string }) =>
-      onFail(`Canal fora do ar ou formato nao suportado neste aparelho. (${detail || type}${info?.code ? ` ${info.code}` : ""})`),
-    );
+    player.on(mpegts.Events.ERROR, (type: string, detail: string, info?: { code?: number; msg?: string }) => onFail(describe(info?.code, detail || type)));
     player.attachMediaElement(video);
     player.load();
     return () => {
@@ -46,6 +44,14 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
   return native(video, src, onFail);
 }
 
+/** Mensagem de erro com o motivo real (codigo HTTP do fornecedor quando houver). */
+function describe(code: number | undefined, detail: string) {
+  if (code === 401 || code === 403) return `O fornecedor recusou o acesso agora (${code}). Aguarde alguns minutos e tente de novo.`;
+  if (code === 404) return "Este conteudo nao existe mais no fornecedor (404).";
+  if (code && code >= 500) return `O servidor do fornecedor esta com problema (${code}). Tente mais tarde.`;
+  return `Canal fora do ar ou indisponivel no momento. (${detail}${code ? ` ${code}` : ""})`;
+}
+
 function native(video: HTMLVideoElement, src: string, onFail: (msg: string) => void): Stop {
   const onError = () => onFail("Nao foi possivel reproduzir este video neste aparelho.");
   video.addEventListener("error", onError);
@@ -57,12 +63,27 @@ function native(video: HTMLVideoElement, src: string, onFail: (msg: string) => v
   };
 }
 
-export default function VideoPlayer({ channel }: { channel: Channel | null }) {
+type Props = {
+  channel: Channel | null;
+  /** Segundo para retomar (filmes e episodios). */
+  startAt?: number;
+  /** Chamado a cada poucos segundos com a posicao e a duracao. */
+  onProgress?: (pos: number, dur: number) => void;
+  /** Filme/episodio chegou ao fim. */
+  onEnded?: () => void;
+  className?: string;
+};
+
+export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded, className }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [state, setState] = useState<"idle" | "loading" | "playing" | "error">("idle");
   const [error, setError] = useState("");
 
   useEffect(() => watchFullscreenOrientation(), []);
+
+  // Callbacks em ref: trocar a funcao nao reinicia o video.
+  const cb = useRef({ onProgress, onEnded, startAt });
+  cb.current = { onProgress, onEnded, startAt };
 
   useEffect(() => {
     const video = videoRef.current;
@@ -73,6 +94,8 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
     let active = { src: channel.src, type: channel.type };
     let playedAt = 0; // quando comecou a tocar (para saber se a queda foi depois de funcionar)
     let reconnects = 0;
+    let firstError = ""; // o motivo da primeira tentativa e o mais util
+    let lastSaved = 0;
 
     setState("loading");
     setError("");
@@ -106,12 +129,13 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
           return;
         }
       }
+      firstError ||= msg;
       if (channel!.alt && !triedAlt) {
         triedAlt = true;
         start(channel!.alt, channel!.alt_type || "hls");
         return;
       }
-      setError(msg);
+      setError(firstError || msg);
       setState("error");
     }
 
@@ -120,10 +144,25 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
       setState("playing");
     };
     const onWaiting = () => setState((s) => (s === "error" ? s : "loading"));
-    const onEnded = () => channel!.kind === "live" && fail("A transmissao foi encerrada.");
+    const onEnded = () => (channel!.kind === "live" ? fail("A transmissao foi encerrada.") : cb.current.onEnded?.());
+    const onMeta = () => {
+      const at = cb.current.startAt;
+      if (channel!.kind !== "live" && at > 0 && Number.isFinite(video.duration) && at < video.duration - 10) video.currentTime = at;
+    };
+    const onTime = () => {
+      if (channel!.kind === "live" || !Number.isFinite(video.duration)) return;
+      const now = Date.now();
+      if (now - lastSaved < 5000) return;
+      lastSaved = now;
+      cb.current.onProgress?.(video.currentTime, video.duration);
+    };
+    const onPause = () => channel!.kind !== "live" && Number.isFinite(video.duration) && cb.current.onProgress?.(video.currentTime, video.duration);
     video.addEventListener("playing", onPlaying);
     video.addEventListener("waiting", onWaiting);
     video.addEventListener("ended", onEnded);
+    video.addEventListener("loadedmetadata", onMeta);
+    video.addEventListener("timeupdate", onTime);
+    video.addEventListener("pause", onPause);
     start(channel.src, channel.type);
 
     return () => {
@@ -131,12 +170,16 @@ export default function VideoPlayer({ channel }: { channel: Channel | null }) {
       video.removeEventListener("playing", onPlaying);
       video.removeEventListener("waiting", onWaiting);
       video.removeEventListener("ended", onEnded);
+      video.removeEventListener("loadedmetadata", onMeta);
+      video.removeEventListener("timeupdate", onTime);
+      video.removeEventListener("pause", onPause);
+      onPause();
       stop?.();
     };
   }, [channel]);
 
   return (
-    <div className="relative aspect-video w-full overflow-hidden bg-black lg:rounded-2xl lg:ring-1 lg:ring-border">
+    <div className={className ?? "relative aspect-video w-full overflow-hidden bg-black lg:rounded-2xl lg:ring-1 lg:ring-border"}>
       <video ref={videoRef} className="h-full w-full" controls playsInline autoPlay />
       {!channel && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-glow text-muted-foreground">

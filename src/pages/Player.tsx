@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, Check, ChevronDown, Clapperboard, Download, Film, Heart, History, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, Search, Settings, Share, SquarePlus, Tv, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, Search, Settings, Share, SquarePlus, Tv, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
 import { cn, formatDate } from "@/lib/utils";
 import { Button, Dialog, EmptyState, Field, Input, Select, Skeleton } from "@/components/ui";
 import Logo from "@/components/Logo";
-import VideoPlayer from "@/components/VideoPlayer";
+import PlayerOverlay from "@/components/player/PlayerOverlay";
+import { WATCHED_AT, fraction, getProgress, useProgressVersion } from "@/lib/progress";
 import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
 
@@ -17,6 +18,11 @@ const HISTORY_MAX = 60;
 const ADULT = /(adult|xxx|\+18|18\+|adulto|er[oó]tic|hot\b|sexy|porn)/i;
 
 type Section = Channel["kind"];
+type Page = "home" | "all" | "section";
+
+/** Minusculas e sem acentos (busca). */
+const fold = (t: string) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const ALL_LIMIT = 24;
 
 const sections: { key: Section; label: string; icon: typeof Tv }[] = [
   { key: "live", label: "TV ao vivo", icon: Radio },
@@ -175,7 +181,14 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [data, setData] = useState<ChannelsResponse | null>(null); // listas M3U comuns
   const [xtItems, setXtItems] = useState<Record<string, Channel[] | "loading" | { error: string }>>({}); // Xtream: por secao/categoria
   const [settings, setSettings] = useState<PlayerSettings>({ custom_pin: false, locked_groups: [] });
+  const [page, setPage] = useState<Page>("home");
   const [section, setSection] = useState<Section>("live");
+  const [queue, setQueue] = useState<Channel[] | null>(null); // episodios da serie em reproducao (para "proximo")
+  const [allQuery, setAllQuery] = useState("");
+  const [allTerm, setAllTerm] = useState("");
+  const [allRes, setAllRes] = useState<{ key: string; loading: boolean; data: Record<Section, { total: number; items: Channel[] }> } | null>(null);
+  const pendingSeries = useRef<{ key: string; name: string; logo: string; sub: string; episodes: Episode[] | null } | null>(null);
+  useProgressVersion();
   const [playlistId, setPlaylistId] = useState("");
   const [current, setCurrent] = useState<Channel | null>(null);
   const [group, setGroup] = useState("");
@@ -192,18 +205,6 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [epg, setEpg] = useState<Record<string, Programme[]>>({});
 
   const xt = catalog?.mode === "xtream";
-  const headerRef = useRef<HTMLElement>(null);
-  const [headerHeight, setHeaderHeight] = useState(108);
-
-  // No celular o player fica fixo logo abaixo do cabecalho (altura varia com o seletor de listas).
-  useEffect(() => {
-    const el = headerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setHeaderHeight(el.offsetHeight));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
   const handleAuthError = useCallback(
     (err: unknown) => {
       if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
@@ -224,11 +225,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
       .get<Catalog>("/api/player/catalog")
       .then((cat) => {
         setCatalog(cat);
-        if (cat.mode === "xtream") {
-          const first = sections.find((s) => (cat.sections?.[s.key].length ?? 0) > 0);
-          if (first) setSection(first.key);
-          return;
-        }
+        if (cat.mode === "xtream") return;
         return api.get<ChannelsResponse>("/api/player/channels").then((res) => {
           setData(res);
           if (!res.channels.some((c) => c.kind === "live")) {
@@ -247,8 +244,6 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   useEffect(() => {
     loadAll();
     api.get<PlayerSettings>("/api/player/settings").then(setSettings).catch(() => {});
-    const last = load<Channel | null>("rtec:current", null);
-    if (last?.src && last.kind === "live") setCurrent(last);
   }, [loadAll]);
 
   const isLocked = useCallback((g: string) => !unlocked && (ADULT.test(g) || settings.locked_groups.includes(g)), [unlocked, settings]);
@@ -277,6 +272,12 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   useEffect(() => {
     setSeries(null);
     setGroup("");
+    const pending = pendingSeries.current;
+    if (pending) {
+      pendingSeries.current = null;
+      openSeries(pending);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section, playlistId, xt]);
 
   // Busca com atraso, usada no "Todos" do Xtream (a busca roda no servidor).
@@ -404,17 +405,114 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     else fn();
   };
 
-  const play = (c: Channel) =>
+  const play = (c: Channel, list?: Channel[] | null) =>
     withPin(() => {
       setCurrent(c);
-      save("rtec:current", c);
+      if (list !== undefined) setQueue(list);
       setHistory((old) => {
         const next = [c, ...old.filter((h) => h.id !== c.id)].slice(0, HISTORY_MAX);
         save("rtec:history", next);
         return next;
       });
-      if (window.innerWidth < 1024) window.scrollTo({ top: 0, behavior: "smooth" });
     }, c.group);
+
+  // Episodio aberto pelo historico ou pela busca: carrega a serie para saber qual e o proximo.
+  useEffect(() => {
+    if (!current || current.kind !== "series" || queue?.some((q) => q.id === current.id)) return;
+    if (!xt) {
+      // Lista M3U: os episodios da mesma serie estao no proprio catalogo.
+      const name = episodeInfo(current.name).series;
+      const eps = channels
+        .filter((x) => x.kind === "series" && episodeInfo(x.name).series === name)
+        .map((x) => ({ ...x, ...episodeInfo(x.name) }))
+        .sort((a, b) => a.season - b.season || a.episode - b.episode);
+      if (eps.length) setQueue(eps);
+      return;
+    }
+    if (!current.parent_series) return;
+    let alive = true;
+    api
+      .get<Episode[]>(`/api/player/xtream/series/${encodeURIComponent(current.parent_series)}?name=${encodeURIComponent(current.group)}`)
+      .then((eps) => alive && setQueue(eps))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current, queue, xt]);
+
+  const nextEpisode = useMemo(() => {
+    if (!current || current.kind !== "series" || !queue) return null;
+    const i = queue.findIndex((q) => q.id === current.id);
+    return i >= 0 && i + 1 < queue.length ? { ...queue[i + 1], group: current.group } : null;
+  }, [current, queue]);
+
+  // Pagina "Tudo": busca em canais, filmes e series ao mesmo tempo.
+  useEffect(() => {
+    const t = setTimeout(() => setAllTerm(allQuery.trim()), 400);
+    return () => clearTimeout(t);
+  }, [allQuery]);
+
+  const allKey = page === "all" && catalog ? `${xt ? "xt" : "m3u"}|${allTerm}` : "";
+  useEffect(() => {
+    if (!allKey) return;
+    const kinds: Section[] = ["live", "movie", "series"];
+    if (!xt) {
+      const q = fold(allTerm);
+      const data = {} as Record<Section, { total: number; items: Channel[] }>;
+      for (const k of kinds) {
+        let found = channels.filter((c) => c.kind === k && !isLocked(c.group) && (!q || fold(c.name).includes(q)));
+        if (k === "series") {
+          const seen = new Map<string, Channel>();
+          for (const c of found) {
+            const name = episodeInfo(c.name).series;
+            if (!seen.has(name)) seen.set(name, { ...c, name, id: `serie:${name}` });
+          }
+          found = [...seen.values()];
+        }
+        data[k] = { total: found.length, items: found.slice(0, ALL_LIMIT) };
+      }
+      setAllRes({ key: allKey, loading: false, data });
+      return;
+    }
+    setAllRes((r) => (r ? { ...r, key: allKey, loading: true } : { key: allKey, loading: true, data: { live: { total: 0, items: [] }, movie: { total: 0, items: [] }, series: { total: 0, items: [] } } }));
+    Promise.all(
+      kinds.map((k) => {
+        const skip = (catalog?.sections?.[k] ?? []).filter((g) => isLocked(g.name)).map((g) => g.id).join(",");
+        const params = new URLSearchParams({ section: k, limit: String(ALL_LIMIT), offset: "0", q: allTerm, skip });
+        return api.get<{ total: number; items: Channel[] }>(`/api/player/xtream/items?${params}`).catch(() => ({ total: 0, items: [] }));
+      }),
+    ).then(([live, movie, series]) => setAllRes((r) => (r?.key === allKey ? { key: allKey, loading: false, data: { live, movie, series } } : r)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allKey]);
+
+  const goSection = (k: Section) => {
+    setPage("section");
+    setSection(k);
+  };
+
+  // Abre uma serie a partir das paginas Inicio/Tudo.
+  const openSeriesFrom = (c: Channel) => {
+    const item = xt
+      ? { key: c.series_id || c.id, name: c.name, logo: c.logo, sub: "", episodes: null as Episode[] | null }
+      : { key: c.name, name: c.name, logo: c.logo, sub: "", episodes: null as Episode[] | null };
+    if (!xt) {
+      const eps = channels
+        .filter((x) => x.kind === "series" && episodeInfo(x.name).series === c.name)
+        .map((x) => ({ ...x, ...episodeInfo(x.name) }))
+        .sort((a, b) => a.season - b.season || a.episode - b.episode);
+      item.episodes = eps;
+    }
+    if (page === "section" && section === "series") return openSeries(item);
+    pendingSeries.current = item;
+    setPage("section");
+    if (section === "series") {
+      pendingSeries.current = null;
+      openSeries(item);
+    } else setSection("series");
+  };
+
+  const openItem = (c: Channel) => (c.kind === "series" && (c.series_id || c.id.startsWith("serie:")) ? openSeriesFrom(c) : play(c, null));
 
   const isFavorite = (id: string) => favorites.some((f) => f.id === id);
   const toggleFavorite = (c: Channel) => {
@@ -451,7 +549,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
 
   return (
     <div className="flex min-h-[100dvh] flex-col">
-      <header ref={headerRef} className="glass sticky top-0 z-30 border-b">
+      <header className="glass sticky top-0 z-30 border-b">
         <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-3 px-4 lg:px-6">
           <Logo />
           <div className="ml-auto flex items-center gap-2">
@@ -466,20 +564,38 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
         </div>
         <div className="mx-auto flex max-w-[1600px] items-center gap-3 px-4 pb-3 lg:px-6">
           <nav className="scrollbar-none flex flex-1 gap-1 overflow-x-auto">
+            {(
+              [
+                ["home", "Início", Home],
+                ["all", "Tudo", LayoutGrid],
+              ] as const
+            ).map(([key, label, Icon]) => (
+              <button
+                key={key}
+                onClick={() => setPage(key)}
+                aria-pressed={page === key}
+                className={cn(
+                  "flex shrink-0 items-center gap-2 rounded-full px-4 py-1.5 text-sm font-semibold transition-all",
+                  page === key ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                )}
+              >
+                <Icon className="h-4 w-4" /> {label}
+              </button>
+            ))}
             {sections
               .filter((s) => counts[s.key] > 0 || s.key === "live")
               .map(({ key, label, icon: Icon }) => (
                 <button
                   key={key}
-                  onClick={() => setSection(key)}
-                  aria-pressed={section === key}
+                  onClick={() => goSection(key)}
+                  aria-pressed={page === "section" && section === key}
                   className={cn(
                     "flex shrink-0 items-center gap-2 rounded-full px-4 py-1.5 text-sm font-semibold transition-all",
-                    section === key ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                    page === "section" && section === key ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
                   )}
                 >
                   <Icon className="h-4 w-4" /> {label}
-                  {!xt && <span className={cn("rounded-full px-1.5 text-[11px] tabular-nums", section === key ? "bg-background/15" : "bg-muted")}>{counts[key]}</span>}
+                  {!xt && <span className={cn("rounded-full px-1.5 text-[11px] tabular-nums", page === "section" && section === key ? "bg-background/15" : "bg-muted")}>{counts[key]}</span>}
                 </button>
               ))}
           </nav>
@@ -496,29 +612,38 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
         </div>
       </header>
 
-      <div className="mx-auto grid w-full max-w-[1600px] flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_400px] lg:gap-6 lg:p-6">
-        <section className="sticky z-20 self-start bg-background lg:static" style={{ top: headerHeight }}>
-          <VideoPlayer channel={current} />
-          <div className="space-y-3 px-4 py-3 lg:px-0 lg:pt-5">
-            <div className="flex items-center gap-3">
-              {current && <ChannelLogo channel={current} />}
-              <div className="min-w-0 flex-1">
-                <h1 className="truncate text-base font-bold tracking-tight lg:text-xl">{current?.name ?? "Nada em reprodução"}</h1>
-                <p className="truncate text-xs text-muted-foreground">
-                  {current?.group || (profile.expires_at ? `Acesso válido até ${formatDate(profile.expires_at)}` : "Escolha um canal, filme ou série")}
-                </p>
-              </div>
-              {current && (
-                <Button variant="ghost" size="icon" onClick={() => toggleFavorite(current)} title="Favorito" aria-label="Favorito">
-                  <Heart className={cn(isFavorite(current.id) && "fill-destructive text-destructive")} />
-                </Button>
-              )}
-            </div>
-            {nowPlaying && <EpgNow programme={nowPlaying} next={upNext} />}
-          </div>
-        </section>
-
-        <section className="flex min-w-0 flex-col gap-3 px-4 pb-6 lg:sticky lg:top-[124px] lg:h-[calc(100dvh-148px)] lg:px-0 lg:pb-0">
+      <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 pb-8 pt-4 lg:px-6">
+            {page === "home" ? (
+              <HomePage
+                history={history}
+                loading={catalog === null}
+                onOpen={openItem}
+                onExplore={() => setPage("all")}
+                onClear={() => {
+                  setHistory([]);
+                  save("rtec:history", []);
+                }}
+                currentId={current?.id}
+                isFavorite={isFavorite}
+                onFavorite={toggleFavorite}
+                epg={epg}
+              />
+            ) : page === "all" ? (
+              <AllPage
+                query={allQuery}
+                onQuery={setAllQuery}
+                result={allRes?.key === allKey ? allRes : null}
+                onOpen={openItem}
+                onSeeAll={(k) => {
+                  goSection(k);
+                  setQuery(allTerm);
+                }}
+                currentId={current?.id}
+                isFavorite={isFavorite}
+                onFavorite={toggleFavorite}
+              />
+            ) : (
+              <div className="flex min-w-0 flex-col gap-3">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -543,7 +668,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
             )}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto lg:pr-1">
+          <div>
             {loading ? (
               <ul className="space-y-1">
                 {Array.from({ length: 7 }).map((_, i) => (
@@ -588,19 +713,15 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                     <Loader2 className="h-4 w-4 animate-spin text-primary" /> Carregando episódios...
                   </div>
                 ) : (
-                  <ul className="space-y-1">
-                    {series.episodes.map((e) => (
-                      <ChannelRow
-                        key={e.id}
-                        channel={e}
-                        label={e.episode ? `T${e.season} · Episódio ${e.episode}${xt && e.name ? ` · ${e.name}` : ""}` : e.name}
-                        active={current?.id === e.id}
-                        favorite={isFavorite(e.id)}
-                        onPlay={() => play({ ...e, group: series.name })}
-                        onFavorite={() => toggleFavorite({ ...e, group: series.name })}
-                      />
-                    ))}
-                  </ul>
+                  <EpisodeList
+                    episodes={series.episodes}
+                    seriesName={series.name}
+                    currentId={current?.id}
+                    xt={xt}
+                    isFavorite={isFavorite}
+                    onPlay={(e) => play({ ...e, group: series.name }, series.episodes!.map((x) => ({ ...x, group: series.name })))}
+                    onFavorite={(e) => toggleFavorite({ ...e, group: series.name })}
+                  />
                 )}
               </div>
             ) : visible.length === 0 ? (
@@ -612,7 +733,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                 <EmptyState icon={<Search className="h-6 w-6" />} title="Nada encontrado" text="Tente outro termo ou outra categoria." />
               )
             ) : section === "live" ? (
-              <ul className="space-y-1">
+              <ul className="grid gap-1 md:grid-cols-2 xl:grid-cols-3">
                 {visible.slice(0, cap).map((c) => (
                   <ChannelRow
                     key={c.id}
@@ -620,13 +741,13 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                     active={current?.id === c.id}
                     favorite={isFavorite(c.id)}
                     now={c.epg_id ? epg[c.epg_id]?.[0]?.title : undefined}
-                    onPlay={() => play(c)}
+                    onPlay={() => play(c, null)}
                     onFavorite={() => toggleFavorite(c)}
                   />
                 ))}
               </ul>
             ) : section === "movie" || special ? (
-              <PosterGrid items={visible.slice(0, cap)} activeId={current?.id} onSelect={play} />
+              <PosterGrid items={visible.slice(0, cap).map((c) => ({ ...c, progress: fraction(c.id) }))} activeId={current?.id} onSelect={(c) => openItem(c)} />
             ) : (
               <PosterGrid items={seriesList.slice(0, cap).map((s) => ({ ...s, id: s.key }))} onSelect={openSeries} />
             )}
@@ -644,8 +765,21 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
               </div>
             )}
           </div>
-        </section>
-      </div>
+              </div>
+            )}
+      </main>
+
+      {current && (
+        <PlayerOverlay
+          channel={current}
+          next={nextEpisode}
+          favorite={isFavorite(current.id)}
+          onFavorite={() => toggleFavorite(current)}
+          onNext={(n) => play(n)}
+          onClose={() => setCurrent(null)}
+          info={nowPlaying ? <EpgNow programme={nowPlaying} next={upNext} /> : undefined}
+        />
+      )}
 
       <PinDialog
         open={!!pinFor}
@@ -712,6 +846,9 @@ function ChannelRow({
   favorite,
   onPlay,
   onFavorite,
+  progress = 0,
+  badge,
+  sub,
 }: {
   channel: Channel;
   label?: string;
@@ -720,14 +857,21 @@ function ChannelRow({
   favorite: boolean;
   onPlay: () => void;
   onFavorite: () => void;
+  progress?: number;
+  badge?: ReactNode;
+  sub?: string;
 }) {
   return (
     <li className={cn("flex items-center rounded-xl transition-colors", active ? "bg-primary/10 ring-1 ring-primary/40" : "hover:bg-accent")}>
       <button onClick={onPlay} className="flex min-w-0 flex-1 items-center gap-3 rounded-xl p-2 text-left">
         <ChannelLogo channel={c} />
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className={cn("truncate text-sm font-semibold", active && "text-primary")}>{label ?? c.name}</div>
-          <div className="truncate text-xs text-muted-foreground">{now ? `Agora: ${now}` : c.group}</div>
+          <div className="flex items-center gap-2 truncate text-xs text-muted-foreground">
+            {badge}
+            <span className="truncate">{now ? `Agora: ${now}` : (sub ?? c.group)}</span>
+          </div>
+          {progress > 0 && <ProgressBar value={progress} className="mt-1.5" />}
         </div>
         {active && <Play className="ml-auto h-3.5 w-3.5 shrink-0 fill-primary text-primary" />}
       </button>
@@ -738,11 +882,11 @@ function ChannelRow({
   );
 }
 
-type PosterItem = { id: string; name: string; logo: string; sub?: string };
+type PosterItem = { id: string; name: string; logo: string; sub?: string; progress?: number };
 
 function PosterGrid<T extends PosterItem>({ items, activeId, onSelect }: { items: T[]; activeId?: string; onSelect: (item: T) => void }) {
   return (
-    <div className="grid grid-cols-3 gap-3 pb-1 pt-1 sm:grid-cols-4 lg:grid-cols-3">
+    <div className="grid grid-cols-3 gap-3 pb-1 pt-1 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8">
       {items.map((item) => (
         <button key={item.id} onClick={() => onSelect(item)} className="group text-left">
           <div
@@ -755,6 +899,14 @@ function PosterGrid<T extends PosterItem>({ items, activeId, onSelect }: { items
               <img src={item.logo} alt="" loading="lazy" className="h-full w-full object-cover" onError={(e) => (e.currentTarget.style.display = "none")} />
             ) : (
               <Film className="h-6 w-6 text-muted-foreground" />
+            )}
+            {!!item.progress && item.progress > 0 && (
+              <div className="absolute inset-x-1.5 bottom-1.5">
+                <ProgressBar value={item.progress} />
+              </div>
+            )}
+            {!!item.progress && item.progress >= WATCHED_AT && (
+              <CheckCircle2 className="absolute right-1.5 top-1.5 h-5 w-5 rounded-full bg-background/80 text-success" />
             )}
             <span className="absolute inset-0 grid place-items-center bg-background/30 opacity-0 transition-opacity group-hover:opacity-100">
               <span className="grid h-10 w-10 place-items-center rounded-full bg-foreground text-background">
@@ -885,6 +1037,225 @@ function CategoryMenu({ label, value, options, onSelect }: { label: string; valu
             </ul>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+function ProgressBar({ value, className }: { value: number; className?: string }) {
+  return (
+    <div className={cn("h-1 overflow-hidden rounded-full bg-muted/80", className)} aria-label={`${Math.round(value * 100)}% assistido`}>
+      <div className={cn("h-full rounded-full", value >= WATCHED_AT ? "bg-success" : "bg-brand")} style={{ width: `${Math.max(3, Math.round(value * 100))}%` }} />
+    </div>
+  );
+}
+
+/** Lista de episodios: marca o que ja foi assistido, o que esta tocando e quanto de cada um (barra). */
+function EpisodeList({
+  episodes,
+  currentId,
+  xt,
+  isFavorite,
+  onPlay,
+  onFavorite,
+}: {
+  episodes: Episode[];
+  seriesName: string;
+  currentId?: string;
+  xt: boolean;
+  isFavorite: (id: string) => boolean;
+  onPlay: (e: Episode) => void;
+  onFavorite: (e: Episode) => void;
+}) {
+  // Ultimo episodio mexido = onde o cliente parou ("Continuar").
+  const lastId = episodes.reduce<{ id: string; t: number } | null>((best, e) => {
+    const pr = getProgress(e.id);
+    return pr && (!best || pr.t > best.t) ? { id: e.id, t: pr.t } : best;
+  }, null)?.id;
+  const resume = episodes.find((e) => e.id === lastId);
+  const nextUp = resume && fraction(resume.id) >= WATCHED_AT ? episodes[episodes.indexOf(resume) + 1] : resume;
+
+  return (
+    <div className="space-y-3">
+      {nextUp && (
+        <Button variant="gradient" onClick={() => onPlay(nextUp)} className="w-full sm:w-auto">
+          <Play className="fill-current" /> {fraction(nextUp.id) > 0 ? "Continuar" : "Assistir"} T{nextUp.season} · E{nextUp.episode}
+        </Button>
+      )}
+      <ul className="grid gap-1 md:grid-cols-2">
+        {episodes.map((e) => {
+          const f = fraction(e.id);
+          const watched = f >= WATCHED_AT;
+          const playing = currentId === e.id;
+          return (
+            <ChannelRow
+              key={e.id}
+              channel={e}
+              label={e.episode ? `T${e.season} · Episódio ${e.episode}${xt && e.name ? ` · ${e.name}` : ""}` : e.name}
+              active={playing}
+              favorite={isFavorite(e.id)}
+              onPlay={() => onPlay(e)}
+              onFavorite={() => onFavorite(e)}
+              progress={f}
+              sub={watched ? "Assistido" : f > 0 ? `${Math.round(f * 100)}% assistido` : "Não assistido"}
+              badge={
+                playing ? (
+                  <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-primary">Tocando</span>
+                ) : e.id === lastId && !watched ? (
+                  <span className="rounded bg-brand/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-brand">Parou aqui</span>
+                ) : watched ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
+                ) : undefined
+              }
+            />
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+const KIND_LABEL: Record<Section, string> = { live: "TV ao vivo", movie: "Filme", series: "Série" };
+
+/** Pagina inicial: historico do que o cliente assistiu por ultimo. */
+function HomePage({
+  history,
+  loading,
+  onOpen,
+  onExplore,
+  onClear,
+  currentId,
+  isFavorite,
+  onFavorite,
+  epg,
+}: {
+  history: Channel[];
+  loading: boolean;
+  onOpen: (c: Channel) => void;
+  onExplore: () => void;
+  onClear: () => void;
+  currentId?: string;
+  isFavorite: (id: string) => boolean;
+  onFavorite: (c: Channel) => void;
+  epg: Record<string, Programme[]>;
+}) {
+  const resume = history.filter((c) => c.kind !== "live" && fraction(c.id) > 0 && fraction(c.id) < WATCHED_AT);
+  if (!loading && !history.length) {
+    return (
+      <EmptyState
+        icon={<History className="h-6 w-6" />}
+        title="Nada assistido ainda"
+        text="O que você assistir aparece aqui, para continuar de onde parou."
+        action={
+          <Button variant="gradient" onClick={onExplore}>
+            <LayoutGrid /> Explorar tudo
+          </Button>
+        }
+      />
+    );
+  }
+  return (
+    <div className="space-y-8">
+      {!!resume.length && (
+        <section>
+          <h2 className="mb-3 text-lg font-bold tracking-tight">Continuar assistindo</h2>
+          <PosterGrid items={resume.slice(0, 16).map((c) => ({ ...c, progress: fraction(c.id), sub: c.kind === "series" ? c.group : undefined }))} activeId={currentId} onSelect={onOpen} />
+        </section>
+      )}
+      <section>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-bold tracking-tight">Histórico</h2>
+          <Button variant="ghost" size="sm" onClick={onClear}>
+            Limpar
+          </Button>
+        </div>
+        <ul className="grid gap-1 md:grid-cols-2 xl:grid-cols-3">
+          {history.map((c) => (
+            <ChannelRow
+              key={c.id}
+              channel={c}
+              active={currentId === c.id}
+              favorite={isFavorite(c.id)}
+              onPlay={() => onOpen(c)}
+              onFavorite={() => onFavorite(c)}
+              progress={c.kind === "live" ? 0 : fraction(c.id)}
+              now={c.epg_id ? epg[c.epg_id]?.[0]?.title : undefined}
+              badge={<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-bold uppercase">{KIND_LABEL[c.kind]}</span>}
+            />
+          ))}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+/** Pagina "Tudo": canais, filmes e series juntos, com busca em tudo. */
+function AllPage({
+  query,
+  onQuery,
+  result,
+  onOpen,
+  onSeeAll,
+  currentId,
+  isFavorite,
+  onFavorite,
+}: {
+  query: string;
+  onQuery: (q: string) => void;
+  result: { loading: boolean; data: Record<Section, { total: number; items: Channel[] }> } | null;
+  onOpen: (c: Channel) => void;
+  onSeeAll: (k: Section) => void;
+  currentId?: string;
+  isFavorite: (id: string) => boolean;
+  onFavorite: (c: Channel) => void;
+}) {
+  const kinds: { key: Section; label: string }[] = [
+    { key: "live", label: "TV ao vivo" },
+    { key: "movie", label: "Filmes" },
+    { key: "series", label: "Séries" },
+  ];
+  const nothing = result && !result.loading && kinds.every((k) => !result.data[k.key].total);
+  return (
+    <div className="space-y-6">
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input className="h-12 pl-10 text-base" aria-label="Buscar em tudo" placeholder="Buscar canais, filmes e séries..." value={query} onChange={(e) => onQuery(e.target.value)} autoFocus />
+        {result?.loading && <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-primary" />}
+      </div>
+      {!result ? (
+        <div className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+          {Array.from({ length: 12 }).map((_, i) => (
+            <Skeleton key={i} className="aspect-[2/3] rounded-xl" />
+          ))}
+        </div>
+      ) : nothing ? (
+        <EmptyState icon={<Search className="h-6 w-6" />} title="Nada encontrado" text="Tente outro nome." />
+      ) : (
+        kinds.map(({ key, label }) => {
+          const r = result.data[key];
+          if (!r.total) return null;
+          return (
+            <section key={key}>
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-lg font-bold tracking-tight">
+                  {label} <span className="text-sm font-normal text-muted-foreground">({r.total.toLocaleString("pt-BR")})</span>
+                </h2>
+                <Button variant="ghost" size="sm" onClick={() => onSeeAll(key)}>
+                  Ver tudo <ChevronRight />
+                </Button>
+              </div>
+              {key === "live" ? (
+                <ul className="grid gap-1 md:grid-cols-2 xl:grid-cols-3">
+                  {r.items.slice(0, 9).map((c) => (
+                    <ChannelRow key={c.id} channel={c} active={currentId === c.id} favorite={isFavorite(c.id)} onPlay={() => onOpen(c)} onFavorite={() => onFavorite(c)} />
+                  ))}
+                </ul>
+              ) : (
+                <PosterGrid items={r.items.map((c) => ({ ...c, progress: fraction(c.id) }))} activeId={currentId} onSelect={onOpen} />
+              )}
+            </section>
+          );
+        })
       )}
     </div>
   );

@@ -399,6 +399,9 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
   assert.equal(series[0].series_id, "70");
   const eps = (await call("GET", "/api/player/xtream/series/70?name=Serie%20Teste")).body;
   assert.deepEqual(eps.map((e) => [e.name, e.season, e.episode]), [["Ep 1", 1, 1], ["Ep 2", 1, 2]]);
+  assert.equal(eps[0].parent_series, "70");
+  const acc = (await call("GET", "/api/player/xtream/items?section=movie&limit=10&q=TESTE")).body;
+  assert.equal(acc.items[0].name, "Filme Teste", "busca ignora maiusculas/acentos");
   assert.match(decodeURIComponent(eps[1].src), /\/series\/TiaX\/Sen%401\/902\.mkv/);
 
   const epg = (await call("GET", "/api/player/epg?ids=xt:1")).body;
