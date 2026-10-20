@@ -15,6 +15,14 @@ mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
 [ -f "$KEY" ] || ssh-keygen -t ed25519 -N "" -f "$KEY" -C rtec >/dev/null
 [ -f "$KEY.pub" ] || { echo "Nao consegui criar a chave de acesso em $KEY"; exit 1; }
 AD="$(oci iam availability-domain list --compartment-id "$C" --query 'data[0].name' --raw-output)"
+# Se a maquina ja existe (rodou antes), so mostra como entrar.
+EXISTING="$(oci compute instance list --compartment-id "$C" --display-name "$NAME" --lifecycle-state RUNNING --query 'data[0].id' --raw-output 2>/dev/null | grep -o 'ocid1\.instance[^"[:space:]]*' | head -1)"
+if [ -n "$EXISTING" ]; then
+  IP="$(oci compute instance list-vnics --instance-id "$EXISTING" --query 'data[0]."public-ip"' --raw-output)"
+  echo "A maquina $NAME ja existe. IP publico: $IP"
+  echo "  ssh -i ~/.ssh/rtec -o StrictHostKeyChecking=accept-new ubuntu@$IP"
+  exit 0
+fi
 SUBNET="$(oci network subnet list --compartment-id "$C" --all --query "data[?contains(\"display-name\", 'public')].id | [0]" --raw-output)"
 if [ -z "$SUBNET" ] || [ "$SUBNET" = "null" ]; then
   echo "Nao achei a sub-rede publica. Crie a rede pelo 'Start VCN Wizard' (Create VCN with Internet Connectivity) e rode de novo."
@@ -45,7 +53,9 @@ while true; do
     else
       ID="$(launch VM.Standard.E2.1.Micro "$IMG_E2")"
     fi
-    if [ -n "$ID" ] && [ "$ID" != "null" ]; then
+    # So considera criada quando a Oracle devolve o identificador da maquina (ocid1.instance...).
+    ID="$(printf '%s' "$ID" | grep -o 'ocid1\.instance[^"[:space:]]*' | head -1)"
+    if [ -n "$ID" ]; then
       # O IP publico aparece alguns segundos depois da maquina ligar.
       IP=""
       for _ in $(seq 1 30); do
@@ -59,7 +69,7 @@ while true; do
       echo "  ssh -i ~/.ssh/rtec -o StrictHostKeyChecking=accept-new ubuntu@$IP"
       exit 0
     fi
-    if ! grep -qi "capacity" /tmp/rtec-err.txt; then
+    if ! grep -qiE "capacity|LimitExceeded|TooManyRequests" /tmp/rtec-err.txt; then
       echo "Erro diferente de falta de vaga:"; cat /tmp/rtec-err.txt; exit 1
     fi
   done
