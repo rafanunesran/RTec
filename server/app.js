@@ -335,6 +335,31 @@ const SORTS = {
 };
 const sortItems = (list, sort) => (SORTS[sort] ? [...list].sort(SORTS[sort]) : list);
 
+/**
+ * Generos de um filme/serie. Quando o fornecedor nao manda (comum em filmes), usa o fim do nome da
+ * categoria: "Filmes | Animacao" -> "Animacao".
+ */
+function genreList(it, categoryName) {
+  const own = String(it.genre || "").split(/\s*[,/|&]\s*/).map((g) => g.trim()).filter(Boolean);
+  if (own.length) return [...new Set(own)].slice(0, 6);
+  const m = /[|:\-–]\s*([^|:\-–]+?)\s*$/.exec(String(categoryName || ""));
+  return m ? [m[1]] : [];
+}
+
+/** Filtros extras do catalogo: g = generos (virgula), y1/y2 = de/ate o ano, r = nota minima. */
+function readFilters(q) {
+  const g = new Set(String(q.g || "").split(",").map((x) => fold(x.trim())).filter(Boolean));
+  const y1 = Number(q.y1) || 0;
+  const y2 = Number(q.y2) || 0;
+  const r = Number(q.r) || 0;
+  return g.size || y1 || y2 || r ? { g, y1, y2, r } : null;
+}
+const passesFilters = (f, it) =>
+  (!f.g.size || it.genres.some((x) => f.g.has(fold(x)))) &&
+  (!f.y1 || it.year >= f.y1) &&
+  (!f.y2 || (it.year > 0 && it.year <= f.y2)) &&
+  (!f.r || it.rating >= f.r);
+
 /** Minusculas e sem acentos, para a busca achar "acao" em "Ação". */
 const fold = (t) => String(t).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
@@ -345,7 +370,7 @@ function xtreamChannel(c, item, group, app = false) {
   const mode = c.source?.playback || DEFAULT_PLAYBACK;
   const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
   if (item.kind === "series" && item.series_id) {
-    return { id: `s${item.series_id}`, series_id: item.series_id, name: item.name, group, logo: logoUrl(c.id, item.logo), src: "", type: "file", alt: "", alt_type: "", kind: "series", epg_id: "", playlist_id: "own", added: item.added, year: item.year, rating: item.rating };
+    return { id: `s${item.series_id}`, series_id: item.series_id, name: item.name, group, logo: logoUrl(c.id, item.logo), src: "", type: "file", alt: "", alt_type: "", kind: "series", epg_id: "", playlist_id: "own", added: item.added, year: item.year, rating: item.rating, genres: item.genres || [] };
   }
   return {
     id: hashId(c.id, item.kind, item.stream_id),
@@ -363,6 +388,7 @@ function xtreamChannel(c, item, group, app = false) {
     ...(item.added ? { added: item.added } : {}),
     ...(item.year ? { year: item.year } : {}),
     ...(item.rating ? { rating: item.rating } : {}),
+    ...(item.genres?.length ? { genres: item.genres } : {}),
     // Ultimo recurso: se o link direto (app) falhar, tenta pelo servidor de video.
     fallback: !viaProxy(mode, item.url, app) ? proxyUrl(c.id, item.url) : "",
     ...(item.season ? { season: item.season, episode: item.episode } : {}),
@@ -797,10 +823,13 @@ export function createApp() {
       // entao vai em paginas (limit/offset), com busca (q) e sem as categorias bloqueadas (skip).
       const limit = Math.min(500, Math.max(0, Number(req.query.limit) || 0));
       if (!category && section !== "live" && !limit) throw new HttpError(400, "Escolha uma categoria");
-      const [cats, list] = await Promise.all([xtream.categories(creds, section), xtream.items(creds, section, category)]);
+      const [cats, raw] = await Promise.all([xtream.categories(creds, section), xtream.items(creds, section, category)]);
       const names = new Map(cats.map((x) => [x.id, x.name]));
       const toChannel = (it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "", isApp(req));
       res.setHeader("Cache-Control", "no-store");
+      let list = section === "live" ? raw : raw.map((it) => ({ ...it, genres: genreList(it, names.get(it.category_id)) }));
+      const filters = section === "live" ? null : readFilters(req.query);
+      if (filters) list = list.filter((it) => passesFilters(filters, it));
       const sorted = sortItems(list, String(req.query.sort || ""));
       if (!limit) return res.json(sorted.map(toChannel));
       const skip = new Set(String(req.query.skip || "").split(",").filter(Boolean));
@@ -808,6 +837,45 @@ export function createApp() {
       const found = sorted.filter((it) => !skip.has(it.category_id) && (!q || fold(it.name).includes(q)));
       const offset = Math.max(0, Number(req.query.offset) || 0);
       res.json({ total: found.length, items: found.slice(offset, offset + limit).map(toChannel) });
+    }),
+  );
+
+  // Opcoes do popup de filtros: generos (com quantidade) e anos existentes na secao/categoria.
+  app.get(
+    "/api/player/xtream/facets",
+    requireClient,
+    wrap(async (req, res) => {
+      const creds = requireXtream(req.client);
+      const section = String(req.query.section || "");
+      if (!["movie", "series"].includes(section)) throw new HttpError(400, "Secao invalida");
+      const category = String(req.query.category || "");
+      const [cats, list] = await Promise.all([xtream.categories(creds, section), xtream.items(creds, section, category)]);
+      const names = new Map(cats.map((x) => [x.id, x.name]));
+      const skip = new Set(String(req.query.skip || "").split(",").filter(Boolean));
+      const genres = new Map();
+      let min = 0;
+      let max = 0;
+      let rated = 0;
+      for (const it of list) {
+        if (skip.has(it.category_id)) continue;
+        for (const g of genreList(it, names.get(it.category_id))) {
+          const k = fold(g);
+          const cur = genres.get(k) || { name: g, count: 0 };
+          cur.count++;
+          genres.set(k, cur);
+        }
+        if (it.year) {
+          min = min ? Math.min(min, it.year) : it.year;
+          max = Math.max(max, it.year);
+        }
+        if (it.rating) rated++;
+      }
+      res.setHeader("Cache-Control", "private, max-age=600");
+      res.json({
+        genres: [...genres.values()].sort((a, b) => b.count - a.count || collator.compare(a.name, b.name)).slice(0, 60),
+        years: { min, max },
+        rated,
+      });
     }),
   );
 

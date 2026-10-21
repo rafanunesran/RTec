@@ -86,7 +86,7 @@ function yearOf(it) {
 /** Dados para ordenar: quando foi adicionado (s), ano e nota (0 a 10). */
 function sortInfo(it) {
   const rating = Number(it.rating) || Number(it.rating_5based) * 2 || 0;
-  return { added: Number(it.added) || Number(it.last_modified) || 0, year: yearOf(it), rating: Math.round(rating * 10) / 10 };
+  return { added: Number(it.added) || Number(it.last_modified) || 0, year: yearOf(it), rating: Math.round(rating * 10) / 10, genre: String(it.genre || "").trim() };
 }
 
 const ext = (v, fallback) => (/^[a-z0-9]{2,5}$/i.test(String(v || "")) ? String(v).toLowerCase() : fallback);

@@ -45,7 +45,7 @@ function xtreamApi(req, res) {
     case "get_vod_streams":
       return json([
         { stream_id: 50, name: "Filme Teste", stream_icon: "https://img.example/f.jpg", container_extension: "mp4", category_id: "20", added: "1700000000", year: "2015", rating: "6.1" },
-        { stream_id: 51, name: "Abelha Rainha", stream_icon: "", container_extension: "mp4", category_id: "20", added: "1800000000", release_date: "2023-04-01", rating: "8.4" },
+        { stream_id: 51, name: "Abelha Rainha", stream_icon: "", container_extension: "mp4", category_id: "20", added: "1800000000", release_date: "2023-04-01", rating: "8.4", genre: "Suspense, Drama" },
         { stream_id: 52, name: "Zebra (1999)", stream_icon: "", container_extension: "mp4", category_id: "20", added: "1600000000", rating_5based: "4.5" },
       ]);
     case "get_series":
@@ -605,3 +605,23 @@ test("limpa o nome do titulo para buscar na internet", async () => {
   assert.equal(cleanTitle("Duna - Parte Dois 2024"), "Duna - Parte Dois");
   assert.equal(cleanTitle("Oppenheimer - Dublado"), "Oppenheimer");
 });
+
+test("filtros do catalogo: genero, ano e nota", async () => {
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
+  const names = async (q) => (await call("GET", `/api/player/xtream/items?section=movie&limit=10&sort=az&${q}`)).body.items.map((m) => m.name);
+  assert.deepEqual(await names("g=Acao"), ["Filme Teste", "Zebra (1999)"], "sem genero do fornecedor, vale o da categoria");
+  assert.deepEqual(await names("g=suspense,comedia"), ["Abelha Rainha"], "sem diferenca de maiusculas/acentos; qualquer um dos generos");
+  assert.deepEqual(await names("y1=2010"), ["Abelha Rainha", "Filme Teste"]);
+  assert.deepEqual(await names("y2=2000"), ["Zebra (1999)"]);
+  assert.deepEqual(await names("r=8"), ["Abelha Rainha", "Zebra (1999)"]);
+  assert.deepEqual(await names("g=acao&y1=2000&r=6"), ["Filme Teste"]);
+  const byCat = (await call("GET", "/api/player/xtream/items?section=movie&category=20&r=8")).body;
+  assert.equal(byCat.length, 2, "filtra tambem dentro de uma categoria");
+  assert.deepEqual(byCat.find((m) => m.name === "Abelha Rainha").genres, ["Suspense", "Drama"]);
+  const facets = (await call("GET", "/api/player/xtream/facets?section=movie")).body;
+  assert.deepEqual(facets.genres.map((g) => [g.name, g.count]), [["Acao", 2], ["Drama", 1], ["Suspense", 1]]);
+  assert.deepEqual(facets.years, { min: 1999, max: 2023 });
+  assert.equal(facets.rated, 3);
+});
+

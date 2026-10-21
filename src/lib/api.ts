@@ -91,6 +91,7 @@ export type Channel = {
   added?: number;
   year?: number;
   rating?: number;
+  genres?: string[];
   /** Episodio: id da serie a que pertence (para achar o proximo). */
   parent_series?: string;
   xt_id?: string; // id do filme no fornecedor (ficha do titulo)

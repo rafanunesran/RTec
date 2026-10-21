@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, ArrowUpDown, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, Search, Settings, Share, SquarePlus, Tv, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, Search, Settings, Share, SquarePlus, Tv, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
@@ -50,6 +50,51 @@ const SORT_FN: Record<string, (a: Channel, b: Channel) => number> = {
 };
 const sortList = (list: Channel[], sort: string) => (SORT_FN[sort] ? [...list].sort(SORT_FN[sort]) : list);
 /** "2023 · ★ 8.4" embaixo do poster. */
+/** Filtros extras (alem da categoria): generos, de/ate o ano e nota minima. */
+type Filters = { g: string[]; y1: number; y2: number; r: number };
+const NO_FILTERS: Filters = { g: [], y1: 0, y2: 0, r: 0 };
+const filterCount = (f: Filters) => (f.g.length ? 1 : 0) + (f.y1 || f.y2 ? 1 : 0) + (f.r ? 1 : 0);
+const filterQuery = (f: Filters) => {
+  const q = new URLSearchParams();
+  if (f.g.length) q.set("g", f.g.join(","));
+  if (f.y1) q.set("y1", String(f.y1));
+  if (f.y2) q.set("y2", String(f.y2));
+  if (f.r) q.set("r", String(f.r));
+  return q.toString();
+};
+const yearOf = (c: Channel) => c.year || Number(/\((19|20)\d{2}\)/.exec(c.name)?.[0].slice(1, 5)) || 0;
+/** Generos do item; sem eles, o fim do nome da categoria ("Filmes | Acao" -> "Acao"), como no servidor. */
+const genresOf = (c: Channel) => (c.genres?.length ? c.genres : (/[|:\-–]\s*([^|:\-–]+?)\s*$/.exec(c.group || "")?.slice(1, 2) ?? []));
+function applyFilters(list: Channel[], f: Filters) {
+  if (!filterCount(f)) return list;
+  const g = new Set(f.g.map(fold));
+  return list.filter((c) => {
+    const y = yearOf(c);
+    return (!g.size || genresOf(c).some((x) => g.has(fold(x)))) && (!f.y1 || y >= f.y1) && (!f.y2 || (y > 0 && y <= f.y2)) && (!f.r || (c.rating || 0) >= f.r);
+  });
+}
+type Facets = { genres: { name: string; count: number }[]; years: { min: number; max: number }; rated: number };
+function localFacets(list: Channel[]): Facets {
+  const genres = new Map<string, { name: string; count: number }>();
+  let min = 0;
+  let max = 0;
+  let rated = 0;
+  for (const c of list) {
+    for (const g of genresOf(c)) {
+      const cur = genres.get(fold(g)) ?? { name: g, count: 0 };
+      cur.count++;
+      genres.set(fold(g), cur);
+    }
+    const y = yearOf(c);
+    if (y) {
+      min = min ? Math.min(min, y) : y;
+      max = Math.max(max, y);
+    }
+    if (c.rating) rated++;
+  }
+  return { genres: [...genres.values()].sort((a, b) => b.count - a.count || collator.compare(a.name, b.name)).slice(0, 60), years: { min, max }, rated };
+}
+
 const metaLine = (c: Channel) => [c.year || "", c.rating ? `★ ${c.rating.toFixed(1)}` : ""].filter(Boolean).join(" · ") || undefined;
 
 const sections: { key: Section; label: string; icon: typeof Tv }[] = [
@@ -217,6 +262,8 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [settings, setSettings] = useState<PlayerSettings>({ custom_pin: false, locked_groups: [] });
   const [page, setPage] = useState<Page>("home");
   const [sorts, setSorts] = useState<Record<string, string>>(() => load("rtec:sort", {}));
+  const [filtersBy, setFiltersBy] = useState<Record<string, Filters>>(() => load("rtec:filters", {}));
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [section, setSection] = useState<Section>("live");
   const [queue, setQueue] = useState<Channel[] | null>(null); // episodios da serie em reproducao (para "proximo")
   const [allQuery, setAllQuery] = useState("");
@@ -369,17 +416,26 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
       save("rtec:sort", next);
       return next;
     });
-  const xtKey = xt && !special && !pagedAll ? `${section}:${section === "live" ? "" : group}:${sort}` : "";
+  const filters = section === "live" ? NO_FILTERS : { ...NO_FILTERS, ...filtersBy[section] };
+  const setFilters = (f: Filters) =>
+    setFiltersBy((old) => {
+      const next = { ...old, [section]: f };
+      save("rtec:filters", next);
+      return next;
+    });
+  const fq = encodeURIComponent(filterQuery(filters));
+  const xtKey = xt && !special && !pagedAll ? `${section}:${section === "live" ? "" : group}:${sort}:${fq}` : "";
   const skipIds = useMemo(() => groups.filter((g) => isLocked(g.name)).map((g) => g.key).join(","), [groups, isLocked]);
-  const pageKey = pagedAll ? `${section}|${searchTerm}|${skipIds}|${sort}` : "";
+  const pageKey = pagedAll ? `${section}|${searchTerm}|${skipIds}|${sort}|${fq}` : "";
 
   const loadPage = useCallback(
     (key: string, offset: number) => {
-      const [sec, q, skip, srt] = key.split("|");
+      const [sec, q, skip, srt, f] = key.split("|");
       setXtPage((p) => (offset && p?.key === key ? { ...p, loading: true } : { key, items: [], total: 0, loading: true, error: "" }));
       const params = new URLSearchParams({ section: sec, limit: String(PAGE), offset: String(offset), q, skip, sort: srt });
+      const extra = decodeURIComponent(f || "");
       api
-        .get<{ total: number; items: Channel[] }>(`/api/player/xtream/items?${params}`)
+        .get<{ total: number; items: Channel[] }>(`/api/player/xtream/items?${params}${extra ? `&${extra}` : ""}`)
         .then((res) =>
           setXtPage((p) => (p?.key === key ? { key, items: offset ? [...p.items, ...res.items] : res.items, total: res.total, loading: false, error: "" } : p)),
         )
@@ -397,9 +453,10 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   useEffect(() => {
     if (!xtKey || xtItems[xtKey]) return;
     setXtItems((m) => ({ ...m, [xtKey]: "loading" }));
-    const [sec, cat, srt] = xtKey.split(":");
+    const [sec, cat, srt, f] = xtKey.split(":");
+    const extra = decodeURIComponent(f || "");
     api
-      .get<Channel[]>(`/api/player/xtream/items?section=${sec}&category=${encodeURIComponent(cat)}&sort=${srt}`)
+      .get<Channel[]>(`/api/player/xtream/items?section=${sec}&category=${encodeURIComponent(cat)}&sort=${srt}${extra ? `&${extra}` : ""}`)
       .then((list) => setXtItems((m) => ({ ...m, [xtKey]: list })))
       .catch((err) => {
         if (!handleAuthError(err)) setXtItems((m) => ({ ...m, [xtKey]: { error: (err as Error).message } }));
@@ -412,8 +469,8 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     catalog === null || (!xt && data === null) || xtState === "loading" || (pagedAll && (!pageState || (pageState.loading && !pageState.items.length)));
   const loadError = xtState && typeof xtState === "object" && "error" in xtState ? xtState.error : (pageState?.error ?? "");
 
-  const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
+  // Lista antes dos filtros extras (para montar as opcoes do popup sem o servidor).
+  const unfiltered = useMemo(() => {
     let list: Channel[];
     if (group === FAVORITES) list = favorites.filter((c) => c.kind === section);
     else if (group === HISTORY) list = history.filter((c) => c.kind === section);
@@ -426,14 +483,23 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
         (c) => c.kind === section && (!playlistId || c.playlist_id === playlistId) && (group ? c.group === group : !isLocked(c.group)),
       );
     }
-    if (!xt || special) list = sortList(list, sort);
-    return q ? list.filter((c) => c.name.toLowerCase().includes(q)) : list;
-  }, [group, favorites, history, section, pagedAll, pageState, xt, xtState, groups, isLocked, channels, playlistId, query, sort, special]);
+    return list;
+  }, [group, favorites, history, section, pagedAll, pageState, xt, xtState, groups, isLocked, channels, playlistId]);
+
+  const visible = useMemo(() => {
+    if (pagedAll) return unfiltered;
+    const q = query.trim().toLowerCase();
+    // Xtream por categoria ja vem filtrado e ordenado do servidor; o resto e feito aqui.
+    let list = !xt || special ? sortList(applyFilters(unfiltered, filters), sort) : unfiltered;
+    if (q) list = list.filter((c) => c.name.toLowerCase().includes(q));
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unfiltered, pagedAll, query, xt, special, sort, fq]);
 
   // Series: no Xtream cada item e uma serie (episodios vem da API); nas listas M3U, agrupa pelo nome.
   const seriesList = useMemo(() => {
     if (section !== "series") return [];
-    if (xt) return visible.map((c) => ({ key: c.series_id || c.id, name: c.name, logo: c.logo, sub: "", episodes: null as Episode[] | null }));
+    if (xt) return visible.map((c) => ({ key: c.series_id || c.id, name: c.name, logo: c.logo, sub: metaLine(c) ?? "", episodes: null as Episode[] | null }));
     const map = new Map<string, { key: string; name: string; logo: string; sub: string; episodes: Episode[] | null }>();
     for (const c of visible) {
       const info = episodeInfo(c.name);
@@ -834,7 +900,19 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                 </Button>
               )}
             </div>
-            {!series && <SortSelect value={sort} onChange={setSort} vod={section !== "live"} />}
+            {!series && (
+              <div className="flex gap-2">
+                <div className="min-w-0 flex-1">
+                  <SortSelect value={sort} onChange={setSort} vod={section !== "live"} />
+                </div>
+                {section !== "live" && (
+                  <Button variant={filterCount(filters) ? "secondary" : "outline"} className="h-10 shrink-0" onClick={() => setFiltersOpen(true)} aria-label="Filtros">
+                    <SlidersHorizontal /> Filtros
+                    {!!filterCount(filters) && <span className="grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1 text-[11px] font-bold text-primary-foreground">{filterCount(filters)}</span>}
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
 
           <div>
@@ -909,7 +987,18 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
               ) : group === HISTORY ? (
                 <EmptyState icon={<History className="h-6 w-6" />} title="Histórico vazio" text="O que você assistir aparece aqui, do mais recente para o mais antigo." />
               ) : (
-                <EmptyState icon={<Search className="h-6 w-6" />} title="Nada encontrado" text="Tente outro termo ou outra categoria." />
+                <div className="space-y-3 text-center">
+                  <EmptyState
+                    icon={<Search className="h-6 w-6" />}
+                    title="Nada encontrado"
+                    text={filterCount(filters) ? "Nenhum título combina com os filtros escolhidos." : "Tente outro termo ou outra categoria."}
+                  />
+                  {!!filterCount(filters) && (
+                    <Button variant="outline" size="sm" onClick={() => setFilters(NO_FILTERS)}>
+                      <X /> Limpar filtros
+                    </Button>
+                  )}
+                </div>
               )
             ) : section === "live" ? (
               <ul className="grid gap-1 md:grid-cols-2 xl:grid-cols-3">
@@ -967,6 +1056,23 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
           onNext={(n) => play(n)}
           onClose={() => setCurrent(null)}
           info={nowPlaying ? <EpgNow programme={nowPlaying} next={upNext} /> : undefined}
+        />
+      )}
+
+      {filtersOpen && (
+        <FiltersDialog
+          section={section}
+          value={filters}
+          onClose={() => setFiltersOpen(false)}
+          onApply={(f) => {
+            setFilters(f);
+            setFiltersOpen(false);
+          }}
+          load={
+            xt && !special
+              ? () => api.get<Facets>(`/api/player/xtream/facets?${new URLSearchParams({ section, category: group, skip: group ? "" : skipIds })}`)
+              : () => Promise.resolve(localFacets(unfiltered))
+          }
         />
       )}
 
@@ -1488,7 +1594,7 @@ function AllPage({
                   ))}
                 </ul>
               ) : (
-                <PosterGrid items={r.items.map((c) => ({ ...c, progress: fraction(c.id) }))} activeId={currentId} onSelect={onOpen} />
+                <PosterGrid items={r.items.map((c) => ({ ...c, progress: fraction(c.id), sub: metaLine(c) }))} activeId={currentId} onSelect={onOpen} />
               )}
             </section>
           );
@@ -1499,6 +1605,112 @@ function AllPage({
 }
 
 /** Seletor de ordenacao (lista nativa do sistema: funciona bem no celular e no controle da TV Box). */
+const RATINGS = [0, 5, 6, 7, 8];
+
+/** Popup de filtros: generos (varios), periodo de lancamento e nota minima. */
+function FiltersDialog({ section, value, onApply, onClose, load }: { section: Section; value: Filters; onApply: (f: Filters) => void; onClose: () => void; load: () => Promise<Facets> }) {
+  const [draft, setDraft] = useState<Filters>(value);
+  const [facets, setFacets] = useState<Facets | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    load()
+      .then(setFacets)
+      .catch(() => setFailed(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const toggleGenre = (g: string) =>
+    setDraft((d) => (d.g.some((x) => fold(x) === fold(g)) ? { ...d, g: d.g.filter((x) => fold(x) !== fold(g)) } : { ...d, g: [...d.g, g] }));
+  const thisYear = new Date().getFullYear();
+  const minYear = facets?.years.min || 1950;
+  const maxYear = Math.max(facets?.years.max || thisYear, thisYear);
+  const years = Array.from({ length: maxYear - minYear + 1 }, (_, i) => maxYear - i);
+  const decades = [...new Set(years.map((y) => Math.floor(y / 10) * 10))].slice(0, 6);
+  const chip = (on: boolean) =>
+    cn(
+      "rounded-full border px-3 py-1.5 text-sm font-medium transition-colors",
+      on ? "border-transparent bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+    );
+  const yearSelect = (label: string, v: number, set: (n: number) => void) => (
+    <label className="flex flex-1 flex-col gap-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      {label}
+      <select value={v || ""} onChange={(e) => set(Number(e.target.value) || 0)} className="h-10 rounded-lg border bg-card px-2 text-sm font-semibold normal-case tracking-normal text-foreground">
+        <option value="">Qualquer</option>
+        {years.map((y) => (
+          <option key={y} value={y}>
+            {y}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+
+  return (
+    <Dialog open onClose={onClose} title={`Filtrar ${section === "series" ? "séries" : "filmes"}`} description="Combine com a categoria escolhida." icon={<SlidersHorizontal className="h-5 w-5" />}>
+      <div className="space-y-5">
+        <section className="space-y-2">
+          <h3 className="text-sm font-semibold">Gênero</h3>
+          {!facets && !failed ? (
+            <div className="flex flex-wrap gap-2">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <Skeleton key={i} className="h-8 w-20 rounded-full" />
+              ))}
+            </div>
+          ) : !facets?.genres.length ? (
+            <p className="text-sm text-muted-foreground">Esta lista não informa os gêneros.</p>
+          ) : (
+            <div className="flex max-h-48 flex-wrap gap-2 overflow-y-auto">
+              {facets.genres.map((g) => (
+                <button key={g.name} type="button" className={chip(draft.g.some((x) => fold(x) === fold(g.name)))} onClick={() => toggleGenre(g.name)}>
+                  {g.name} <span className="text-xs opacity-60">{g.count}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="space-y-2">
+          <h3 className="text-sm font-semibold">Ano de lançamento</h3>
+          <div className="flex flex-wrap gap-2">
+            {decades.map((d) => (
+              <button key={d} type="button" className={chip(draft.y1 === d && draft.y2 === d + 9)} onClick={() => setDraft((x) => (x.y1 === d && x.y2 === d + 9 ? { ...x, y1: 0, y2: 0 } : { ...x, y1: d, y2: d + 9 }))}>
+                Anos {String(d).slice(2)}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-3">
+            {yearSelect("De", draft.y1, (n) => setDraft((x) => ({ ...x, y1: n })))}
+            {yearSelect("Até", draft.y2, (n) => setDraft((x) => ({ ...x, y2: n })))}
+          </div>
+        </section>
+
+        <section className="space-y-2">
+          <h3 className="text-sm font-semibold">Nota mínima</h3>
+          {facets && !facets.rated ? (
+            <p className="text-sm text-muted-foreground">Esta lista não informa as notas.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {RATINGS.map((r) => (
+                <button key={r} type="button" className={chip(draft.r === r)} onClick={() => setDraft((x) => ({ ...x, r }))}>
+                  {r ? `★ ${r}+` : "Qualquer"}
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <div className="flex gap-2 pt-1">
+          <Button variant="outline" className="flex-1" onClick={() => setDraft(NO_FILTERS)} disabled={!filterCount(draft)}>
+            Limpar
+          </Button>
+          <Button variant="gradient" className="flex-1" onClick={() => onApply(draft)}>
+            Aplicar{filterCount(draft) ? ` (${filterCount(draft)})` : ""}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 function SortSelect({ value, onChange, vod }: { value: string; onChange: (v: string) => void; vod: boolean }) {
   const options = SORT_OPTIONS.filter((o) => vod || !o.vod);
   return (
