@@ -96,12 +96,18 @@ export default function PlayerOverlay({
     showChrome();
     return () => clearTimeout(hideTimer.current);
   }, [channel.id]);
+  // Controle remoto da TV: qualquer tecla mostra a barra de cima.
+  useEffect(() => {
+    const onKey = () => showChrome();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const isVod = channel.kind !== "live";
   const nearEnd = isVod && next && remaining !== null && remaining < 45;
 
   return (
-    <div ref={rootRef} className="fixed inset-0 z-50 flex flex-col bg-black text-white" onMouseMove={showChrome} onTouchStart={showChrome}>
+    <div ref={rootRef} data-tv-scope="50" className="fixed inset-0 z-50 flex flex-col bg-black text-white" onMouseMove={showChrome} onTouchStart={showChrome}>
       <VideoPlayer
         key={channel.id}
         channel={channel}

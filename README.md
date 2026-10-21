@@ -81,6 +81,35 @@ Os clientes baixam em `https://SEU-SITE/download/rtec-tv.apk` (o reprodutor most
 
 O servidor de video so aceita links assinados pelo painel, com validade de 12 h.
 
+## App para TV Samsung (Tizen)
+
+A pasta `tizen/` tem o app da TV Samsung (Smart TVs de 2016 em diante). Como o app Android, ele so abre o site
+publicado: tela, login e catalogo sao os mesmos, e cada `git push` na `main` ja atualiza o app nas TVs.
+Na TV o site liga a **navegacao pelo controle remoto**: setas mudam a selecao, OK abre, Voltar desfaz um passo
+(fecha o player, a ficha, o dialogo) e sai do app no Inicio; no player, esquerda/direita voltam/avancam 10 s e
+as teclas play/pause/avancar/voltar do controle funcionam. Para testar no computador, abra o site com `?tv=1`
+(e `?tv=0` para desligar).
+
+Gerar o app (precisa do [Tizen Studio](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html)
+com a extensao **Samsung TV** e um certificado **Samsung** criado no Certificate Manager):
+```bash
+APP_URL=https://SEU-SITE.vercel.app TIZEN_PROFILE=meu-perfil npm run app:tizen   # gera dist-tizen/rtec-tv.wgt
+```
+Sem `TIZEN_PROFILE` o script so monta a pasta `dist-tizen/app` (pode ser importada no Tizen Studio).
+
+Instalar na sua TV (modo desenvolvedor):
+1. Na TV, abra **Apps**, digite `12345` no controle, ligue o **Developer mode** e coloque o IP do computador. Reinicie a TV.
+2. No Tizen Studio, **Device Manager > Remote Device Manager**, adicione o IP da TV e conecte.
+3. O certificado Samsung precisa incluir o **DUID** dessa TV (o Certificate Manager pega sozinho com a TV conectada).
+4. `tizen install -n dist-tizen/rtec-tv.wgt -t <nome da TV em "sdb devices">`
+
+Para os clientes instalarem pela loja da Samsung (sem modo desenvolvedor), envie o `.wgt` assinado com o
+certificado de distribuicao **publico** no [Samsung Seller Office](https://seller.samsungapps.com/tv). A Samsung
+revisa o app antes de publicar.
+
+Limitacao: dentro do app o site continua em `https`, entao os canais `http` passam pelo servidor (proxy), como no
+navegador. Para video direto sem limite, use o servidor de video da Oracle (acima) ou fontes `https`.
+
 ## Ficha dos filmes e series (opcional)
 
 A tela de cada filme/serie mostra sinopse, genero, ano, duracao, nota, direcao, elenco e trailer vindos do fornecedor.
@@ -118,6 +147,7 @@ server/          API Express: app.js, m3u.js, epg.js, testes
 server/store/    Banco: firestore.js (producao) e memory.js (testes/dev)
 src/pages/       Player (cliente), Login, Painel, Clientes, Configuracoes
 public/          manifest.webmanifest, sw.js e icones do app instalavel
+tizen/           App da TV Samsung (config.xml e tela de abertura); gerado por scripts/build-tizen.sh
 src/components/  UI (botoes, inputs, dialogos), layout e logo
 ```
 

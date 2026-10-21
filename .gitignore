@@ -15,3 +15,6 @@ android/.gradle
 android/local.properties
 *.jks
 *.keystore
+# Samsung TV (Tizen)
+dist-tizen
+*.p12

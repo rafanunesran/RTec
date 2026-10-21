@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920">
+<title>RTec TV</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0a0c; color: #f4f4f6; font-family: sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  img { width: 180px; height: 180px; margin-bottom: 40px; }
+  p { font-size: 34px; margin: 10px 0; text-align: center; }
+  small { font-size: 26px; color: #9a9aa6; }
+</style>
+</head>
+<body>
+<img src="icon.png" alt="">
+<p id="msg">Carregando...</p>
+<small id="hint"></small>
+<script>
+// Abre o site do RTec dentro do app (URL trocada pelo scripts/build-tizen.sh).
+// Escrito em JavaScript antigo (ES5) para rodar ate nas TVs Samsung de 2016 (Tizen 2.4).
+var APP_URL = "@APP_URL@";
+
+try {
+  // Sem registrar, o Tizen nao entrega as teclas de midia (play, pause, avancar...) para o app.
+  tizen.tvinputdevice.registerKeyBatch(["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind"]);
+} catch (e) {}
+
+function show(msg, hint) {
+  document.getElementById("msg").innerHTML = msg;
+  document.getElementById("hint").innerHTML = hint || "";
+}
+
+var tries = 0;
+var loading = false;
+function start() {
+  if (loading) return;
+  loading = true;
+  tries++;
+  show("Carregando...");
+  // Testa a conexao antes de sair desta tela: sem internet a TV mostraria uma pagina de erro em ingles.
+  // Usa uma imagem do site (imagem nao depende de CORS).
+  var img = new Image();
+  var done = false;
+  var timer = setTimeout(function () { finish(false); }, 15000);
+  function finish(ok) {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    loading = false;
+    if (ok) location.replace(APP_URL + "/?tv=1");
+    else fail();
+  }
+  img.onload = function () { finish(true); };
+  img.onerror = function () { finish(false); };
+  img.src = APP_URL + "/icons/icon-192.png?t=" + new Date().getTime();
+}
+
+function fail() {
+  show("Sem conexao com a internet.", "Verifique o Wi-Fi ou o cabo da TV e aperte OK para tentar de novo.");
+  if (tries < 3) setTimeout(start, 5000);
+}
+
+document.addEventListener("keydown", function (e) {
+  if (e.keyCode === 13) start();
+  if (e.keyCode === 10009) {
+    try { tizen.application.getCurrentApplication().exit(); } catch (err) {}
+  }
+});
+
+start();
+</script>
+</body>
+</html>

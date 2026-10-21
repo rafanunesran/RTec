@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  App RTec TV para TVs Samsung (Tizen). Abre o site publicado dentro do app, como o app Android.
+  Os marcadores entre arrobas (endereco do site, ID e versao) sao trocados por scripts/build-tizen.sh.
+-->
+<widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets" id="http://rtec.app/tv" version="@VERSION@" viewmodes="maximized">
+    <tizen:application id="@PACKAGE_ID@.RTecTV" package="@PACKAGE_ID@" required_version="2.3"/>
+    <tizen:profile name="tv-samsung"/>
+    <name>RTec TV</name>
+    <description>Assista seus canais, filmes e series</description>
+    <author href="@APP_URL@">RTec</author>
+    <content src="index.html"/>
+    <icon src="icon.png"/>
+
+    <!-- Rede: o app acessa o site e os fornecedores de video (qualquer endereco). -->
+    <access origin="*" subdomains="true"/>
+    <tizen:allow-navigation>@APP_HOST@ *.@APP_HOST@</tizen:allow-navigation>
+
+    <tizen:privilege name="http://tizen.org/privilege/internet"/>
+    <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+
+    <tizen:setting screen-orientation="landscape" context-menu="disable" background-support="disable" encryption="disable" install-location="auto" hwkey-event="enable"/>
+    <tizen:setting pointing-device-support="enable"/>
+    <tizen:metadata key="http://samsung.com/tv/metadata/use.network" value="true"/>
+</widget>

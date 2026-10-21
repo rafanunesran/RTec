@@ -46,3 +46,9 @@
   .scrollbar-none { scrollbar-width: none; }
   .scrollbar-none::-webkit-scrollbar { display: none; }
 }
+
+/* Controle remoto (TV): destaque bem visivel no item selecionado (por dentro, para nao ser cortado nas fileiras) */
+.tv-nav :focus {
+  outline: 4px solid hsl(var(--brand-2));
+  outline-offset: -4px;
+}

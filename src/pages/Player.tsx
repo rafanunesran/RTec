@@ -1332,7 +1332,7 @@ function CategoryMenu({ label, value, options, onSelect }: { label: string; valu
         <>
           {/* No celular o menu abre como painel de baixo para cima; no computador, logo abaixo do botao. */}
           <div className="fixed inset-0 z-40 animate-fade-in bg-background/70 backdrop-blur-sm sm:hidden" onClick={() => setOpen(false)} />
-          <div className="fixed inset-x-0 bottom-0 z-50 animate-rise-in overflow-hidden rounded-t-3xl border bg-card pb-[env(safe-area-inset-bottom)] shadow-2xl sm:absolute sm:bottom-auto sm:top-full sm:z-40 sm:mt-2 sm:animate-pop-in sm:rounded-2xl sm:pb-0">
+          <div data-tv-scope="45" data-tv-close="escape" className="fixed inset-x-0 bottom-0 z-50 animate-rise-in overflow-hidden rounded-t-3xl border bg-card pb-[env(safe-area-inset-bottom)] shadow-2xl sm:absolute sm:bottom-auto sm:top-full sm:z-40 sm:mt-2 sm:animate-pop-in sm:rounded-2xl sm:pb-0">
             <div className="flex items-center justify-between border-b px-4 py-3 sm:hidden">
               <span className="font-semibold">Categorias</span>
               <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent" aria-label="Fechar">

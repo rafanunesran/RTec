@@ -59,7 +59,7 @@ export const APK_URL = "/download/rtec-tv.apk";
 export function useApkAvailable() {
   const [ok, setOk] = useState(false);
   useEffect(() => {
-    if (isNativeApp()) return;
+    if (isNativeApp() || /Tizen|SMART-TV|Web0S|webOS/i.test(navigator.userAgent)) return;
     fetch(APK_URL, { method: "HEAD" })
       .then((r) => setOk(r.ok && Number(r.headers.get("content-length") || 0) > 500_000))
       .catch(() => {});

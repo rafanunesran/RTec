@@ -5,8 +5,10 @@ import { Toaster } from "sonner";
 import App from "./App";
 import "./index.css";
 import { registerServiceWorker } from "./lib/pwa";
+import { setupTvNavigation } from "./lib/tvnav";
 
 registerServiceWorker();
+setupTvNavigation();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

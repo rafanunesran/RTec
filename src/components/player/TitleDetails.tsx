@@ -242,7 +242,7 @@ export function MovieDetails({
   })();
 
   return (
-    <div className="fixed inset-0 z-40 overflow-y-auto bg-background">
+    <div data-tv-scope="40" className="fixed inset-0 z-40 overflow-y-auto bg-background">
       <div className="mx-auto max-w-4xl space-y-3 p-3 pt-[max(12px,env(safe-area-inset-top))] sm:p-6">
         <Button variant="ghost" size="sm" onClick={onClose}>
           <ArrowLeft /> Voltar
