@@ -310,11 +310,39 @@ function InstallButton({ compact }: { compact?: boolean }) {
   // No Android, o app (APK) toca o video direto do fornecedor: melhor que instalar o site.
   if (apk && (android || !ios)) {
     return (
-      <a href={APK_URL} download>
-        <Button variant="outline" size={compact ? "sm" : "default"} type="button">
-          <Download /> {compact ? "App" : "Baixar app Android"}
-        </Button>
-      </a>
+      <>
+        {/* O download comeca e, junto, abre o passo a passo dos avisos do Android (fontes desconhecidas e Play Protect). */}
+        <a href={APK_URL} download onClick={() => setHelp(true)}>
+          <Button variant="outline" size={compact ? "sm" : "default"} type="button">
+            <Download /> {compact ? "App" : "Baixar app Android"}
+          </Button>
+        </a>
+        <Dialog open={help} onClose={() => setHelp(false)} title="Baixando o app..." description="O celular vai mostrar alguns avisos. É normal, siga estes passos:">
+          <ol className="space-y-4 text-sm">
+            {[
+              <>
+                Quando terminar o download, toque em <b>Abrir</b>.
+              </>,
+              <>
+                Se pedir, toque em <b>Configurações</b>, ligue <b>Permitir desta fonte</b> e volte.
+              </>,
+              <>
+                Toque em <b>Instalar</b>. Se aparecer o aviso do <b>Play Protect</b>, toque em <b>Mais detalhes</b> e em <b>Instalar mesmo assim</b>.
+              </>,
+            ].map((step, i) => (
+              <li key={i} className="flex items-center gap-3">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand font-bold text-white">{i + 1}</span>
+                <span>{step}</span>
+              </li>
+            ))}
+          </ol>
+          <a href="/instalar" className="mt-5 block">
+            <Button variant="outline" className="w-full" type="button">
+              Ver passo a passo com imagens
+            </Button>
+          </a>
+        </Dialog>
+      </>
     );
   }
   if (!canPrompt && !ios) return null;

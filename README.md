@@ -70,6 +70,13 @@ git add public/download/rtec-tv.apk && git commit -m "App Android" && git push o
 Os clientes baixam em `https://SEU-SITE/download/rtec-tv.apk` (o reprodutor mostra o botao "Baixar app Android").
 **Guarde o arquivo `.jks` e a senha fora do repositorio**: sem eles, uma versao nova do app nao instala por cima da antiga.
 
+**Avisos ao instalar**: todo APK baixado fora da Play Store passa por "Permitir desta fonte" e, as vezes, pelo aviso do Play Protect
+("Instalar mesmo assim"); isso nao da para remover pelo codigo. Para o cliente leigo, o botao "Baixar app Android" ja abre o passo a passo
+e a pagina `https://SEU-SITE/instalar` mostra cada aviso desenhado, com o botao certo destacado (o link vai na mensagem copiada para o cliente).
+O que reduz o aviso do Play Protect: assinar sempre com o mesmo `.jks`, cadastrar o app no
+[Android Developer Console](https://developer.android.com/developer-verification) (verificacao de desenvolvedor, obrigatoria no Brasil
+desde 30/09/2026) e pedir revisao pelo formulario de contestacao do Play Protect.
+
 ### 2. Servidor de video gratis (Oracle Cloud "Always Free", ~10 TB/mes) - navegador e iPhone
 1. Crie a conta em https://www.oracle.com/cloud/free/ e uma instancia **Ubuntu** (shape Ampere A1 ou VM.Standard.E2.1.Micro).
 2. Em **Networking > Virtual Cloud Network > Security List**, adicione regras de entrada TCP para as portas **80** e **443** (origem `0.0.0.0/0`).

@@ -411,7 +411,7 @@ export default function Clients() {
                 className="flex-1"
                 onClick={() =>
                   copy(
-                    `Seu acesso IPTV\nAssista em: ${linksFor.links.server}\nUsuario: ${linksFor.username}\nSenha: ${linksFor.password}\n\nAndroid, TV Box e Fire TV: baixe o app em ${linksFor.links.server}/download/rtec-tv.apk\niPhone: abra o link no Safari e use "Adicionar a Tela de Inicio".`,
+                    `Seu acesso IPTV\nAssista em: ${linksFor.links.server}\nUsuario: ${linksFor.username}\nSenha: ${linksFor.password}\n\nAndroid, TV Box e Fire TV: baixe o app em ${linksFor.links.server}/download/rtec-tv.apk\nComo instalar (passo a passo com imagens): ${linksFor.links.server}/instalar\niPhone: abra o link no Safari e use "Adicionar a Tela de Inicio".`,
                     "Mensagem copiada",
                   )
                 }

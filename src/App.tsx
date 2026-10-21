@@ -7,6 +7,7 @@ import Dashboard from "@/pages/Dashboard";
 import Clients from "@/pages/Clients";
 import Settings from "@/pages/Settings";
 import Player from "@/pages/Player";
+import Install from "@/pages/Install";
 
 function Protected() {
   const { admin, loading } = useAuth();
@@ -40,6 +41,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Player />} />
+      <Route path="/instalar" element={<Install />} />
       <Route path="/admin/*" element={<Admin />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
