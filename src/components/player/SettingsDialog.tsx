@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { CalendarClock, Lock, LogOut, ShieldCheck, User } from "lucide-react";
+import { CalendarClock, Lock, LogOut, ShieldCheck, User, Users } from "lucide-react";
 import { toast } from "sonner";
 import { api, type ClientProfile, type PlayerSettings } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
@@ -13,6 +13,7 @@ export default function SettingsDialog({
   groups,
   onSettings,
   onLogout,
+  onManageProfiles,
 }: {
   open: boolean;
   onClose: () => void;
@@ -21,6 +22,7 @@ export default function SettingsDialog({
   groups: string[];
   onSettings: (s: PlayerSettings) => void;
   onLogout: () => void;
+  onManageProfiles: () => void;
 }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -112,7 +114,10 @@ export default function SettingsDialog({
           </div>
         </section>
 
-        <div className="flex justify-end pt-2">
+        <div className="flex flex-wrap justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={onManageProfiles}>
+            <Users /> Gerenciar perfis
+          </Button>
           <Button variant="destructive" onClick={onLogout}>
             <LogOut /> Sair da conta
           </Button>

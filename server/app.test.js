@@ -523,6 +523,58 @@ test("sincronizacao: favoritos, historico e ponto onde parou valem em qualquer a
   assert.equal(await getStore().sync.get(edu.id), null);
 });
 
+test("perfis: cada perfil tem seus favoritos, historico e progresso; dados antigos ficam no principal", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  await call("POST", "/api/clients", { name: "Familia Silva", username: "fam", password: "pw" });
+  const filme = { id: "m1", name: "Filme", group: "Acao", logo: "", src: "http://a/1.mp4", type: "file", kind: "movie", epg_id: "", playlist_id: "own", alt: "", alt_type: "" };
+
+  cookie = "";
+  assert.equal((await call("GET", "/api/player/profiles")).status, 401);
+  await call("POST", "/api/player/login", { username: "fam", password: "pw" });
+  // Conta que ja sincronizava (sem ?profile=): os dados ficam no perfil principal
+  await call("PUT", "/api/player/sync", { favorites: [filme], progress: { m1: { p: 100, d: 5400, t: 1 } } });
+  const start = (await call("GET", "/api/player/profiles")).body;
+  assert.deepEqual(start.profiles, [{ id: "main", name: "Familia Silva", avatar: 0, kids: false }]);
+  assert.equal((await call("GET", "/api/player/sync?profile=main")).body.favorites[0].id, "m1");
+
+  const kids = await call("POST", "/api/player/profiles", { name: "  Crianças  ", avatar: 5, kids: true });
+  assert.equal(kids.status, 200);
+  assert.deepEqual({ ...kids.body, id: undefined }, { id: undefined, name: "Crianças", avatar: 5, kids: true });
+  assert.equal((await call("POST", "/api/player/profiles", { name: "" })).status, 400);
+
+  // Perfil novo comeca vazio e nao mexe no principal
+  const pid = kids.body.id;
+  assert.deepEqual((await call("GET", `/api/player/sync?profile=${pid}`)).body.favorites, []);
+  await call("PUT", `/api/player/sync?profile=${pid}`, { history: [filme], progress: { m1: { p: 50, d: 5400, t: 2 } } });
+  const main = (await call("GET", "/api/player/sync?profile=main")).body;
+  assert.equal(main.progress.m1.p, 100);
+  assert.deepEqual(main.history, []);
+  assert.equal((await call("GET", "/api/player/sync?profile=nao-existe")).status, 404);
+
+  const edited = await call("PUT", `/api/player/profiles/${pid}`, { name: "Kids", avatar: 99 });
+  assert.deepEqual({ name: edited.body.name, avatar: edited.body.avatar, kids: edited.body.kids }, { name: "Kids", avatar: 5, kids: true });
+
+  for (let i = 0; i < 3; i++) assert.equal((await call("POST", "/api/player/profiles", { name: `P${i}` })).status, 200);
+  assert.equal((await call("POST", "/api/player/profiles", { name: "Sexto" })).status, 400);
+
+  // Apagar perfil apaga os dados dele; o ultimo perfil nao pode ser apagado
+  assert.equal((await call("DELETE", `/api/player/profiles/${pid}`)).status, 200);
+  const { getStore } = await import("./store/index.js");
+  const fam = (await getStore().clients.findOne("username", "fam"));
+  assert.equal(await getStore().sync.get(`${fam.id}__${pid}`), null);
+  const rest = (await call("GET", "/api/player/profiles")).body.profiles;
+  assert.equal(rest.length, 4);
+  for (const p of rest.slice(1)) await call("DELETE", `/api/player/profiles/${p.id}`);
+  assert.equal((await call("DELETE", "/api/player/profiles/main")).status, 400);
+
+  // Cliente apagado: somem os perfis junto
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  await call("DELETE", `/api/clients/${fam.id}`);
+  assert.equal(await getStore().profiles.get(fam.id), null);
+});
+
 test("renova links expirados do historico, so os do proprio cliente", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });

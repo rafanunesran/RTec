@@ -123,6 +123,7 @@ export function createFirestoreStore() {
     clients: new FirestoreCollection(db, "clients", ["username", "token"]),
     playlists: new FirestoreCollection(db, "playlists"),
     sync: new FirestoreCollection(db, "player_sync"),
+    profiles: new FirestoreCollection(db, "player_profiles"),
     config: new FirestoreCollection(db, "config"),
     async getOrCreateSecret(generate) {
       return db.runTransaction(async (t) => {

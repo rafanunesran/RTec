@@ -13,6 +13,8 @@ import { listChanged, onRemoteList, startSync } from "@/lib/sync";
 import { refreshChannels } from "@/lib/links";
 import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
+import { Avatar, ProfilePicker } from "@/components/player/Profiles";
+import { MAIN_PROFILE, fetchProfiles, lastProfile, rememberProfile, scoped, setStorageProfile, type ProfilesResponse, type Viewer } from "@/lib/profiles";
 
 const FAVORITES = "__favoritos__";
 const HISTORY = "__historico__";
@@ -114,7 +116,7 @@ function load<T>(key: string, fallback: T): T {
 
 /** Salva favoritos/historico no aparelho e agenda o envio para a conta (outros aparelhos). */
 function saveList(key: "favorites" | "history", items: Channel[]) {
-  save(key === "favorites" ? "rtec:favs" : "rtec:history", items);
+  save(scoped(key === "favorites" ? "rtec:favs" : "rtec:history"), items);
   listChanged(key);
 }
 
@@ -145,16 +147,85 @@ export default function Player() {
       .finally(() => setChecking(false));
   }, []);
 
-  const logout = useCallback(() => setProfile(null), []);
+  // Perfis da conta: com mais de um, pergunta "Quem esta assistindo?" ao abrir.
+  const [viewers, setViewers] = useState<ProfilesResponse | null>(null);
+  const [viewer, setViewer] = useState<Viewer | null>(null);
+  const [manage, setManage] = useState(false);
 
-  if (checking)
+  const choose = useCallback(
+    (v: Viewer) => {
+      if (!profile) return;
+      setStorageProfile(v.id);
+      rememberProfile(profile.username, v.id);
+      setViewer(v);
+    },
+    [profile],
+  );
+
+  useEffect(() => {
+    if (!profile) return;
+    let alive = true;
+    fetchProfiles(profile.username)
+      .then((res) => {
+        if (!alive) return;
+        setViewers(res);
+        if (res.profiles.length === 1) choose(res.profiles[0]);
+      })
+      .catch(() => {
+        // Sem rede e sem perfis guardados: entra no principal.
+        if (alive) choose({ id: MAIN_PROFILE, name: profile.name || profile.username, avatar: 0, kids: false });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [profile, choose]);
+
+  const logout = useCallback(() => {
+    setProfile(null);
+    setViewer(null);
+    setViewers(null);
+  }, []);
+
+  if (checking || (profile && !viewer && !viewers))
     return (
       <div className="flex h-screen items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
       </div>
     );
 
-  return profile ? <Watch profile={profile} onLogout={logout} /> : <PlayerLogin onLogin={setProfile} />;
+  if (!profile) return <PlayerLogin onLogin={setProfile} />;
+  if (!viewer && viewers)
+    return (
+      <ProfilePicker
+        account={profile}
+        profiles={viewers.profiles}
+        max={viewers.max}
+        manage={manage}
+        focusId={lastProfile(profile.username)}
+        onPick={(v) => {
+          setManage(false);
+          choose(v);
+        }}
+        onChange={(list) => setViewers({ ...viewers, profiles: list })}
+        onLogout={async () => {
+          await api.post("/api/player/logout").catch(() => {});
+          logout();
+        }}
+      />
+    );
+  return (
+    <Watch
+      key={viewer!.id}
+      profile={profile}
+      viewer={viewer!}
+      onSwitchProfile={(manageProfiles) => {
+        setManage(manageProfiles);
+        setViewers((v) => v ?? { profiles: [viewer!], max: 5 });
+        setViewer(null);
+      }}
+      onLogout={logout}
+    />
+  );
 }
 
 function PlayerLogin({ onLogin }: { onLogin: (p: ClientProfile) => void }) {
@@ -255,7 +326,17 @@ type XtPage = { key: string; items: Channel[]; total: number; loading: boolean; 
 type Episode = Channel & { season: number; episode: number };
 type OpenSeries = { key: string; name: string; logo: string; episodes: Episode[] | null };
 
-function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => void }) {
+function Watch({
+  profile,
+  viewer,
+  onSwitchProfile,
+  onLogout,
+}: {
+  profile: ClientProfile;
+  viewer: Viewer;
+  onSwitchProfile: (manage: boolean) => void;
+  onLogout: () => void;
+}) {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [data, setData] = useState<ChannelsResponse | null>(null); // listas M3U comuns
   const [xtItems, setXtItems] = useState<Record<string, Channel[] | "loading" | { error: string }>>({}); // Xtream: por secao/categoria
@@ -278,9 +359,9 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [limit, setLimit] = useState(PAGE);
   const [series, setSeries] = useState<OpenSeries | null>(null);
   const [movie, setMovie] = useState<Channel | null>(null); // tela de detalhes do filme
-  const [favorites, setFavorites] = useState<Channel[]>(() => load("rtec:favs", []));
-  const [history, setHistory] = useState<Channel[]>(() => load("rtec:history", []));
-  // Favoritos, historico e progresso acompanham a conta: o que fizer aqui aparece nos outros aparelhos.
+  const [favorites, setFavorites] = useState<Channel[]>(() => load(scoped("rtec:favs"), []));
+  const [history, setHistory] = useState<Channel[]>(() => load(scoped("rtec:history"), []));
+  // Favoritos, historico e progresso acompanham o perfil na conta: o que fizer aqui aparece nos outros aparelhos.
   useEffect(() => {
     const off = onRemoteList((key, items) => {
       const set = key === "favorites" ? setFavorites : setHistory;
@@ -345,12 +426,12 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     let alive = true;
     (async () => {
       try {
-        const [h, f] = await Promise.all([refreshChannels(load<Channel[]>("rtec:history", [])), refreshChannels(load<Channel[]>("rtec:favs", []))]);
+        const [h, f] = await Promise.all([refreshChannels(load<Channel[]>(scoped("rtec:history"), [])), refreshChannels(load<Channel[]>(scoped("rtec:favs"), []))]);
         if (!alive) return;
         setHistory(h);
-        save("rtec:history", h);
+        save(scoped("rtec:history"), h);
         setFavorites(f);
-        save("rtec:favs", f);
+        save(scoped("rtec:favs"), f);
       } catch {
         /* sem conexao: tenta de novo na proxima vez */
       }
@@ -365,7 +446,11 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     api.get<PlayerSettings>("/api/player/settings").then(setSettings).catch(() => {});
   }, [loadAll]);
 
-  const isLocked = useCallback((g: string) => !unlocked && (ADULT.test(g) || settings.locked_groups.includes(g)), [unlocked, settings]);
+  // Perfil infantil: categorias adultas e bloqueadas nunca abrem (nem com PIN) e somem do menu.
+  const isLocked = useCallback(
+    (g: string) => (viewer.kids || !unlocked) && (ADULT.test(g) || settings.locked_groups.includes(g)),
+    [viewer.kids, unlocked, settings],
+  );
 
   // Grupos (chips): no Xtream sao as categorias do fornecedor; nas listas M3U, os group-title.
   const channels = data?.channels ?? [];
@@ -555,8 +640,9 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   }, [epgIds]);
 
   const withPin = (fn: () => void | Promise<void>, groupName: string) => {
-    if (isLocked(groupName)) setPinFor(() => fn);
-    else fn();
+    if (!isLocked(groupName)) fn();
+    else if (viewer.kids) toast.error("Indisponível no perfil infantil");
+    else setPinFor(() => fn);
   };
 
   const play = (c0: Channel, list?: Channel[] | null) =>
@@ -780,7 +866,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     { key: "", name: "Todos", icon: <LayoutGrid /> },
     { key: FAVORITES, name: "Favoritos", icon: <Heart />, count: favorites.filter((c) => c.kind === section).length },
     { key: HISTORY, name: "Histórico", icon: <History />, count: history.filter((c) => c.kind === section).length },
-    ...groups.map((g) => ({ key: g.key, name: g.name, locked: isLocked(g.name) })),
+    ...groups.filter((g) => !viewer.kids || !isLocked(g.name)).map((g) => ({ key: g.key, name: g.name, locked: isLocked(g.name) })),
   ];
 
   return (
@@ -789,10 +875,16 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
         <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-3 px-4 lg:px-6">
           <Logo />
           <div className="ml-auto flex items-center gap-2">
-            <span className="hidden max-w-[180px] truncate text-sm text-muted-foreground sm:block">
-              Olá, <span className="font-semibold text-foreground">{profile.name || profile.username}</span>
-            </span>
             <InstallButton compact />
+            <button
+              onClick={() => onSwitchProfile(false)}
+              title="Trocar perfil"
+              aria-label={`Perfil ${viewer.name}. Trocar perfil`}
+              className="flex items-center gap-2 rounded-lg p-1 pr-1 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:pr-2"
+            >
+              <Avatar avatar={viewer.avatar} className="w-8 rounded-md" />
+              <span className="hidden max-w-[140px] truncate font-semibold text-foreground sm:block">{viewer.name}</span>
+            </button>
             <Button variant="ghost" size="icon" onClick={() => setSettingsOpen(true)} title="Configurações" aria-label="Configurações">
               <Settings className="!size-5" />
             </Button>
@@ -1120,6 +1212,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
         groups={allGroupNames}
         onSettings={setSettings}
         onLogout={logout}
+        onManageProfiles={() => onSwitchProfile(true)}
       />
     </div>
   );

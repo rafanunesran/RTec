@@ -52,3 +52,8 @@
   outline: 4px solid hsl(var(--brand-2));
   outline-offset: -4px;
 }
+
+/* Perfis: o destaque do controle remoto fica no avatar, nao no bloco inteiro. */
+.tv-nav .profile-tile:focus {
+  outline: none;
+}

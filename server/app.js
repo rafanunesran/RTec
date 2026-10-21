@@ -427,8 +427,39 @@ function cleanProgress(p) {
   return { p: Math.round(Math.min(pos, Number.MAX_SAFE_INTEGER)), d: Math.round(dur), t: Math.round(t) };
 }
 
-async function loadSync(clientId) {
-  const doc = (await getStore().sync.get(clientId)) || {};
+// ---------- Perfis da conta (como na Netflix) ----------
+// Cada conta tem ate 5 perfis, cada um com seus favoritos, historico e progresso.
+// O perfil "main" usa o documento de sincronizacao que ja existia (dados antigos viram dele).
+const MAIN_PROFILE = "main";
+const MAX_PROFILES = 5;
+const AVATARS = 12;
+
+const syncDocId = (clientId, profileId) => (profileId === MAIN_PROFILE ? clientId : `${clientId}__${profileId}`);
+
+async function loadProfiles(c) {
+  const doc = await getStore().profiles.get(c.id);
+  if (doc?.list?.length) return doc.list;
+  return [{ id: MAIN_PROFILE, name: (c.name || c.username || "Principal").slice(0, 20), avatar: 0, kids: false }];
+}
+
+function readProfileBody(body, existing = {}) {
+  const name = typeof body.name === "string" ? body.name.trim().slice(0, 20) : existing.name;
+  if (!name) throw new HttpError(400, "Informe o nome do perfil");
+  const avatar = Number.isInteger(body.avatar) && body.avatar >= 0 && body.avatar < AVATARS ? body.avatar : (existing.avatar ?? 0);
+  const kids = typeof body.kids === "boolean" ? body.kids : !!existing.kids;
+  return { name, avatar, kids };
+}
+
+/** Perfil pedido pelo aparelho (?profile=); sem perfil vale o principal (apps antigos). */
+async function requestProfile(req) {
+  const id = String(req.query.profile || MAIN_PROFILE);
+  const list = await loadProfiles(req.client);
+  if (!list.some((p) => p.id === id)) throw new HttpError(404, "Perfil nao encontrado");
+  return id;
+}
+
+async function loadSync(docId) {
+  const doc = (await getStore().sync.get(docId)) || {};
   return {
     favorites: doc.favorites || [],
     favorites_t: doc.favorites_t || 0,
@@ -630,7 +661,10 @@ export function createApp() {
     "/api/clients/:id",
     requireAdmin,
     wrap(async (req, res) => {
+      const profiles = (await db().profiles.get(req.params.id))?.list ?? [];
+      for (const p of profiles) if (p.id !== MAIN_PROFILE) await db().sync.delete(syncDocId(req.params.id, p.id));
       await db().sync.delete(req.params.id);
+      await db().profiles.delete(req.params.id);
       await db().clients.delete(req.params.id);
       forgetClient(req.params.id);
       res.json({ ok: true });
@@ -1017,7 +1051,7 @@ export function createApp() {
     requireClient,
     wrap(async (req, res) => {
       res.setHeader("Cache-Control", "no-store");
-      res.json(await loadSync(req.client.id));
+      res.json(await loadSync(syncDocId(req.client.id, await requestProfile(req))));
     }),
   );
 
@@ -1029,7 +1063,8 @@ export function createApp() {
     requireClient,
     wrap(async (req, res) => {
       const body = req.body || {};
-      const s = await loadSync(req.client.id);
+      const docId = syncDocId(req.client.id, await requestProfile(req));
+      const s = await loadSync(docId);
       let changed = false;
       for (const [key, max] of [["favorites", MAX_FAVORITES], ["history", MAX_HISTORY]]) {
         if (!Array.isArray(body[key])) continue;
@@ -1054,9 +1089,57 @@ export function createApp() {
       }
       if (changed) {
         if (JSON.stringify(s).length > MAX_SYNC_BYTES) throw new HttpError(413, "Muitos favoritos salvos. Remova alguns e tente de novo.");
-        await db().sync.set(req.client.id, s);
+        await db().sync.set(docId, s);
       }
       res.json(s);
+    }),
+  );
+
+  // ---------- Perfis ----------
+  app.get(
+    "/api/player/profiles",
+    requireClient,
+    wrap(async (req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ profiles: await loadProfiles(req.client), max: MAX_PROFILES });
+    }),
+  );
+
+  app.post(
+    "/api/player/profiles",
+    requireClient,
+    wrap(async (req, res) => {
+      const list = await loadProfiles(req.client);
+      if (list.length >= MAX_PROFILES) throw new HttpError(400, `Limite de ${MAX_PROFILES} perfis por conta`);
+      const profile = { id: randomToken().slice(0, 10), ...readProfileBody(req.body || {}) };
+      await db().profiles.set(req.client.id, { list: [...list, profile] });
+      res.json(profile);
+    }),
+  );
+
+  app.put(
+    "/api/player/profiles/:pid",
+    requireClient,
+    wrap(async (req, res) => {
+      const list = await loadProfiles(req.client);
+      const i = list.findIndex((p) => p.id === req.params.pid);
+      if (i < 0) throw new HttpError(404, "Perfil nao encontrado");
+      const profile = { id: list[i].id, ...readProfileBody(req.body || {}, list[i]) };
+      await db().profiles.set(req.client.id, { list: list.map((p, j) => (j === i ? profile : p)) });
+      res.json(profile);
+    }),
+  );
+
+  app.delete(
+    "/api/player/profiles/:pid",
+    requireClient,
+    wrap(async (req, res) => {
+      const list = await loadProfiles(req.client);
+      if (!list.some((p) => p.id === req.params.pid)) throw new HttpError(404, "Perfil nao encontrado");
+      if (list.length <= 1) throw new HttpError(400, "A conta precisa de pelo menos um perfil");
+      await db().profiles.set(req.client.id, { list: list.filter((p) => p.id !== req.params.pid) });
+      await db().sync.delete(syncDocId(req.client.id, req.params.pid));
+      res.json({ ok: true });
     }),
   );
 

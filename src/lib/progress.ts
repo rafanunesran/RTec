@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
+import { scoped } from "@/lib/profiles";
 
-// Quanto de cada filme/episodio ja foi assistido. Fica no aparelho e e sincronizado com a conta (sync.ts).
+// Quanto de cada filme/episodio ja foi assistido, por perfil. Fica no aparelho e e sincronizado com a conta (sync.ts).
 export type Progress = { p: number; d: number; t: number }; // posicao (s), duracao (s), quando (ms)
 
 const KEY = "rtec:progress";
@@ -8,13 +9,15 @@ const MAX = 400;
 export const WATCHED_AT = 0.92; // a partir daqui conta como "assistido"
 
 let cache: Record<string, Progress> | null = null;
+let cacheKey = ""; // de qual perfil e o cache
 const listeners = new Set<() => void>();
 const saveListeners = new Set<(id: string) => void>();
 
 function read(): Record<string, Progress> {
-  if (cache) return cache;
+  if (cache && cacheKey === scoped(KEY)) return cache;
+  cacheKey = scoped(KEY);
   try {
-    cache = JSON.parse(localStorage.getItem(KEY) || "{}");
+    cache = JSON.parse(localStorage.getItem(cacheKey) || "{}");
   } catch {
     cache = {};
   }
@@ -73,8 +76,9 @@ function write(all: Record<string, Progress>) {
     for (const old of ids.slice(0, ids.length - MAX)) delete all[old];
   }
   cache = all;
+  cacheKey = scoped(KEY);
   try {
-    localStorage.setItem(KEY, JSON.stringify(all));
+    localStorage.setItem(cacheKey, JSON.stringify(all));
   } catch {
     /* armazenamento indisponivel */
   }
