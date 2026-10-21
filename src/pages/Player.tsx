@@ -7,6 +7,7 @@ import { cn, formatDate } from "@/lib/utils";
 import { Button, Dialog, EmptyState, Field, Input, Select, Skeleton } from "@/components/ui";
 import Logo from "@/components/Logo";
 import PlayerOverlay from "@/components/player/PlayerOverlay";
+import { MovieDetails, TitleHeader, useTitleInfo } from "@/components/player/TitleDetails";
 import { WATCHED_AT, fraction, getProgress, useProgressVersion } from "@/lib/progress";
 import { listChanged, onRemoteList, startSync } from "@/lib/sync";
 import { refreshChannels } from "@/lib/links";
@@ -229,6 +230,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(PAGE);
   const [series, setSeries] = useState<OpenSeries | null>(null);
+  const [movie, setMovie] = useState<Channel | null>(null); // tela de detalhes do filme
   const [favorites, setFavorites] = useState<Channel[]>(() => load("rtec:favs", []));
   const [history, setHistory] = useState<Channel[]>(() => load("rtec:history", []));
   // Favoritos, historico e progresso acompanham a conta: o que fizer aqui aparece nos outros aparelhos.
@@ -578,11 +580,12 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   };
 
   // Botao voltar (celular, TV Box e navegador): fecha o player -> sai da serie -> volta ao Inicio -> sai do app.
-  const navRef = useRef({ page, series, current });
-  navRef.current = { page, series, current };
+  const navRef = useRef({ page, series, current, movie });
+  navRef.current = { page, series, current, movie };
   const goBackInApp = () => {
     const n = navRef.current;
     if (n.current) setCurrent(null);
+    else if (n.movie) setMovie(null);
     else if (n.series) setSeries(null);
     else if (n.page !== "home") setPage("home");
     else return false;
@@ -637,7 +640,13 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     } else setSection("series");
   };
 
-  const openItem = (c: Channel) => (c.kind === "series" && (c.series_id || c.id.startsWith("serie:")) ? openSeriesFrom(c) : play(c, null));
+  const openMovie = (c: Channel) =>
+    withPin(() => {
+      pushNav();
+      setMovie(c);
+    }, c.group);
+  const openItem = (c: Channel) =>
+    c.kind === "series" && (c.series_id || c.id.startsWith("serie:")) ? openSeriesFrom(c) : c.kind === "movie" ? openMovie(c) : play(c, null);
 
   // Favoritar um episodio = favoritar a serie dele (abre a serie com as temporadas).
   const seriesCard = (key: string, name: string, logo: string): Channel => ({
@@ -867,10 +876,10 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                 <Button variant="ghost" size="sm" onClick={() => setSeries(null)} className="mb-2">
                   <ArrowLeft /> Voltar
                 </Button>
-                <div className="mb-3 flex items-center gap-3 px-1">
-                  {series.logo && <img src={series.logo} alt="" className="h-16 w-11 shrink-0 rounded-lg object-cover ring-1 ring-border" onError={(e) => (e.currentTarget.style.display = "none")} />}
-                  <h2 className="min-w-0 flex-1 text-lg font-bold tracking-tight">{series.name}</h2>
-                  {(() => {
+                <SeriesHeader
+                  series={series}
+                  xt={xt}
+                  actions={(() => {
                     const card = seriesCard(xt ? series.key : series.name, series.name, series.logo);
                     const fav = isFavorite(card.id);
                     return (
@@ -879,7 +888,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                       </Button>
                     );
                   })()}
-                </div>
+                />
                 {series.episodes === null ? (
                   <div className="flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin text-primary" /> Carregando episódios...
@@ -938,6 +947,16 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
               </div>
             )}
       </main>
+
+      {movie && (
+        <MovieDetails
+          movie={movie}
+          favorite={isFav(movie)}
+          onFavorite={() => toggleFavorite(movie)}
+          onPlay={() => play(movie, null)}
+          onClose={() => window.history.back()}
+        />
+      )}
 
       {current && (
         <PlayerOverlay
@@ -1223,6 +1242,15 @@ function ProgressBar({ value, className }: { value: number; className?: string }
 }
 
 /** Episodios por temporada: marca o que ja foi assistido, o que esta tocando e quanto de cada um (barra). */
+function SeriesHeader({ series, xt, actions }: { series: OpenSeries; xt: boolean; actions: ReactNode }) {
+  const info = useTitleInfo("series", xt ? series.key : undefined, series.name);
+  return (
+    <div className="mb-4">
+      <TitleHeader kind="series" info={info} name={series.name} logo={series.logo} actions={actions} />
+    </div>
+  );
+}
+
 function EpisodeList({
   episodes,
   currentId,

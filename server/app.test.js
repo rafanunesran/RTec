@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 
 process.env.ADMIN_PASSWORD = "secret123";
+process.env.RTEC_NO_ONLINE_INFO = "1"; // ficha dos titulos: sem buscar na internet durante os testes
 process.env.PROXY_CHUNK_MB = "1"; // testa a entrega de filmes em pedacos (como na Vercel)
 
 const { setStore } = await import("./store/index.js");
@@ -49,6 +50,11 @@ function xtreamApi(req, res) {
       ]);
     case "get_series":
       return json([{ series_id: 70, name: "Serie Teste", cover: "https://img.example/s.jpg", category_id: "30" }]);
+    case "get_vod_info":
+      return json({
+        info: { name: "Abelha Rainha", plot: "Uma apicultora aposentada enfrenta uma conspiracao para proteger a familia.", genre: "Acao, Suspense", cast: "Ana Lima, Rui Costa", director: "Joao Silva", releasedate: "2023-04-01", rating: "8.4", duration: "01:52:00", backdrop_path: ["http://img.example/b.jpg"], youtube_trailer: "abcDEF12345", movie_image: "https://img.example/a.jpg", tmdb_id: "99" },
+        movie_data: { stream_id: 51, name: "Abelha Rainha" },
+      });
     case "get_series_info":
       return json({ info: {}, episodes: { 1: [{ id: 902, episode_num: 2, season: 1, title: "Ep 2", container_extension: "mkv" }, { id: 901, episode_num: 1, season: 1, title: "Ep 1", container_extension: "mp4" }] } });
     case "get_short_epg": {
@@ -565,4 +571,37 @@ test("ordenacao do catalogo: alfabetica, adicionados, ano e nota", async () => {
   const cat = await names("category=20&sort=year_asc");
   assert.deepEqual(cat.map((m) => [m.name, m.year]), [["Zebra (1999)", 1999], ["Filme Teste", 2015], ["Abelha Rainha", 2023]]);
   assert.equal(cat[2].rating, 8.4);
+});
+
+test("ficha do filme e da serie vem do fornecedor", async () => {
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
+  const movies = (await call("GET", "/api/player/xtream/items?section=movie&category=20")).body;
+  const abelha = movies.find((m) => m.name === "Abelha Rainha");
+  assert.equal(abelha.xt_id, "51", "o filme leva o id do fornecedor para buscar a ficha");
+  const info = (await call("GET", `/api/player/info?kind=movie&id=${abelha.xt_id}&name=Abelha%20Rainha`)).body;
+  assert.deepEqual(info.genres, ["Acao", "Suspense"]);
+  assert.deepEqual(info.cast, ["Ana Lima", "Rui Costa"]);
+  assert.deepEqual(info.director, ["Joao Silva"]);
+  assert.equal(info.year, 2023);
+  assert.equal(info.minutes, 112);
+  assert.equal(info.trailer, "https://www.youtube.com/watch?v=abcDEF12345");
+  assert.equal(info.poster, "https://img.example/a.jpg");
+  assert.match(info.backdrop, /^\/api\/player\/proxy\?/, "imagem http passa pelo servidor");
+  assert.equal(info.tmdb_id, undefined);
+  const serie = (await call("GET", "/api/player/info?kind=series&id=70&name=Serie%20Teste&year=2020")).body;
+  assert.equal(serie.name, "Serie Teste");
+  assert.equal(serie.seasons, 1);
+  assert.equal(serie.year, 2020);
+  // sem id (lista M3U): so o nome, sem erro
+  const m3u = await call("GET", "/api/player/info?kind=movie&name=Qualquer");
+  assert.equal(m3u.status, 200);
+  assert.equal(m3u.body.name, "Qualquer");
+});
+
+test("limpa o nome do titulo para buscar na internet", async () => {
+  const { cleanTitle } = await import("./titleinfo.js");
+  assert.equal(cleanTitle("BR: Abelha Rainha (2023) [4K]"), "Abelha Rainha");
+  assert.equal(cleanTitle("Duna - Parte Dois 2024"), "Duna - Parte Dois");
+  assert.equal(cleanTitle("Oppenheimer - Dublado"), "Oppenheimer");
 });

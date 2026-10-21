@@ -81,6 +81,12 @@ Os clientes baixam em `https://SEU-SITE/download/rtec-tv.apk` (o reprodutor most
 
 O servidor de video so aceita links assinados pelo painel, com validade de 12 h.
 
+## Ficha dos filmes e series (opcional)
+
+A tela de cada filme/serie mostra sinopse, genero, ano, duracao, nota, direcao, elenco e trailer vindos do fornecedor.
+Quando faltar algo, o painel completa pela internet: com `TMDB_API_KEY` (chave gratuita em themoviedb.org > Configuracoes > API)
+usa o TMDB em portugues; sem a chave, pega a sinopse da Wikipedia.
+
 ## Rodando localmente
 
 Requer Node.js 22.

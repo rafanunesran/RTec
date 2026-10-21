@@ -93,6 +93,7 @@ export type Channel = {
   rating?: number;
   /** Episodio: id da serie a que pertence (para achar o proximo). */
   parent_series?: string;
+  xt_id?: string; // id do filme no fornecedor (ficha do titulo)
   season?: number;
   episode?: number;
   alt: string;
@@ -144,3 +145,27 @@ export const api = {
   put: <T>(url: string, body: unknown) => request<T>("PUT", url, body),
   del: <T>(url: string) => request<T>("DELETE", url),
 };
+
+/** Ficha de um filme/serie (fornecedor + internet). */
+export type TitleInfo = {
+  name: string;
+  original_name?: string;
+  plot: string;
+  tagline?: string;
+  genres: string[];
+  cast: string[];
+  director: string[];
+  year: number;
+  release_date?: string;
+  rating: number;
+  minutes: number;
+  country?: string;
+  age?: string;
+  poster: string;
+  backdrop: string;
+  trailer: string;
+  seasons?: number;
+  source?: string;
+  link?: string;
+};
+

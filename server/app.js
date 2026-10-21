@@ -8,6 +8,7 @@ import { DuplicateError, getStore } from "./store/index.js";
 import { buildMergedM3u, countChannels, headerEpgUrls, loadPlaylistText, parseEntries, sourceUrl } from "./m3u.js";
 import { nowNext } from "./epg.js";
 import * as xtream from "./xtream.js";
+import { lookupOnline, mergeInfo } from "./titleinfo.js";
 
 const COOKIE = "rtec_session";
 const CLIENT_COOKIE = "rtec_player";
@@ -358,6 +359,7 @@ function xtreamChannel(c, item, group, app = false) {
     kind: item.kind,
     epg_id: item.kind === "live" ? `xt:${item.stream_id}` : "",
     playlist_id: "own",
+    ...(item.kind === "movie" ? { xt_id: item.stream_id } : {}),
     ...(item.added ? { added: item.added } : {}),
     ...(item.year ? { year: item.year } : {}),
     ...(item.rating ? { rating: item.rating } : {}),
@@ -818,6 +820,31 @@ export function createApp() {
       res.setHeader("Cache-Control", "no-store");
       // parent_series: permite achar o proximo episodio mesmo abrindo pelo historico.
       res.json(episodes.map((ep) => ({ ...xtreamChannel(c, ep, String(req.query.name || ""), isApp(req)), parent_series: req.params.id })));
+    }),
+  );
+
+  // Ficha do titulo (filme ou serie): dados do fornecedor completados pela internet quando faltam.
+  app.get(
+    "/api/player/info",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      const kind = req.query.kind === "series" ? "series" : "movie";
+      const id = String(req.query.id || "").replace(/[^\w-]/g, "").slice(0, 40);
+      const name = String(req.query.name || "").slice(0, 200);
+      const creds = id ? xtream.xtreamCredentials(c.source) : null;
+      let info = { name, plot: "", genres: [], cast: [], director: [], year: Number(req.query.year) || 0, rating: 0, minutes: 0, poster: "", backdrop: "", trailer: "" };
+      if (creds) info = { ...info, ...(await xtream.titleInfo(creds, kind, id).catch(() => ({}))) };
+      if (!info.name) info.name = name;
+      if (!info.year) info.year = Number(req.query.year) || 0;
+      if ((info.plot || "").length < 40 || !info.cast?.length || !info.genres?.length) {
+        info = mergeInfo(info, await lookupOnline(kind, name || info.name, info.year, info.tmdb_id));
+      }
+      delete info.tmdb_id;
+      info.poster = logoUrl(c.id, info.poster);
+      info.backdrop = logoUrl(c.id, info.backdrop);
+      res.setHeader("Cache-Control", "private, max-age=21600");
+      res.json(info);
     }),
   );
 

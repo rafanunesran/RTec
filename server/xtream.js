@@ -166,3 +166,48 @@ export async function shortEpg(creds, streamId) {
     }))
     .filter((p) => new Date(p.stop).getTime() > Date.now());
 }
+
+const strList = (v) => (Array.isArray(v) ? v : v ? [v] : []).map((s) => String(s || "").trim()).filter(Boolean);
+const trailerUrl = (v) => {
+  const s = String(v || "").trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s;
+  return /^[\w-]{6,20}$/.test(s) ? `https://www.youtube.com/watch?v=${s}` : "";
+};
+/** "01:52:10", "112 min", "6720" (s) -> minutos */
+function minutes(info) {
+  const secs = Number(info.duration_secs) || 0;
+  if (secs > 0) return Math.round(secs / 60);
+  const d = String(info.duration || info.episode_run_time || "").trim();
+  const hms = /^(\d+):(\d{2})(?::(\d{2}))?$/.exec(d);
+  if (hms) return hms[3] !== undefined ? Number(hms[1]) * 60 + Number(hms[2]) : Number(hms[1]);
+  const n = parseFloat(d);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+/** Ficha de um filme (get_vod_info) ou serie (get_series_info): sinopse, elenco, direcao, genero etc. */
+export async function titleInfo(creds, kind, id) {
+  const data = await call(creds, kind === "series" ? { action: "get_series_info", series_id: id } : { action: "get_vod_info", vod_id: id });
+  const info = data?.info && typeof data.info === "object" && !Array.isArray(data.info) ? data.info : {};
+  const rating = Number(info.rating) || Number(info.rating_5based) * 2 || 0;
+  const seasons = kind === "series" ? Object.keys(data?.episodes || {}).length : 0;
+  return {
+    name: String(info.name || data?.movie_data?.name || "").trim(),
+    original_name: String(info.o_name || info.original_name || "").trim(),
+    plot: String(info.plot || info.description || "").trim(),
+    genres: strList(String(info.genre || "").split(/\s*[,/|]\s*/)),
+    cast: strList(String(info.cast || info.actors || "").split(/\s*,\s*/)).slice(0, 12),
+    director: strList(String(info.director || "").split(/\s*,\s*/)),
+    year: yearOf({ year: info.year, release_date: info.releasedate || info.release_date || info.releaseDate }),
+    release_date: String(info.releasedate || info.release_date || info.releaseDate || "").trim(),
+    rating: Math.round(rating * 10) / 10,
+    minutes: minutes(info),
+    country: String(info.country || "").trim(),
+    age: String(info.age || info.mpaa_rating || "").trim(),
+    poster: String(info.movie_image || info.cover_big || info.cover || "").trim(),
+    backdrop: strList(info.backdrop_path)[0] || "",
+    trailer: trailerUrl(info.youtube_trailer || info.trailer),
+    tmdb_id: String(info.tmdb_id || info.tmdb || "").trim(),
+    seasons,
+  };
+}
