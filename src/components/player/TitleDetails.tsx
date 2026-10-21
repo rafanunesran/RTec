@@ -1,9 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Film, Heart, Play, RotateCcw, Sparkles, Star } from "lucide-react";
 import { api, type Channel, type TitleInfo } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button, Skeleton } from "@/components/ui";
 import { WATCHED_AT, fraction, getProgress, saveProgress } from "@/lib/progress";
+import { tvNavigationOn, tvScreenOn } from "@/lib/tvnav";
 
 const cache = new Map<string, TitleInfo | null>();
 
@@ -240,10 +241,20 @@ export function MovieDetails({
     const pr = getProgress(movie.id);
     return pr && started ? Math.max(1, Math.round((pr.d - pr.p) / 60)) : 0;
   })();
+  // Controle remoto: a ficha ja abre com "Assistir" selecionado.
+  const playRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (tvNavigationOn()) playRef.current?.focus();
+  }, [movie.id]);
+  const tv = tvScreenOn();
 
   return (
     <div data-tv-scope="40" className="fixed inset-0 z-40 overflow-y-auto bg-background">
-      <div className="mx-auto max-w-4xl space-y-3 p-3 pt-[max(12px,env(safe-area-inset-top))] sm:p-6">
+      {tv && movie.logo && (
+        // TV: o poster borrado de fundo, como nos apps de streaming.
+        <img src={movie.logo} alt="" className="pointer-events-none fixed inset-0 h-full w-full scale-110 object-cover opacity-25 blur-3xl" onError={hideBroken} />
+      )}
+      <div className={cn("relative mx-auto space-y-3 p-3 pt-[max(12px,env(safe-area-inset-top))] sm:p-6", tv ? "max-w-6xl pt-10" : "max-w-4xl")}>
         <Button variant="ghost" size="sm" onClick={onClose}>
           <ArrowLeft /> Voltar
         </Button>
@@ -254,7 +265,7 @@ export function MovieDetails({
           logo={movie.logo}
           actions={
             <>
-              <Button variant="gradient" onClick={onPlay} className="relative overflow-hidden">
+              <Button ref={playRef} variant="gradient" onClick={onPlay} className="relative overflow-hidden">
                 <Play className="fill-current" /> {started ? "Continuar" : f >= WATCHED_AT ? "Assistir de novo" : "Assistir"}
                 {started && <span className="absolute inset-x-0 bottom-0 h-1 bg-white/70" style={{ width: `${f * 100}%` }} />}
               </Button>

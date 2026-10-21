@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Heart, SkipForward, X } from "lucide-react";
+import { ArrowLeft, Heart, Pause, Play, SkipForward, X } from "lucide-react";
 import type { Channel } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { resumeAt, saveProgress } from "@/lib/progress";
 import VideoPlayer from "@/components/VideoPlayer";
 import { restorePortrait } from "@/lib/orientation";
+import { tvScreenOn } from "@/lib/tvnav";
 
 const fsElement = () =>
   document.fullscreenElement ?? (document as Document & { webkitFullscreenElement?: Element | null }).webkitFullscreenElement ?? null;
@@ -144,6 +145,8 @@ export default function PlayerOverlay({
         {info && chrome && <div className="pointer-events-auto mt-2 max-w-xl">{info}</div>}
       </div>
 
+      {tvScreenOn() && <TvBar root={rootRef} live={!isVod} visible={chrome} />}
+
       {(nearEnd || countdown !== null) && next && (
         <div className="absolute bottom-20 right-4 z-10 flex items-center gap-2">
           {countdown !== null && (
@@ -160,6 +163,59 @@ export default function PlayerOverlay({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+const clock = (s: number) => {
+  const t = Math.max(0, Math.floor(s));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const sec = String(t % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+};
+
+/** TV: barra de baixo no lugar dos controles do navegador (que nao funcionam bem com o controle remoto). */
+function TvBar({ root, live, visible }: { root: React.RefObject<HTMLDivElement>; live: boolean; visible: boolean }) {
+  const [st, setSt] = useState({ paused: false, pos: 0, dur: 0 });
+  useEffect(() => {
+    const read = () => {
+      const v = root.current?.querySelector("video");
+      if (v) setSt({ paused: v.paused, pos: v.currentTime, dur: Number.isFinite(v.duration) ? v.duration : 0 });
+    };
+    read();
+    const t = setInterval(read, 500);
+    return () => clearInterval(t);
+  }, [root]);
+  const show = visible || st.paused;
+  return (
+    <div
+      className={cn(
+        "pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent px-10 pb-8 pt-20 transition-opacity",
+        show ? "opacity-100" : "opacity-0",
+      )}
+    >
+      <div className="flex items-center gap-4">
+        <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-white text-black">
+          {st.paused ? <Play className="h-5 w-5 fill-current" /> : <Pause className="h-5 w-5 fill-current" />}
+        </span>
+        {live ? (
+          <span className="flex items-center gap-2 rounded-md bg-red-600 px-2.5 py-1 text-sm font-bold uppercase tracking-wider">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-white" /> Ao vivo
+          </span>
+        ) : (
+          <>
+            <span className="w-20 shrink-0 text-right text-sm tabular-nums">{clock(st.pos)}</span>
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/25">
+              <div className="h-full rounded-full bg-brand" style={{ width: `${st.dur ? (st.pos / st.dur) * 100 : 0}%` }} />
+            </div>
+            <span className="w-20 shrink-0 text-sm tabular-nums text-white/70">{st.dur ? clock(st.dur) : "--:--"}</span>
+          </>
+        )}
+      </div>
+      <div className="mt-3 text-sm text-white/60">
+        OK pausa/continua{live ? "" : " · ◀ ▶ volta/avança 10 s"} · ▲ opções · Voltar sai
+      </div>
     </div>
   );
 }

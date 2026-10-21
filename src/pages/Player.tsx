@@ -15,6 +15,7 @@ import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
 import ListExpired from "@/components/player/ListExpired";
+import { tvScreenOn } from "@/lib/tvnav";
 import { MAIN_PROFILE, fetchProfiles, lastProfile, rememberProfile, scoped, setStorageProfile, type ProfilesResponse, type Viewer } from "@/lib/profiles";
 
 const FAVORITES = "__favoritos__";
@@ -398,6 +399,8 @@ function Watch({
   const [xtItems, setXtItems] = useState<Record<string, Channel[] | "loading" | { error: string }>>({}); // Xtream: por secao/categoria
   const [settings, setSettings] = useState<PlayerSettings>({ custom_pin: false, locked_groups: [] });
   const [page, setPage] = useState<Page>("home");
+  const tv = tvScreenOn();
+  const [peek, setPeek] = useState<Channel | null>(null); // TV: canal selecionado na lista ao vivo (painel da direita)
   const [sorts, setSorts] = useState<Record<string, string>>(() => load("rtec:sort", {}));
   const [filtersBy, setFiltersBy] = useState<Record<string, Filters>>(() => load("rtec:filters", {}));
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -930,7 +933,21 @@ function Watch({
   ];
 
   return (
-    <div className="flex min-h-[100dvh] flex-col">
+    <div className={cn("flex min-h-[100dvh] flex-col", tv && "pl-24")}>
+      {tv ? (
+        <TvSidebar
+          items={[
+            { key: "home", label: "Início", icon: Home, active: page === "home", onClick: () => page !== "home" && (pushNav(), setPage("home")) },
+            { key: "all", label: "Buscar", icon: Search, active: page === "all", onClick: () => page !== "all" && (pushNav(), setPage("all")) },
+            ...sections
+              .filter((s) => counts[s.key] > 0 || s.key === "live")
+              .map((s) => ({ key: s.key, label: s.label, icon: s.icon, active: page === "section" && section === s.key, onClick: () => goSection(s.key) })),
+          ]}
+          viewer={viewer}
+          onProfile={() => onSwitchProfile(false)}
+          onSettings={() => setSettingsOpen(true)}
+        />
+      ) : (
       <header className="glass sticky top-0 z-30 border-b">
         <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-3 px-4 lg:px-6">
           <Logo />
@@ -1002,8 +1019,9 @@ function Watch({
           )}
         </div>
       </header>
+      )}
 
-      <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 pb-8 pt-4 lg:px-6">
+      <main className={cn("mx-auto w-full flex-1", tv ? "px-10 pb-10 pt-8" : "max-w-[1600px] px-4 pb-8 pt-4 lg:px-6")}>
             {page === "home" ? (
               <HomePage
                 history={history}
@@ -1035,6 +1053,25 @@ function Watch({
                 currentId={current?.id}
                 isFavorite={isFavorite}
                 onFavorite={toggleFavorite}
+              />
+            ) : tv && section === "live" ? (
+              <TvLive
+                options={menuOptions}
+                group={group}
+                onGroup={(o) => (o.locked ? withPin(() => setGroup(o.key), o.name) : setGroup(o.key))}
+                query={query}
+                onQuery={setQuery}
+                loading={loading}
+                channels={visible.slice(0, cap)}
+                more={!loading && total > (pagedAll ? visible.length : limit) ? total - (pagedAll ? visible.length : limit) : 0}
+                onMore={() => (pagedAll ? loadPage(pageKey, visible.length) : setLimit((l) => l + PAGE))}
+                peek={peek}
+                onPeek={setPeek}
+                epg={epg}
+                currentId={current?.id}
+                isFavorite={isFavorite}
+                onFavorite={toggleFavorite}
+                onPlay={(c) => play(c, null)}
               />
             ) : (
               <div className="flex min-w-0 flex-col gap-3">
@@ -1324,6 +1361,7 @@ function ChannelRow({
   progress = 0,
   badge,
   sub,
+  onFocus,
 }: {
   channel: Channel;
   label?: string;
@@ -1335,10 +1373,11 @@ function ChannelRow({
   progress?: number;
   badge?: ReactNode;
   sub?: string;
+  onFocus?: () => void;
 }) {
   return (
     <li className={cn("flex items-center rounded-xl transition-colors", active ? "bg-primary/10 ring-1 ring-primary/40" : "hover:bg-accent")}>
-      <button onClick={onPlay} className="flex min-w-0 flex-1 items-center gap-3 rounded-xl p-2 text-left">
+      <button onClick={onPlay} onFocus={onFocus} className="channel-row flex min-w-0 flex-1 items-center gap-3 rounded-xl p-2 text-left">
         <ChannelLogo channel={c} />
         <div className="min-w-0 flex-1">
           <div className={cn("truncate text-sm font-semibold", active && "text-primary")}>{label ?? c.name}</div>
@@ -1363,12 +1402,12 @@ type PosterItem = { id: string; name: string; logo: string; sub?: string; progre
 
 function PosterGrid<T extends PosterItem>({ items, activeId, onSelect }: { items: T[]; activeId?: string; onSelect: (item: T) => void }) {
   return (
-    <div className="grid grid-cols-3 gap-3 pb-1 pt-1 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8">
+    <div className="poster-grid grid grid-cols-3 gap-3 pb-1 pt-1 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8">
       {items.map((item) => (
-        <button key={item.id} onClick={() => onSelect(item)} className="group text-left">
+        <button key={item.id} onClick={() => onSelect(item)} className="poster-card group text-left">
           <div
             className={cn(
-              "relative flex aspect-[2/3] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-b from-secondary to-card ring-1 ring-border transition-all duration-300 group-hover:-translate-y-1 group-hover:shadow-glow group-hover:ring-primary/50",
+              "poster-frame relative flex aspect-[2/3] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-b from-secondary to-card ring-1 ring-border transition-all duration-300 group-hover:-translate-y-1 group-hover:shadow-glow group-hover:ring-primary/50",
               activeId === item.id && "ring-2 ring-primary",
             )}
           >
@@ -1385,13 +1424,13 @@ function PosterGrid<T extends PosterItem>({ items, activeId, onSelect }: { items
             {!!item.progress && item.progress >= WATCHED_AT && (
               <CheckCircle2 className="absolute right-1.5 top-1.5 h-5 w-5 rounded-full bg-background/80 text-success" />
             )}
-            <span className="absolute inset-0 grid place-items-center bg-background/30 opacity-0 transition-opacity group-hover:opacity-100">
+            <span className="poster-play absolute inset-0 grid place-items-center bg-background/30 opacity-0 transition-opacity group-hover:opacity-100">
               <span className="grid h-10 w-10 place-items-center rounded-full bg-foreground text-background">
                 <Play className="h-4 w-4 fill-current" />
               </span>
             </span>
           </div>
-          <div className="mt-2 line-clamp-2 text-xs font-semibold">{item.name}</div>
+          <div className="poster-title mt-2 line-clamp-2 text-xs font-semibold">{item.name}</div>
           {item.sub && <div className="text-[11px] text-muted-foreground">{item.sub}</div>}
         </button>
       ))}
@@ -1911,5 +1950,181 @@ function SortSelect({ value, onChange, vod }: { value: string; onChange: (v: str
       </select>
       <ChevronDown className="pointer-events-none absolute right-3 h-4 w-4 text-muted-foreground" />
     </label>
+  );
+}
+
+type TvMenuItem = { key: string; label: string; icon: typeof Tv; active: boolean; onClick: () => void };
+
+/** TV: menu lateral fino que abre ao receber o foco do controle (padrao Netflix/Duplecast). */
+function TvSidebar({ items, viewer, onProfile, onSettings }: { items: TvMenuItem[]; viewer: Viewer; onProfile: () => void; onSettings: () => void }) {
+  const itemClass = (active: boolean) =>
+    cn(
+      "tv-plain-focus flex h-12 w-full items-center gap-4 rounded-xl px-3 text-left font-semibold transition-colors focus:bg-foreground focus:text-background",
+      active ? "text-foreground" : "text-muted-foreground",
+    );
+  const label = "whitespace-nowrap opacity-0 transition-opacity group-focus-within/side:opacity-100";
+  return (
+    <aside className="group/side fixed inset-y-0 left-0 z-30 flex w-24 flex-col gap-1 overflow-hidden bg-gradient-to-r from-background via-background to-background/0 px-4 py-8 transition-[width] duration-200 focus-within:w-80 focus-within:to-background/90">
+      <div className="mb-6 flex h-12 items-center px-1.5">
+        <Logo className="[&>div:last-child]:opacity-0 [&>div:last-child]:transition-opacity group-focus-within/side:[&>div:last-child]:opacity-100" />
+      </div>
+      {items.map(({ key, label: text, icon: Icon, active, onClick }) => (
+        <button key={key} onClick={onClick} aria-current={active ? "page" : undefined} className={itemClass(active)}>
+          <span className="relative shrink-0">
+            <Icon className="h-6 w-6" />
+            {active && <span className="absolute -bottom-2 left-1/2 h-1 w-4 -translate-x-1/2 rounded-full bg-brand" />}
+          </span>
+          <span className={label}>{text}</span>
+        </button>
+      ))}
+      <div className="mt-auto space-y-1">
+        <button onClick={onProfile} className={itemClass(false)} aria-label={`Perfil ${viewer.name}. Trocar perfil`}>
+          <Avatar avatar={viewer.avatar} className="w-7 shrink-0 rounded-md" />
+          <span className={label}>{viewer.name}</span>
+        </button>
+        <button onClick={onSettings} className={itemClass(false)} aria-label="Configurações">
+          <Settings className="h-6 w-6 shrink-0" />
+          <span className={label}>Configurações</span>
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+/** TV ao vivo na TV: categorias | canais | o que esta passando no canal selecionado (padrao Duplecast). */
+function TvLive({
+  options,
+  group,
+  onGroup,
+  query,
+  onQuery,
+  loading,
+  channels,
+  more,
+  onMore,
+  peek,
+  onPeek,
+  epg,
+  currentId,
+  isFavorite,
+  onFavorite,
+  onPlay,
+}: {
+  options: MenuOption[];
+  group: string;
+  onGroup: (o: MenuOption) => void;
+  query: string;
+  onQuery: (q: string) => void;
+  loading: boolean;
+  channels: Channel[];
+  more: number;
+  onMore: () => void;
+  peek: Channel | null;
+  onPeek: (c: Channel) => void;
+  epg: Record<string, Programme[]>;
+  currentId?: string;
+  isFavorite: (id: string) => boolean;
+  onFavorite: (c: Channel) => void;
+  onPlay: (c: Channel) => void;
+}) {
+  const shown = peek && channels.some((c) => c.id === peek.id) ? peek : channels[0];
+  const progs = shown?.epg_id ? (epg[shown.epg_id] ?? []) : [];
+  const time = (iso: string) => new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  const now = progs[0];
+  const pct = now ? Math.min(100, Math.max(0, ((Date.now() - +new Date(now.start)) / (+new Date(now.stop) - +new Date(now.start))) * 100)) : 0;
+  return (
+    <div className="grid grid-cols-[15rem_minmax(0,1fr)_22rem] gap-6">
+      <nav aria-label="Categorias" className="sticky top-8 max-h-[calc(100dvh-4rem)] space-y-1 overflow-y-auto pr-1">
+        {options.map((o) => (
+          <button
+            key={o.key}
+            onClick={() => onGroup(o)}
+            aria-pressed={group === o.key}
+            className={cn(
+              "tv-plain-focus flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition-colors focus:bg-foreground focus:text-background",
+              group === o.key ? "bg-primary/15 text-foreground ring-1 ring-primary/50" : "text-muted-foreground",
+            )}
+          >
+            {o.icon && <span className="shrink-0 [&>svg]:h-4 [&>svg]:w-4">{o.icon}</span>}
+            <span className="min-w-0 flex-1 truncate">{o.name}</span>
+            {o.locked ? <Lock className="h-3.5 w-3.5 shrink-0" /> : !!o.count && <span className="text-xs tabular-nums opacity-70">{o.count}</span>}
+          </button>
+        ))}
+      </nav>
+
+      <div className="min-w-0 space-y-3">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input className="pl-9" aria-label="Buscar canal" placeholder="Buscar canal..." value={query} onChange={(e) => onQuery(e.target.value)} />
+        </div>
+        {loading ? (
+          <div className="space-y-2">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <Skeleton key={i} className="h-14 rounded-xl" />
+            ))}
+          </div>
+        ) : !channels.length ? (
+          <EmptyState icon={<Search className="h-6 w-6" />} title="Nenhum canal aqui" text="Escolha outra categoria ou mude a busca." />
+        ) : (
+          <ul className="space-y-1">
+            {channels.map((c) => (
+              <ChannelRow
+                key={c.id}
+                channel={c}
+                active={currentId === c.id}
+                favorite={isFavorite(c.id)}
+                now={c.epg_id ? epg[c.epg_id]?.[0]?.title : undefined}
+                onPlay={() => onPlay(c)}
+                onFocus={() => onPeek(c)}
+                onFavorite={() => onFavorite(c)}
+              />
+            ))}
+          </ul>
+        )}
+        {more > 0 && (
+          <Button variant="outline" className="w-full" onClick={onMore}>
+            Mostrar mais ({more})
+          </Button>
+        )}
+      </div>
+
+      <aside className="sticky top-8 h-fit space-y-4 rounded-2xl border bg-card/80 p-5">
+        {shown ? (
+          <>
+            <div className="flex aspect-video items-center justify-center overflow-hidden rounded-xl bg-glow ring-1 ring-border">
+              {shown.logo ? <img src={shown.logo} alt="" className="max-h-[70%] max-w-[70%] object-contain" onError={(e) => (e.currentTarget.style.display = "none")} /> : <Tv className="h-10 w-10 text-muted-foreground" />}
+            </div>
+            <div>
+              <div className="text-lg font-bold leading-tight">{shown.name}</div>
+              <div className="text-sm text-muted-foreground">{shown.group}</div>
+            </div>
+            {now ? (
+              <div className="space-y-3">
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider text-primary">Agora</div>
+                  <div className="font-semibold">{now.title}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {time(now.start)} - {time(now.stop)}
+                  </div>
+                  <ProgressBar value={pct / 100} className="mt-2" />
+                  {now.desc && <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">{now.desc}</p>}
+                </div>
+                {progs.slice(1, 3).map((p) => (
+                  <div key={p.start} className="flex gap-3 text-sm">
+                    <span className="shrink-0 tabular-nums text-muted-foreground">{time(p.start)}</span>
+                    <span className="truncate">{p.title}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Sem guia de programação para este canal.</p>
+            )}
+            <p className="text-xs text-muted-foreground">OK para assistir · Voltar para sair</p>
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">Escolha um canal.</p>
+        )}
+      </aside>
+    </div>
   );
 }

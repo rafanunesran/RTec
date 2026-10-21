@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2, RotateCw, Tv, VolumeX } from "lucide-react";
 import type { Channel } from "@/lib/api";
 import { watchFullscreenOrientation } from "@/lib/orientation";
+import { tvScreenOn } from "@/lib/tvnav";
 
 type Stop = () => void;
 
@@ -263,7 +264,7 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
 
   return (
     <div className={className ?? "relative aspect-video w-full overflow-hidden bg-black lg:rounded-2xl lg:ring-1 lg:ring-border"}>
-      <video ref={videoRef} className="h-full w-full" controls playsInline autoPlay />
+      <video ref={videoRef} className="h-full w-full" controls={!tvScreenOn()} playsInline autoPlay />
       {!channel && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-glow text-muted-foreground">
           <div className="grid h-14 w-14 place-items-center rounded-2xl bg-muted ring-1 ring-border">

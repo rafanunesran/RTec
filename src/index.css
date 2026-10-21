@@ -57,3 +57,26 @@
 .tv-nav .profile-tile:focus {
   outline: none;
 }
+
+/* ---- Layout de TV (html.tv-screen: Samsung/LG/Android TV ou ?tv=1) ---- */
+/* Tudo em rem cresce 50%: textos e botoes legiveis a 3 metros, como nos apps de streaming. */
+html.tv-screen { font-size: 150%; }
+.tv-screen ::-webkit-scrollbar { display: none; }
+.tv-screen * { scrollbar-width: none; }
+
+/* Itens que mudam de cor ao serem escolhidos nao precisam do contorno. */
+.tv-nav .tv-plain-focus:focus { outline: none; }
+
+/* Posteres: o selecionado cresce e ganha brilho (padrao Netflix/Prime). */
+.tv-screen .poster-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1.25rem; }
+.tv-nav .poster-card:focus { outline: none; }
+.tv-nav .poster-card:focus .poster-frame {
+  transform: scale(1.07);
+  box-shadow: 0 0 0 4px hsl(var(--brand-2)), 0 18px 40px -12px hsl(var(--primary) / 0.7);
+}
+.tv-nav .poster-card:focus .poster-play { opacity: 1; }
+.tv-nav .poster-card:focus .poster-title { color: hsl(var(--foreground)); }
+
+/* Linhas de canal: selecionada fica preenchida, como na lista do Duplecast. */
+.tv-nav .channel-row:focus { outline: none; background: hsl(var(--foreground)); color: hsl(var(--background)); }
+.tv-nav .channel-row:focus * { color: hsl(var(--background)) !important; }

@@ -8,6 +8,7 @@ import { isNativeApp } from "./pwa";
 const TV_UA = /Tizen|SMART-TV|SmartTV|Web0S|webOS|NetCast|BRAVIA|HbbTV|VIDAA|Android TV|GoogleTV|AFT[A-Z]/i;
 
 let tvMode = false;
+let tvScreen = false;
 
 /** O site esta rodando numa TV (ou com ?tv=1 para testar no computador). */
 export function isTV() {
@@ -145,7 +146,8 @@ const lastFocus = new WeakMap<HTMLElement, HTMLElement>();
 function focusEl(el: HTMLElement, scope: HTMLElement) {
   lastFocus.set(scope, el);
   el.focus({ preventScroll: true });
-  const opts: ScrollIntoViewOptions = { block: "nearest", inline: "nearest" };
+  // Na TV o item escolhido fica no meio da tela, como nos apps de streaming; no celular so o necessario.
+  const opts: ScrollIntoViewOptions = { block: tvScreen ? "center" : "nearest", inline: "nearest" };
   if ("scrollBehavior" in document.documentElement.style) el.scrollIntoView(opts);
   else (el as HTMLElement & { scrollIntoViewIfNeeded?: (center?: boolean) => void }).scrollIntoViewIfNeeded?.(false);
 }
@@ -263,9 +265,12 @@ function onKey(e: KeyboardEvent) {
 
 /** Liga a navegacao por controle remoto quando o site roda numa TV ou no app. */
 export function setupTvNavigation() {
-  tvMode = isTV() || isNativeApp();
+  tvScreen = isTV();
+  tvMode = tvScreen || isNativeApp();
   if (!tvMode) return;
   document.documentElement.classList.add("tv-nav");
+  // Tela grande vista de longe: tudo maior e layout de TV (ver index.css e Player).
+  if (tvScreen) document.documentElement.classList.add("tv-screen");
   try {
     // Sem registrar, o Tizen nao entrega as teclas de midia para a pagina.
     tizen()?.tvinputdevice?.registerKeyBatch?.(["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind"]);
@@ -276,3 +281,6 @@ export function setupTvNavigation() {
 }
 
 export const tvNavigationOn = () => tvMode;
+
+/** Layout de TV (tela grande, controle remoto). */
+export const tvScreenOn = () => tvScreen;
