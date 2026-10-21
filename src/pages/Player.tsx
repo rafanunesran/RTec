@@ -147,7 +147,7 @@ export default function Player() {
       .finally(() => setChecking(false));
   }, []);
 
-  // Perfis da conta: com mais de um, pergunta "Quem esta assistindo?" ao abrir.
+  // Perfis da conta: sempre pergunta "Quem esta assistindo?" ao abrir (como na Netflix).
   const [viewers, setViewers] = useState<ProfilesResponse | null>(null);
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [manage, setManage] = useState(false);
@@ -169,7 +169,6 @@ export default function Player() {
       .then((res) => {
         if (!alive) return;
         setViewers(res);
-        if (res.profiles.length === 1) choose(res.profiles[0]);
       })
       .catch(() => {
         // Sem rede e sem perfis guardados: entra no principal.
