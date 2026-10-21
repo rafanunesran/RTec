@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, Search, Settings, Share, SquarePlus, Tv, X } from "lucide-react";
 import { toast } from "sonner";
-import { api, ApiError, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
+import { api, ApiError, isListExpired, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
 import { cn, formatDate } from "@/lib/utils";
 import { Button, Dialog, EmptyState, Field, Input, Select, Skeleton } from "@/components/ui";
@@ -14,6 +14,7 @@ import { refreshChannels } from "@/lib/links";
 import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
+import ListExpired from "@/components/player/ListExpired";
 import { MAIN_PROFILE, fetchProfiles, lastProfile, rememberProfile, scoped, setStorageProfile, type ProfilesResponse, type Viewer } from "@/lib/profiles";
 
 const FAVORITES = "__favoritos__";
@@ -138,12 +139,17 @@ function episodeInfo(name: string) {
 export default function Player() {
   const [profile, setProfile] = useState<ClientProfile | null>(null);
   const [checking, setChecking] = useState(true);
+  // A cada abertura o servidor confere a lista no fornecedor; vencida, mostra a tela de lista expirada.
+  const [expired, setExpired] = useState(false);
 
   useEffect(() => {
     api
       .get<ClientProfile>("/api/player/me")
       .then(setProfile)
-      .catch(() => setProfile(null))
+      .catch((err) => {
+        setProfile(null);
+        setExpired(isListExpired(err));
+      })
       .finally(() => setChecking(false));
   }, []);
 
@@ -183,7 +189,13 @@ export default function Player() {
     setProfile(null);
     setViewer(null);
     setViewers(null);
+    setExpired(false);
   }, []);
+
+  const listExpired = useCallback(() => {
+    logout();
+    setExpired(true);
+  }, [logout]);
 
   if (checking || (profile && !viewer && !viewers))
     return (
@@ -192,7 +204,20 @@ export default function Player() {
       </div>
     );
 
-  if (!profile) return <PlayerLogin onLogin={setProfile} />;
+  if (expired)
+    return (
+      <ListExpired
+        onRenewed={(p) => {
+          setExpired(false);
+          setProfile(p);
+        }}
+        onLogout={async () => {
+          await api.post("/api/player/logout").catch(() => {});
+          logout();
+        }}
+      />
+    );
+  if (!profile) return <PlayerLogin onLogin={setProfile} onExpired={listExpired} />;
   if (!viewer && viewers)
     return (
       <ProfilePicker
@@ -223,11 +248,12 @@ export default function Player() {
         setViewer(null);
       }}
       onLogout={logout}
+      onExpired={listExpired}
     />
   );
 }
 
-function PlayerLogin({ onLogin }: { onLogin: (p: ClientProfile) => void }) {
+function PlayerLogin({ onLogin, onExpired }: { onLogin: (p: ClientProfile) => void; onExpired: () => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -238,6 +264,7 @@ function PlayerLogin({ onLogin }: { onLogin: (p: ClientProfile) => void }) {
     try {
       onLogin(await api.post<ClientProfile>("/api/player/login", { username, password }));
     } catch (err) {
+      if (isListExpired(err)) return onExpired();
       toast.error((err as Error).message);
     } finally {
       setBusy(false);
@@ -330,11 +357,13 @@ function Watch({
   viewer,
   onSwitchProfile,
   onLogout,
+  onExpired,
 }: {
   profile: ClientProfile;
   viewer: Viewer;
   onSwitchProfile: (manage: boolean) => void;
   onLogout: () => void;
+  onExpired: () => void;
 }) {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [data, setData] = useState<ChannelsResponse | null>(null); // listas M3U comuns
@@ -386,6 +415,10 @@ function Watch({
   const xt = catalog?.mode === "xtream";
   const handleAuthError = useCallback(
     (err: unknown) => {
+      if (isListExpired(err)) {
+        onExpired();
+        return true;
+      }
       if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
         toast.error(err.message);
         onLogout();
@@ -393,7 +426,7 @@ function Watch({
       }
       return false;
     },
-    [onLogout],
+    [onLogout, onExpired],
   );
 
   const loadAll = useCallback(() => {

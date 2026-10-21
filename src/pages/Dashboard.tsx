@@ -10,7 +10,7 @@ const steps: [string, ReactNode][] = [
   [
     "Crie o cliente",
     <>
-      Em <Link to="/admin/clientes" className="font-medium text-primary hover:underline">Clientes</Link>, defina login, senha e validade e cole a lista M3U
+      Em <Link to="/admin/clientes" className="font-medium text-primary hover:underline">Clientes</Link>, defina login e senha e cole a lista M3U (a validade é conferida sozinha na lista)
       dele (link, login Xtream ou o conteúdo do arquivo). Use "Testar lista" antes de salvar.
     </>,
   ],
@@ -27,7 +27,7 @@ export default function Dashboard() {
   const cards = [
     { label: "Clientes", value: stats?.clients, icon: <Users />, to: "/admin/clientes", tone: "primary" },
     { label: "Ativos", value: stats?.active_clients, icon: <UserCheck />, to: "/admin/clientes", tone: "success" },
-    { label: "Expirados", value: stats?.expired_clients, icon: <UserX />, to: "/admin/clientes", tone: "destructive" },
+    { label: "Listas expiradas", value: stats?.expired_clients, icon: <UserX />, to: "/admin/clientes", tone: "destructive" },
     { label: "Com lista", value: stats?.playlists, icon: <ListVideo />, to: "/admin/clientes", tone: "info" },
   ] as const;
 

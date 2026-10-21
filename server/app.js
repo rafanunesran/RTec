@@ -10,6 +10,7 @@ import { nowNext } from "./epg.js";
 import * as xtream from "./xtream.js";
 import { lookupOnline, mergeInfo } from "./titleinfo.js";
 import { rankSimilar } from "./recommend.js";
+import { checkSource } from "./listcheck.js";
 
 const COOKIE = "rtec_session";
 const CLIENT_COOKIE = "rtec_player";
@@ -46,9 +47,10 @@ const byName = (a, b) => a.name.localeCompare(b.name);
 const newestFirst = (a, b) => String(b.created_at).localeCompare(String(a.created_at));
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -122,9 +124,60 @@ async function getClient(id) {
 
 const forgetClient = (id) => clientCache.delete(String(id));
 
+// A validade vem da propria lista do fornecedor (ver listcheck.js), nao de uma data digitada no painel.
+const isListExpired = (c) => c?.list_status?.state === "expired";
+
 function isClientValid(c) {
-  if (!c || !c.active) return false;
-  return !c.expires_at || new Date(c.expires_at) > new Date();
+  return !!c && !!c.active && !isListExpired(c);
+}
+
+const LIST_EXPIRED = "Lista expirada, entre em contato com o adm";
+const BLOCKED = "Acesso bloqueado. Fale com seu revendedor.";
+
+function assertClientAccess(c) {
+  if (!c.active) throw new HttpError(403, BLOCKED, "blocked");
+  if (isListExpired(c)) throw new HttpError(403, LIST_EXPIRED, "list_expired");
+}
+
+// Confere a lista no fornecedor no login e a cada abertura do app (no maximo 1x a cada 30 s por cliente).
+const LIST_CHECK_TTL_MS = 30_000;
+const LIST_SAVE_MS = 60 * 60_000;
+const listChecks = new Map();
+
+async function refreshListStatus(c, { force = false } = {}) {
+  const last = listChecks.get(c.id);
+  if (!force && last && Date.now() - last.at < LIST_CHECK_TTL_MS) return last.promise;
+  const promise = (async () => {
+    const result = await checkSource(c.source).catch((err) => ({ state: "unknown", reason: err.message }));
+    const prev = c.list_status || null;
+    // Sem lista para conferir: libera. Fornecedor fora do ar: mantem o ultimo resultado (nao bloqueia por engano).
+    const state = !result ? "none" : result.state === "unknown" ? prev?.state || "unknown" : result.state;
+    const next = {
+      state,
+      reason: result?.state === "unknown" && prev?.state ? prev.reason || "" : result?.reason || "",
+      checked_at: result?.state === "unknown" ? prev?.checked_at || null : nowIso(),
+      last_error: result?.state === "unknown" ? result.reason : "",
+      provider_status: result?.provider_status ?? prev?.provider_status ?? "",
+    };
+    const patch = { list_status: next };
+    if (result && result.state !== "unknown" && "expires_at" in result) patch.expires_at = result.expires_at;
+    else if (result && result.state !== "unknown") patch.expires_at = null;
+    else if (!result) patch.expires_at = null;
+    const changed =
+      !prev ||
+      prev.state !== next.state ||
+      prev.reason !== next.reason ||
+      prev.last_error !== next.last_error ||
+      ("expires_at" in patch && (patch.expires_at ?? null) !== (c.expires_at ?? null)) ||
+      Date.now() - new Date(prev.checked_at || 0).getTime() > LIST_SAVE_MS;
+    Object.assign(c, patch);
+    if (changed) await getStore().clients.update(c.id, patch);
+    if (prev?.state !== next.state) console.log(`[rtec] Lista do cliente "${c.username}": ${prev?.state || "-"} -> ${next.state}${next.reason ? ` (${next.reason})` : ""}`);
+    return next;
+  })();
+  listChecks.set(c.id, { at: Date.now(), promise });
+  promise.catch(() => listChecks.delete(c.id));
+  return promise;
 }
 
 /** Atualiza "ultimo acesso" no maximo a cada 5 minutos, para nao gastar gravacoes. */
@@ -209,7 +262,21 @@ const requireClient = wrap(async (req, _res, next) => {
   }
   const c = await getClient(payload.cid);
   if (!c || payload.pw !== passwordFingerprint(c)) throw new HttpError(401, "Sessao expirada, entre novamente");
-  if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor.");
+  assertClientAccess(c);
+  req.client = c;
+  next();
+});
+
+/** Sessao do reprodutor sem barrar lista expirada (para conferir de novo na abertura do app). */
+const clientSession = wrap(async (req, _res, next) => {
+  let payload;
+  try {
+    payload = jwt.verify(req.cookies[CLIENT_COOKIE], JWT_SECRET);
+  } catch {
+    throw new HttpError(401, "Nao autenticado");
+  }
+  const c = await getClient(payload.cid);
+  if (!c || payload.pw !== passwordFingerprint(c)) throw new HttpError(401, "Sessao expirada, entre novamente");
   req.client = c;
   next();
 });
@@ -533,7 +600,7 @@ export function createApp() {
       res.json({
         clients: clients.length,
         active_clients: clients.filter(isClientValid).length,
-        expired_clients: clients.filter((c) => c.expires_at && new Date(c.expires_at) <= new Date()).length,
+        expired_clients: clients.filter(isListExpired).length,
         playlists: clients.filter((c) => c.source?.kind).length + playlists.length,
         recent: clients
           .filter((c) => c.last_access_at)
@@ -560,8 +627,6 @@ export function createApp() {
     const username = str(body.username ?? existing?.username, "usuario", { required: true, max: 64 });
     if (!/^[A-Za-z0-9._-]+$/.test(username)) throw new HttpError(400, "Usuario deve conter apenas letras, numeros, ponto, _ ou -");
     const password = str(body.password ?? existing?.password, "senha", { max: 64 }) || randomPassword();
-    const expires = body.expires_at === undefined ? existing?.expires_at ?? null : body.expires_at || null;
-    if (expires && Number.isNaN(new Date(expires).getTime())) throw new HttpError(400, "Data de validade invalida");
     let playlistIds = existing?.playlist_ids || [];
     if (Array.isArray(body.playlist_ids)) {
       const ids = [...new Set(body.playlist_ids.map(String))];
@@ -576,7 +641,6 @@ export function createApp() {
       username,
       password,
       active: !!(body.active ?? existing?.active ?? true),
-      expires_at: expires ? new Date(expires).toISOString() : null,
       notes: str(body.notes ?? existing?.notes, "observacoes"),
       playlist_ids: playlistIds,
     };
@@ -588,8 +652,9 @@ export function createApp() {
     wrap(async (req, res) => {
       const data = await readClientBody(req.body || {});
       const c = await unique(() =>
-        db().clients.create({ ...data, token: randomToken(), last_access_at: null, parental_pin_hash: "", locked_groups: [] }),
+        db().clients.create({ ...data, expires_at: null, list_status: null, token: randomToken(), last_access_at: null, parental_pin_hash: "", locked_groups: [] }),
       );
+      await refreshListStatus(c, { force: true });
       res.status(201).json(clientResponse(req, c));
     }),
   );
@@ -618,6 +683,7 @@ export function createApp() {
             password: creds.password,
             active: true,
             expires_at: account.expires_at,
+            list_status: { state: "active", reason: "", checked_at: nowIso(), last_error: "", provider_status: account.status || "Active" },
             notes: account.max_connections ? `Fornecedor: ${account.max_connections} tela(s) simultanea(s)` : "",
             source,
             playlist_ids: [],
@@ -643,6 +709,20 @@ export function createApp() {
       if (req.body?.reset_pin) patch.parental_pin_hash = "";
       const c = await unique(() => db().clients.update(existing.id, patch));
       forgetClient(existing.id);
+      if (JSON.stringify(existing.source ?? null) !== JSON.stringify(c.source ?? null) || !c.list_status) await refreshListStatus(c, { force: true });
+      res.json(clientResponse(req, c));
+    }),
+  );
+
+  // Confere agora se a lista do cliente ainda da acesso no fornecedor.
+  app.post(
+    "/api/clients/:id/check",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const c = await db().clients.get(req.params.id);
+      if (!c) throw new HttpError(404, "Cliente nao encontrado");
+      await refreshListStatus(c, { force: true });
+      forgetClient(c.id);
       res.json(clientResponse(req, c));
     }),
   );
@@ -756,9 +836,12 @@ export function createApp() {
     wrap(async (req, res) => {
       const c = await findClientByLogin(req.body?.username, req.body?.password);
       if (!c) throw new HttpError(401, "Usuario ou senha invalidos");
-      if (!isClientValid(c)) throw new HttpError(403, "Acesso expirado ou bloqueado. Fale com seu revendedor.");
+      if (!c.active) throw new HttpError(403, BLOCKED, "blocked");
+      await refreshListStatus(c, { force: true });
       await touch("clients", c, "last_access_at");
+      // A sessao fica valida mesmo com a lista expirada: quando o adm renovar, o app libera sozinho ao abrir.
       signClientSession(res, req, c);
+      assertClientAccess(c);
       res.json(clientProfile(c));
     }),
   );
@@ -768,7 +851,17 @@ export function createApp() {
     res.json({ ok: true });
   });
 
-  app.get("/api/player/me", requireClient, (req, res) => res.json(clientProfile(req.client)));
+  // Abertura do app: confere a lista no fornecedor antes de liberar.
+  app.get(
+    "/api/player/me",
+    clientSession,
+    wrap(async (req, res) => {
+      const c = req.client;
+      if (c.active) await refreshListStatus(c, { force: req.query.recheck === "1" });
+      assertClientAccess(c);
+      res.json(clientProfile(c));
+    }),
+  );
 
   app.get(
     "/api/player/channels",
@@ -1271,6 +1364,7 @@ export function createApp() {
     "/get.php",
     wrap(async (req, res) => {
       const c = await findClientByLogin(req.query.username, req.query.password);
+      if (c?.active) await refreshListStatus(c);
       if (!isClientValid(c)) return res.status(401).type("text").send("Unauthorized");
       await sendM3u(res, c);
     }),
@@ -1280,6 +1374,7 @@ export function createApp() {
     "/m3u/:token.m3u",
     wrap(async (req, res) => {
       const c = await db().clients.findOne("token", req.params.token);
+      if (c?.active) await refreshListStatus(c);
       if (!isClientValid(c)) return res.status(401).type("text").send("Unauthorized");
       await sendM3u(res, c);
     }),
@@ -1290,7 +1385,7 @@ export function createApp() {
   app.use((err, _req, res, _next) => {
     const status = err.status || 500;
     if (status >= 500) console.error(err);
-    res.status(status).json({ error: status >= 500 ? (/Firebase/.test(err.message) ? err.message : "Erro interno") : err.message });
+    res.status(status).json({ error: status >= 500 ? (/Firebase/.test(err.message) ? err.message : "Erro interno") : err.message, ...(err.code && { code: err.code }) });
   });
 
   return app;

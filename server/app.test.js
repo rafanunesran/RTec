@@ -21,8 +21,16 @@ const HLS = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n#EXTINF:4,\nseg
 const MOVIE = Buffer.alloc(3 * 1024 * 1024, 7);
 const b64 = (t) => Buffer.from(t).toString("base64");
 
+// Conta "Renova" no fornecedor falso: muda entre ativa, vencida e fornecedor fora do ar.
+let renova = "active";
+
 function xtreamApi(req, res) {
   const q = new URL(req.url, "http://x").searchParams;
+  if (q.get("username") === "Renova") {
+    if (renova === "down") return res.writeHead(503).end("Service Unavailable");
+    const exp = renova === "active" ? "1893456000" : "1600000000";
+    return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ user_info: { auth: 1, status: renova === "active" ? "Active" : "Expired", exp_date: exp } }));
+  }
   if (q.get("username") !== "TiaX" || q.get("password") !== "Sen@1") return res.end(JSON.stringify({ user_info: { auth: 0 } }));
   const json = (d) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(d));
   const port = source.address().port;
@@ -168,7 +176,7 @@ test("fluxo completo: admin, lista, cliente, M3U e dispositivo", async () => {
   assert.equal((await call("GET", "/get.php?username=joao&password=errada")).status, 401);
 
 
-  await call("PUT", `/api/clients/${client.body.id}`, { expires_at: "2000-01-01T00:00:00Z" });
+  await call("PUT", `/api/clients/${client.body.id}`, { active: false });
   assert.equal((await call("GET", "/get.php?username=joao&password=1234")).status, 401);
   assert.equal((await call("POST", "/api/player/login", { username: "joao", password: "1234" })).status, 403);
 });
@@ -349,8 +357,9 @@ test("reprodutor mostra por que a lista nao carregou", async () => {
   const html = await check("erro1", { kind: "m3u_url", url: `http://127.0.0.1:${port}/pagina.html` });
   assert.equal(html.channels.length, 0);
   assert.match(html.errors[0], /abriu uma pagina/);
+  // Lista que voltou vazia = fornecedor cortou o acesso: tela de lista expirada
   const empty = await check("erro2", { kind: "m3u_url", url: `http://127.0.0.1:${port}/vazia.m3u` });
-  assert.match(empty.errors[0], /lista vazia/);
+  assert.equal(empty.code, "list_expired");
   const down = await check("erro3", { kind: "m3u_url", url: "http://127.0.0.1:1/x.m3u" });
   assert.match(down.errors[0], /Nao foi possivel conectar/);
   const none = await check("erro4", undefined);
@@ -713,4 +722,47 @@ test("recomendacoes: pontua genero, direcao, elenco, ano e nota", async () => {
   assert.ok(recs[0].reasons.includes("Direção de Joao Silva"));
   assert.deepEqual((await call("GET", "/api/player/recommend?kind=movie&id=51&name=Abelha%20Rainha&skip=20")).body, [], "pula categorias bloqueadas");
   assert.deepEqual((await call("GET", "/api/player/recommend?kind=movie&name=Qualquer")).body, [], "sem id (lista M3U): vazio");
+});
+
+test("validade automatica pela lista do fornecedor", async () => {
+  const port = source.address().port;
+  const xt = { kind: "xtream", xtream_server: `http://127.0.0.1:${port}`, xtream_username: "Renova", xtream_password: "pw" };
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  renova = "active";
+  const created = await call("POST", "/api/clients", { username: "renova", password: "pw", source: xt, expires_at: "2000-01-01T00:00:00Z" });
+  assert.equal(created.body.list_status.state, "active");
+  assert.equal(created.body.expires_at, "2030-01-01T00:00:00.000Z", "vencimento vem do fornecedor, nao do painel");
+  assert.equal(created.body.valid, true);
+
+  // Venceu no fornecedor: login mostra a tela de lista expirada
+  renova = "expired";
+  cookie = "";
+  const login = await call("POST", "/api/player/login", { username: "renova", password: "pw" });
+  assert.equal(login.status, 403);
+  assert.equal(login.body.code, "list_expired");
+  assert.match(login.body.error, /Lista expirada/);
+  assert.equal((await call("GET", "/api/player/channels")).body.code, "list_expired");
+
+  // Fornecedor fora do ar: nao muda o resultado anterior
+  renova = "down";
+  assert.equal((await call("GET", "/api/player/me?recheck=1")).body.code, "list_expired");
+
+  // Renovou: ao abrir o app libera sozinho, sem novo login
+  renova = "active";
+  const me = await call("GET", "/api/player/me?recheck=1");
+  assert.equal(me.status, 200);
+  assert.equal(me.body.username, "renova");
+  renova = "down";
+  assert.equal((await call("GET", "/api/player/me?recheck=1")).status, 200, "queda do fornecedor nao bloqueia");
+
+  // Painel: status de cada cliente e conferencia manual
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  renova = "expired";
+  const checked = await call("POST", `/api/clients/${created.body.id}/check`);
+  assert.equal(checked.body.list_status.state, "expired");
+  assert.equal(checked.body.valid, false);
+  assert.ok((await call("GET", "/api/stats")).body.expired_clients >= 1);
+  renova = "active";
 });

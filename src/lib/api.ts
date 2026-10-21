@@ -23,7 +23,9 @@ export type Client = {
   token: string;
   active: boolean;
   valid: boolean;
+  /** Vencimento informado pelo fornecedor (Xtream). */
   expires_at: string | null;
+  list_status: ListStatus | null;
   notes: string;
   last_access_at: string | null;
   created_at: string;
@@ -31,6 +33,15 @@ export type Client = {
   source: Source | null;
   custom_pin: boolean;
   links: Links;
+};
+
+/** Resultado da conferencia automatica da lista no fornecedor. */
+export type ListStatus = {
+  state: "active" | "expired" | "unknown" | "none";
+  reason: string;
+  checked_at: string | null;
+  last_error: string;
+  provider_status: string;
 };
 
 export type PlaylistKind = "m3u_url" | "xtream" | "manual";
@@ -125,10 +136,13 @@ export type PlayerSettings = { custom_pin: boolean; locked_groups: string[] };
 export type ClientProfile = { name: string; username: string; expires_at: string | null };
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public code?: string) {
     super(message);
   }
 }
+
+/** O fornecedor cortou a lista do cliente (vencida/bloqueada). */
+export const isListExpired = (err: unknown) => err instanceof ApiError && err.code === "list_expired";
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
@@ -138,7 +152,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, data.error || `Erro ${res.status}`);
+  if (!res.ok) throw new ApiError(res.status, data.error || `Erro ${res.status}`, data.code);
   return data as T;
 }
 

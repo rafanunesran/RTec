@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Link2, Loader2, MessageSquareText, Pencil, Plus, RefreshCw, Search, Trash2, Users, Wand2, Zap } from "lucide-react";
+import { Link2, Loader2, MessageSquareText, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, Users, Wand2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Client, type Source } from "@/lib/api";
 import { copy, formatDate } from "@/lib/utils";
@@ -13,7 +13,6 @@ type Form = {
   username: string;
   password: string;
   active: boolean;
-  expires_at: string;
   notes: string;
   source: Source;
 };
@@ -23,7 +22,6 @@ const emptyForm = (): Form => ({
   username: "",
   password: randomPass(),
   active: true,
-  expires_at: addDays(30),
   notes: "",
   source: emptySource(),
 });
@@ -32,24 +30,19 @@ function randomPass() {
   return Math.random().toString(36).slice(2, 10);
 }
 
-function addDays(days: number) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return toLocalInput(d.toISOString());
-}
-
-function toLocalInput(iso: string | null) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
+// A validade e conferida sozinha na lista do fornecedor, a cada login ou abertura do app do cliente.
 function status(c: Client) {
+  const s = c.list_status;
+  const title = [s?.reason, s?.last_error && `Ultima tentativa: ${s.last_error}`, s?.checked_at && `Conferida em ${formatDate(s.checked_at)}`].filter(Boolean).join(" · ");
   if (!c.active) return <Badge variant="warning">Bloqueado</Badge>;
-  if (!c.valid) return <Badge variant="danger">Expirado</Badge>;
-  return <Badge variant="success">Ativo</Badge>;
+  if (s?.state === "expired") return <span title={title}><Badge variant="danger">Lista expirada</Badge></span>;
+  if (s?.state === "active") return <span title={title}><Badge variant="success">Ativo</Badge></span>;
+  if (s?.state === "none") return <Badge variant="success">Ativo</Badge>;
+  return <span title={title || "Confere no próximo acesso do cliente"}><Badge variant="muted">Não conferida</Badge></span>;
 }
+
+/** Vencimento que o fornecedor informa (listas Xtream). */
+const expiry = (c: Client) => (c.expires_at ? formatDate(c.expires_at) : c.list_status?.state === "active" ? "Lista ativa" : "—");
 
 export default function Clients() {
   const [clients, setClients] = useState<Client[]>([]);
@@ -92,7 +85,6 @@ export default function Clients() {
       username: c.username,
       password: c.password,
       active: c.active,
-      expires_at: toLocalInput(c.expires_at),
       notes: c.notes,
       source: c.source ? { ...emptySource(), ...c.source } : emptySource(),
     });
@@ -108,7 +100,7 @@ export default function Clients() {
         (src.kind === "m3u_url" && !src.url.trim()) ||
         (src.kind === "xtream" && !src.xtream_server.trim() && !src.xtream_username.trim()) ||
         (src.kind === "manual" && !/#EXTINF/i.test(src.content));
-      const body = { ...form, source: blank ? null : src, expires_at: form.expires_at ? new Date(form.expires_at).toISOString() : null };
+      const body = { ...form, source: blank ? null : src };
       const saved = editing
         ? await api.put<Client>(`/api/clients/${editing.id}`, body)
         : await api.post<Client>("/api/clients", body);
@@ -161,8 +153,29 @@ export default function Clients() {
     load();
   };
 
+  const [checkingId, setCheckingId] = useState("");
+  const checkList = async (c: Client) => {
+    setCheckingId(c.id);
+    try {
+      const updated = await api.post<Client>(`/api/clients/${c.id}/check`);
+      setClients((list) => list.map((x) => (x.id === c.id ? { ...x, ...updated } : x)));
+      const s = updated.list_status?.state;
+      if (s === "expired") toast.error(`Lista expirada: ${updated.list_status?.reason}`);
+      else if (s === "active") toast.success("Lista ativa no fornecedor");
+      else if (updated.list_status?.last_error) toast.warning(`Não deu para conferir agora: ${updated.list_status.last_error}`);
+      else toast.info("Este cliente não tem lista própria para conferir");
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setCheckingId("");
+    }
+  };
+
   const actions = (c: Client) => (
     <div className="flex justify-end gap-1">
+      <Button size="icon-sm" variant="ghost" title="Conferir lista no fornecedor" aria-label="Conferir lista no fornecedor" disabled={checkingId === c.id} onClick={() => checkList(c)}>
+        {checkingId === c.id ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
+      </Button>
       <Button size="icon-sm" variant="ghost" title="Dados de acesso" aria-label="Dados de acesso" onClick={() => setLinksFor(c)}>
         <Link2 />
       </Button>
@@ -234,7 +247,7 @@ export default function Clients() {
                   <th className="px-4 py-3 font-semibold">Cliente</th>
                   <th className="px-4 py-3 font-semibold">Senha</th>
                   <th className="px-4 py-3 font-semibold">Status</th>
-                  <th className="px-4 py-3 font-semibold">Validade</th>
+                  <th className="px-4 py-3 font-semibold">Vencimento</th>
                   <th className="px-4 py-3 font-semibold">Lista</th>
                   <th className="hidden px-4 py-3 font-semibold lg:table-cell">Último acesso</th>
                   <th className="px-4 py-3" />
@@ -249,7 +262,7 @@ export default function Clients() {
                     </td>
                     <td className="px-4 py-3 font-mono text-xs">{c.password}</td>
                     <td className="px-4 py-3">{status(c)}</td>
-                    <td className="px-4 py-3 tabular-nums text-muted-foreground">{c.expires_at ? formatDate(c.expires_at) : "Sem validade"}</td>
+                    <td className="px-4 py-3 tabular-nums text-muted-foreground">{expiry(c)}</td>
                     <td className="px-4 py-3">{sourceBadge(c)}</td>
                     <td className="hidden px-4 py-3 text-muted-foreground lg:table-cell">{formatDate(c.last_access_at)}</td>
                     <td className="px-4 py-3">{actions(c)}</td>
@@ -274,8 +287,8 @@ export default function Clients() {
                     <div className="truncate font-mono">{c.password}</div>
                   </div>
                   <div className="min-w-0">
-                    <div className="text-muted-foreground">Validade</div>
-                    <div className="truncate">{c.expires_at ? formatDate(c.expires_at) : "Sem validade"}</div>
+                    <div className="text-muted-foreground">Vencimento</div>
+                    <div className="truncate">{expiry(c)}</div>
                   </div>
                   <div className="min-w-0">
                     <div className="mb-0.5 text-muted-foreground">Lista</div>
@@ -293,7 +306,7 @@ export default function Clients() {
         open={quickOpen}
         onClose={() => setQuickOpen(false)}
         title="Cliente rápido"
-        description="Cole o link da lista do fornecedor. O cliente é criado com o mesmo usuário, senha e validade da lista."
+        description="Cole o link da lista do fornecedor. O cliente é criado com o mesmo usuário e senha da lista, e a validade é conferida sozinha no fornecedor."
       >
         <form onSubmit={createQuick} className="space-y-4">
           <Field label="Link da lista">
@@ -316,7 +329,7 @@ export default function Clients() {
         </form>
       </Dialog>
 
-      <Dialog open={formOpen} onClose={() => setFormOpen(false)} title={editing ? "Editar cliente" : "Novo cliente"} description="Defina credenciais, validade e a lista do cliente." wide>
+      <Dialog open={formOpen} onClose={() => setFormOpen(false)} title={editing ? "Editar cliente" : "Novo cliente"} description="Defina credenciais e a lista do cliente. A validade é conferida sozinha na lista, a cada acesso." wide>
         <form onSubmit={save} className="space-y-5">
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Nome (opcional)">
@@ -331,16 +344,6 @@ export default function Clients() {
                 <Button type="button" variant="outline" size="icon" title="Gerar senha" aria-label="Gerar senha" onClick={() => setForm({ ...form, password: randomPass() })}>
                   <Wand2 />
                 </Button>
-              </div>
-            </Field>
-            <Field label="Validade" hint="Deixe vazio para não expirar">
-              <Input type="datetime-local" value={form.expires_at} onChange={(e) => setForm({ ...form, expires_at: e.target.value })} />
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {[1, 7, 30, 90, 365].map((d) => (
-                  <Button key={d} type="button" size="sm" variant="outline" onClick={() => setForm({ ...form, expires_at: addDays(d) })}>
-                    +{d}d
-                  </Button>
-                ))}
               </div>
             </Field>
             <div className="flex items-center justify-between gap-3 rounded-xl border px-4 py-3 sm:self-start">
