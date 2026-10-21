@@ -321,6 +321,19 @@ const MAX_M3U_ITEMS = 20000;
 /** Logos https vao direto; http passam pelo servidor (imagens sao pequenas). */
 const logoUrl = (clientId, url) => (!/^https?:\/\//i.test(url || "") ? "" : /^https:/i.test(url) ? url : proxyUrl(clientId, url));
 
+/** Ordenacoes do catalogo. "" = ordem do fornecedor. Sem dado (ano/nota 0) vai para o fim. */
+const collator = new Intl.Collator("pt-BR", { sensitivity: "base", numeric: true });
+const SORTS = {
+  az: (a, b) => collator.compare(a.name, b.name),
+  za: (a, b) => collator.compare(b.name, a.name),
+  recent: (a, b) => (b.added || 0) - (a.added || 0),
+  oldest: (a, b) => (a.added || Infinity) - (b.added || Infinity),
+  year_desc: (a, b) => (b.year || 0) - (a.year || 0) || collator.compare(a.name, b.name),
+  year_asc: (a, b) => (a.year || Infinity) - (b.year || Infinity) || collator.compare(a.name, b.name),
+  rating: (a, b) => (b.rating || 0) - (a.rating || 0) || collator.compare(a.name, b.name),
+};
+const sortItems = (list, sort) => (SORTS[sort] ? [...list].sort(SORTS[sort]) : list);
+
 /** Minusculas e sem acentos, para a busca achar "acao" em "Ação". */
 const fold = (t) => String(t).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
@@ -331,7 +344,7 @@ function xtreamChannel(c, item, group, app = false) {
   const mode = c.source?.playback || DEFAULT_PLAYBACK;
   const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
   if (item.kind === "series" && item.series_id) {
-    return { id: `s${item.series_id}`, series_id: item.series_id, name: item.name, group, logo: logoUrl(c.id, item.logo), src: "", type: "file", alt: "", alt_type: "", kind: "series", epg_id: "", playlist_id: "own" };
+    return { id: `s${item.series_id}`, series_id: item.series_id, name: item.name, group, logo: logoUrl(c.id, item.logo), src: "", type: "file", alt: "", alt_type: "", kind: "series", epg_id: "", playlist_id: "own", added: item.added, year: item.year, rating: item.rating };
   }
   return {
     id: hashId(c.id, item.kind, item.stream_id),
@@ -345,6 +358,9 @@ function xtreamChannel(c, item, group, app = false) {
     kind: item.kind,
     epg_id: item.kind === "live" ? `xt:${item.stream_id}` : "",
     playlist_id: "own",
+    ...(item.added ? { added: item.added } : {}),
+    ...(item.year ? { year: item.year } : {}),
+    ...(item.rating ? { rating: item.rating } : {}),
     // Ultimo recurso: se o link direto (app) falhar, tenta pelo servidor de video.
     fallback: !viaProxy(mode, item.url, app) ? proxyUrl(c.id, item.url) : "",
     ...(item.season ? { season: item.season, episode: item.episode } : {}),
@@ -783,10 +799,11 @@ export function createApp() {
       const names = new Map(cats.map((x) => [x.id, x.name]));
       const toChannel = (it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "", isApp(req));
       res.setHeader("Cache-Control", "no-store");
-      if (!limit) return res.json(list.map(toChannel));
+      const sorted = sortItems(list, String(req.query.sort || ""));
+      if (!limit) return res.json(sorted.map(toChannel));
       const skip = new Set(String(req.query.skip || "").split(",").filter(Boolean));
       const q = fold(String(req.query.q || "").trim());
-      const found = list.filter((it) => !skip.has(it.category_id) && (!q || fold(it.name).includes(q)));
+      const found = sorted.filter((it) => !skip.has(it.category_id) && (!q || fold(it.name).includes(q)));
       const offset = Math.max(0, Number(req.query.offset) || 0);
       res.json({ total: found.length, items: found.slice(offset, offset + limit).map(toChannel) });
     }),

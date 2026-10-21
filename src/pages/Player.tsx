@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, Search, Settings, Share, SquarePlus, Tv, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowUpDown, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, Search, Settings, Share, SquarePlus, Tv, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
@@ -25,6 +25,31 @@ type Page = "home" | "all" | "section";
 /** Minusculas e sem acentos (busca). */
 const fold = (t: string) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 const ALL_LIMIT = 24;
+
+/** Ordenacoes do catalogo ("" = ordem do fornecedor). Filmes e series tem ano e nota; canais, so o nome. */
+const SORT_OPTIONS: { key: string; label: string; vod?: boolean }[] = [
+  { key: "", label: "Padrão" },
+  { key: "az", label: "Nome (A → Z)" },
+  { key: "za", label: "Nome (Z → A)" },
+  { key: "recent", label: "Adicionados recentemente", vod: true },
+  { key: "oldest", label: "Adicionados há mais tempo", vod: true },
+  { key: "year_desc", label: "Lançamento (mais novos)", vod: true },
+  { key: "year_asc", label: "Lançamento (mais antigos)", vod: true },
+  { key: "rating", label: "Melhor avaliados", vod: true },
+];
+const collator = new Intl.Collator("pt-BR", { sensitivity: "base", numeric: true });
+const SORT_FN: Record<string, (a: Channel, b: Channel) => number> = {
+  az: (a, b) => collator.compare(a.name, b.name),
+  za: (a, b) => collator.compare(b.name, a.name),
+  recent: (a, b) => (b.added || 0) - (a.added || 0),
+  oldest: (a, b) => (a.added || Infinity) - (b.added || Infinity),
+  year_desc: (a, b) => (b.year || 0) - (a.year || 0) || collator.compare(a.name, b.name),
+  year_asc: (a, b) => (a.year || Infinity) - (b.year || Infinity) || collator.compare(a.name, b.name),
+  rating: (a, b) => (b.rating || 0) - (a.rating || 0) || collator.compare(a.name, b.name),
+};
+const sortList = (list: Channel[], sort: string) => (SORT_FN[sort] ? [...list].sort(SORT_FN[sort]) : list);
+/** "2023 · ★ 8.4" embaixo do poster. */
+const metaLine = (c: Channel) => [c.year || "", c.rating ? `★ ${c.rating.toFixed(1)}` : ""].filter(Boolean).join(" · ") || undefined;
 
 const sections: { key: Section; label: string; icon: typeof Tv }[] = [
   { key: "live", label: "TV ao vivo", icon: Radio },
@@ -190,6 +215,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [xtItems, setXtItems] = useState<Record<string, Channel[] | "loading" | { error: string }>>({}); // Xtream: por secao/categoria
   const [settings, setSettings] = useState<PlayerSettings>({ custom_pin: false, locked_groups: [] });
   const [page, setPage] = useState<Page>("home");
+  const [sorts, setSorts] = useState<Record<string, string>>(() => load("rtec:sort", {}));
   const [section, setSection] = useState<Section>("live");
   const [queue, setQueue] = useState<Channel[] | null>(null); // episodios da serie em reproducao (para "proximo")
   const [allQuery, setAllQuery] = useState("");
@@ -334,15 +360,22 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   // Xtream: "Todos" de filmes e series vem do servidor em paginas; o resto, por categoria
   // (ao vivo: todos os canais de uma vez, filtrados aqui).
   const pagedAll = xt && section !== "live" && !group;
-  const xtKey = xt && !special && !pagedAll ? `${section}:${section === "live" ? "" : group}` : "";
+  const sort = sorts[section] ?? "";
+  const setSort = (v: string) =>
+    setSorts((old) => {
+      const next = { ...old, [section]: v };
+      save("rtec:sort", next);
+      return next;
+    });
+  const xtKey = xt && !special && !pagedAll ? `${section}:${section === "live" ? "" : group}:${sort}` : "";
   const skipIds = useMemo(() => groups.filter((g) => isLocked(g.name)).map((g) => g.key).join(","), [groups, isLocked]);
-  const pageKey = pagedAll ? `${section}|${searchTerm}|${skipIds}` : "";
+  const pageKey = pagedAll ? `${section}|${searchTerm}|${skipIds}|${sort}` : "";
 
   const loadPage = useCallback(
     (key: string, offset: number) => {
-      const [sec, q, skip] = key.split("|");
+      const [sec, q, skip, srt] = key.split("|");
       setXtPage((p) => (offset && p?.key === key ? { ...p, loading: true } : { key, items: [], total: 0, loading: true, error: "" }));
-      const params = new URLSearchParams({ section: sec, limit: String(PAGE), offset: String(offset), q, skip });
+      const params = new URLSearchParams({ section: sec, limit: String(PAGE), offset: String(offset), q, skip, sort: srt });
       api
         .get<{ total: number; items: Channel[] }>(`/api/player/xtream/items?${params}`)
         .then((res) =>
@@ -362,9 +395,9 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   useEffect(() => {
     if (!xtKey || xtItems[xtKey]) return;
     setXtItems((m) => ({ ...m, [xtKey]: "loading" }));
-    const [sec, cat] = xtKey.split(":");
+    const [sec, cat, srt] = xtKey.split(":");
     api
-      .get<Channel[]>(`/api/player/xtream/items?section=${sec}&category=${encodeURIComponent(cat)}`)
+      .get<Channel[]>(`/api/player/xtream/items?section=${sec}&category=${encodeURIComponent(cat)}&sort=${srt}`)
       .then((list) => setXtItems((m) => ({ ...m, [xtKey]: list })))
       .catch((err) => {
         if (!handleAuthError(err)) setXtItems((m) => ({ ...m, [xtKey]: { error: (err as Error).message } }));
@@ -391,8 +424,9 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
         (c) => c.kind === section && (!playlistId || c.playlist_id === playlistId) && (group ? c.group === group : !isLocked(c.group)),
       );
     }
+    if (!xt || special) list = sortList(list, sort);
     return q ? list.filter((c) => c.name.toLowerCase().includes(q)) : list;
-  }, [group, favorites, history, section, pagedAll, pageState, xt, xtState, groups, isLocked, channels, playlistId, query]);
+  }, [group, favorites, history, section, pagedAll, pageState, xt, xtState, groups, isLocked, channels, playlistId, query, sort, special]);
 
   // Series: no Xtream cada item e uma serie (episodios vem da API); nas listas M3U, agrupa pelo nome.
   const seriesList = useMemo(() => {
@@ -777,18 +811,21 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-          <div className="flex items-center gap-2">
-            <CategoryMenu
-              label={groupLabel}
-              value={group}
-              options={menuOptions}
-              onSelect={(o) => (o.locked ? withPin(() => setGroup(o.key), o.name) : setGroup(o.key))}
-            />
-            {group === HISTORY && history.some((h) => h.kind === section) && (
-              <Button variant="ghost" size="sm" onClick={clearHistory}>
-                Limpar
-              </Button>
-            )}
+          <div className="flex flex-col gap-2 landscape:flex-row landscape:items-center">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <CategoryMenu
+                label={groupLabel}
+                value={group}
+                options={menuOptions}
+                onSelect={(o) => (o.locked ? withPin(() => setGroup(o.key), o.name) : setGroup(o.key))}
+              />
+              {group === HISTORY && history.some((h) => h.kind === section) && (
+                <Button variant="ghost" size="sm" onClick={clearHistory}>
+                  Limpar
+                </Button>
+              )}
+            </div>
+            {!series && <SortSelect value={sort} onChange={setSort} vod={section !== "live"} />}
           </div>
 
           <div>
@@ -880,7 +917,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                 ))}
               </ul>
             ) : section === "movie" || special ? (
-              <PosterGrid items={visible.slice(0, cap).map((c) => ({ ...c, progress: fraction(c.id) }))} activeId={current?.id} onSelect={(c) => openItem(c)} />
+              <PosterGrid items={visible.slice(0, cap).map((c) => ({ ...c, progress: fraction(c.id), sub: metaLine(c) }))} activeId={current?.id} onSelect={(c) => openItem(c)} />
             ) : (
               <PosterGrid items={seriesList.slice(0, cap).map((s) => ({ ...s, id: s.key }))} onSelect={openSeries} />
             )}
@@ -1430,5 +1467,29 @@ function AllPage({
         })
       )}
     </div>
+  );
+}
+
+/** Seletor de ordenacao (lista nativa do sistema: funciona bem no celular e no controle da TV Box). */
+function SortSelect({ value, onChange, vod }: { value: string; onChange: (v: string) => void; vod: boolean }) {
+  const options = SORT_OPTIONS.filter((o) => vod || !o.vod);
+  return (
+    <label className="relative flex h-10 shrink-0 items-center gap-2 rounded-lg border bg-card/60 px-3 text-sm landscape:w-64">
+      <ArrowUpDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Ordenar</span>
+      <select
+        aria-label="Ordenar"
+        value={options.some((o) => o.key === value) ? value : ""}
+        onChange={(e) => onChange(e.target.value)}
+        className="min-w-0 flex-1 cursor-pointer appearance-none truncate bg-transparent pr-6 font-semibold outline-none"
+      >
+        {options.map((o) => (
+          <option key={o.key || "padrao"} value={o.key} className="bg-card text-foreground">
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-3 h-4 w-4 text-muted-foreground" />
+    </label>
   );
 }

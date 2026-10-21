@@ -73,6 +73,22 @@ export async function categories(creds, section) {
   return (Array.isArray(list) ? list : []).map((c) => ({ id: String(c.category_id), name: String(c.category_name || "").trim() }));
 }
 
+/** Ano de lancamento: campo year, data de lancamento ou "(2019)" no nome. */
+function yearOf(it) {
+  for (const v of [it.year, it.release_date, it.releaseDate, it.releasedate]) {
+    const m = /(19|20)\d{2}/.exec(String(v ?? ""));
+    if (m) return Number(m[0]);
+  }
+  const m = /\((19|20)\d{2}\)/.exec(String(it.name ?? ""));
+  return m ? Number(m[0].slice(1, 5)) : 0;
+}
+
+/** Dados para ordenar: quando foi adicionado (s), ano e nota (0 a 10). */
+function sortInfo(it) {
+  const rating = Number(it.rating) || Number(it.rating_5based) * 2 || 0;
+  return { added: Number(it.added) || Number(it.last_modified) || 0, year: yearOf(it), rating: Math.round(rating * 10) / 10 };
+}
+
 const ext = (v, fallback) => (/^[a-z0-9]{2,5}$/i.test(String(v || "")) ? String(v).toLowerCase() : fallback);
 
 /** Itens de uma categoria (ou todos os canais ao vivo, sem categoria) ja com o link do video. */
@@ -83,7 +99,7 @@ export async function items(creds, section, categoryId) {
   const base = `${creds.server}/${section === "live" ? "live" : section === "movie" ? "movie" : "series"}/${encodeURIComponent(creds.username)}/${encodeURIComponent(creds.password)}`;
   return (Array.isArray(list) ? list : []).map((it) => {
     if (section === "series") {
-      return { kind: "series", series_id: String(it.series_id), name: it.name || it.title || "", logo: it.cover || "", category_id: String(it.category_id ?? "") };
+      return { kind: "series", series_id: String(it.series_id), name: it.name || it.title || "", logo: it.cover || "", category_id: String(it.category_id ?? ""), ...sortInfo(it) };
     }
     if (section === "movie") {
       return {
@@ -93,6 +109,7 @@ export async function items(creds, section, categoryId) {
         logo: it.stream_icon || "",
         url: `${base}/${it.stream_id}.${ext(it.container_extension, "mp4")}`,
         category_id: String(it.category_id ?? ""),
+        ...sortInfo(it),
       };
     }
     return {
@@ -103,6 +120,7 @@ export async function items(creds, section, categoryId) {
       url: `${base}/${it.stream_id}.ts`,
       alt_url: `${base}/${it.stream_id}.m3u8`,
       category_id: String(it.category_id ?? ""),
+      added: Number(it.added) || 0,
     };
   });
 }

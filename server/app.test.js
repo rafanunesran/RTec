@@ -42,7 +42,11 @@ function xtreamApi(req, res) {
         ].filter((x) => !q.get("category_id") || x.category_id === q.get("category_id")),
       );
     case "get_vod_streams":
-      return json([{ stream_id: 50, name: "Filme Teste", stream_icon: "https://img.example/f.jpg", container_extension: "mp4", category_id: "20" }]);
+      return json([
+        { stream_id: 50, name: "Filme Teste", stream_icon: "https://img.example/f.jpg", container_extension: "mp4", category_id: "20", added: "1700000000", year: "2015", rating: "6.1" },
+        { stream_id: 51, name: "Abelha Rainha", stream_icon: "", container_extension: "mp4", category_id: "20", added: "1800000000", release_date: "2023-04-01", rating: "8.4" },
+        { stream_id: 52, name: "Zebra (1999)", stream_icon: "", container_extension: "mp4", category_id: "20", added: "1600000000", rating_5based: "4.5" },
+      ]);
     case "get_series":
       return json([{ series_id: 70, name: "Serie Teste", cover: "https://img.example/s.jpg", category_id: "30" }]);
     case "get_series_info":
@@ -543,4 +547,22 @@ test("renova links expirados do historico, so os do proprio cliente", async () =
   cookie = "";
   await call("POST", "/api/player/login", { username: "outro", password: "pw" });
   assert.equal((await call("POST", "/api/player/resign", { urls: [old] })).body.urls[0], "");
+});
+
+test("ordenacao do catalogo: alfabetica, adicionados, ano e nota", async () => {
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
+  const names = async (q) => (await call("GET", `/api/player/xtream/items?section=movie&${q}`)).body;
+  const paged = async (sort) => (await names(`limit=10&sort=${sort}`)).items.map((m) => m.name);
+  assert.deepEqual(await paged(""), ["Filme Teste", "Abelha Rainha", "Zebra (1999)"], "padrao = ordem do fornecedor");
+  assert.deepEqual(await paged("az"), ["Abelha Rainha", "Filme Teste", "Zebra (1999)"]);
+  assert.deepEqual(await paged("za"), ["Zebra (1999)", "Filme Teste", "Abelha Rainha"]);
+  assert.deepEqual(await paged("recent"), ["Abelha Rainha", "Filme Teste", "Zebra (1999)"]);
+  assert.deepEqual(await paged("oldest"), ["Zebra (1999)", "Filme Teste", "Abelha Rainha"]);
+  assert.deepEqual(await paged("year_desc"), ["Abelha Rainha", "Filme Teste", "Zebra (1999)"], "ano do release_date e do nome");
+  assert.deepEqual(await paged("rating"), ["Zebra (1999)", "Abelha Rainha", "Filme Teste"], "nota de 5 estrelas vira 0-10");
+  // por categoria (sem paginas) tambem ordena, e o ano/nota vao para o reprodutor
+  const cat = await names("category=20&sort=year_asc");
+  assert.deepEqual(cat.map((m) => [m.name, m.year]), [["Zebra (1999)", 1999], ["Filme Teste", 2015], ["Abelha Rainha", 2023]]);
+  assert.equal(cat[2].rating, 8.4);
 });

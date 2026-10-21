@@ -87,6 +87,10 @@ export type Channel = {
   epg_id: string;
   playlist_id: string;
   series_id?: string;
+  /** Para ordenar: quando entrou no catalogo (unix s), ano de lancamento e nota (0 a 10). */
+  added?: number;
+  year?: number;
+  rating?: number;
   /** Episodio: id da serie a que pertence (para achar o proximo). */
   parent_series?: string;
   season?: number;
