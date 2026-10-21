@@ -9,6 +9,7 @@ import Logo from "@/components/Logo";
 import PlayerOverlay from "@/components/player/PlayerOverlay";
 import { WATCHED_AT, fraction, getProgress, useProgressVersion } from "@/lib/progress";
 import { listChanged, onRemoteList, startSync } from "@/lib/sync";
+import { refreshChannels } from "@/lib/links";
 import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
 
@@ -206,7 +207,14 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [history, setHistory] = useState<Channel[]>(() => load("rtec:history", []));
   // Favoritos, historico e progresso acompanham a conta: o que fizer aqui aparece nos outros aparelhos.
   useEffect(() => {
-    const off = onRemoteList((key, items) => (key === "favorites" ? setFavorites(items) : setHistory(items)));
+    const off = onRemoteList((key, items) => {
+      const set = key === "favorites" ? setFavorites : setHistory;
+      set(items);
+      // Vindo de outro aparelho pode trazer links do servidor de video ja vencidos: renova.
+      refreshChannels(items)
+        .then((fresh) => fresh !== items && set(fresh))
+        .catch(() => {});
+    });
     const stop = startSync(profile.username);
     return () => {
       off();
@@ -256,6 +264,26 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
         setData({ playlists: [], channels: [], errors: ["Sem conexao com o servidor"] });
       });
   }, [handleAuthError]);
+
+  // Ao entrar: renova os links guardados no historico e nos favoritos (logos e videos).
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [h, f] = await Promise.all([refreshChannels(load<Channel[]>("rtec:history", [])), refreshChannels(load<Channel[]>("rtec:favs", []))]);
+        if (!alive) return;
+        setHistory(h);
+        save("rtec:history", h);
+        setFavorites(f);
+        save("rtec:favs", f);
+      } catch {
+        /* sem conexao: tenta de novo na proxima vez */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     loadAll();
@@ -419,13 +447,17 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     return () => clearTimeout(t);
   }, [epgIds]);
 
-  const withPin = (fn: () => void, groupName: string) => {
+  const withPin = (fn: () => void | Promise<void>, groupName: string) => {
     if (isLocked(groupName)) setPinFor(() => fn);
     else fn();
   };
 
-  const play = (c: Channel, list?: Channel[] | null) =>
-    withPin(() => {
+  const play = (c0: Channel, list?: Channel[] | null) =>
+    withPin(async () => {
+      // Itens guardados (historico, favoritos) podem ter o link do servidor de video vencido: renova antes.
+      const c = await refreshChannels([c0])
+        .then((r) => r[0])
+        .catch(() => c0);
       setCurrent(c);
       if (list !== undefined) setQueue(list);
       setHistory((old) => {
@@ -433,7 +465,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
         saveList("history", next);
         return next;
       });
-    }, c.group);
+    }, c0.group);
 
   // Episodio aberto pelo historico ou pela busca: carrega a serie para saber qual e o proximo.
   useEffect(() => {

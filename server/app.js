@@ -145,8 +145,8 @@ function signUrl(clientId, exp, url) {
   return crypto.createHmac("sha256", proxySecret()).update(`${clientId}|${exp}|${url}`).digest("base64url").slice(0, 32);
 }
 
-function verifySignature(clientId, exp, url, sig) {
-  if (!clientId || !(Number(exp) > Date.now() / 1000)) return false;
+function verifySignature(clientId, exp, url, sig, { allowExpired = false } = {}) {
+  if (!clientId || !Number(exp) || (!allowExpired && !(Number(exp) > Date.now() / 1000))) return false;
   const expected = Buffer.from(signUrl(clientId, exp, url));
   const given = Buffer.from(String(sig));
   return expected.length === given.length && crypto.timingSafeEqual(expected, given);
@@ -919,6 +919,30 @@ export function createApp() {
       await db().clients.update(req.client.id, { locked_groups: clean });
       forgetClient(req.client.id);
       res.json({ locked_groups: clean });
+    }),
+  );
+
+  // Renova links do proxy guardados no aparelho (historico, favoritos, "continuar assistindo"), que
+  // expiram em 12 h. So renova links que este servidor assinou para este mesmo cliente.
+  app.post(
+    "/api/player/resign",
+    requireClient,
+    wrap(async (req, res) => {
+      const urls = Array.isArray(req.body?.urls) ? req.body.urls.slice(0, 50) : [];
+      const out = urls.map((raw) => {
+        const link = String(raw || "");
+        let parsed;
+        try {
+          parsed = new URL(link, "http://local");
+        } catch {
+          return link;
+        }
+        if (!parsed.pathname.endsWith("/api/player/proxy")) return link; // link direto: nao expira
+        const { u, c, e, s } = Object.fromEntries(parsed.searchParams);
+        if (c !== req.client.id || !u || !verifySignature(c, e, u, s, { allowExpired: true })) return "";
+        return proxyUrl(req.client.id, u);
+      });
+      res.json({ urls: out });
     }),
   );
 

@@ -509,4 +509,35 @@ test("sincronizacao: favoritos, historico e ponto onde parou valem em qualquer a
   await call("DELETE", `/api/clients/${edu.id}`);
   const { getStore } = await import("./store/index.js");
   assert.equal(await getStore().sync.get(edu.id), null);
+test("renova links expirados do historico, so os do proprio cliente", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const port = source.address().port;
+  await call("POST", "/api/clients", { username: "hist", password: "pw", source: { kind: "m3u_url", url: `http://127.0.0.1:${port}/hls.m3u` } });
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "hist", password: "pw" });
+
+  // Link gerado "ha 13 horas" (relogio do servidor atrasado) = link guardado no historico de ontem
+  const realNow = Date.now;
+  Date.now = () => realNow() - 13 * 3600 * 1000;
+  let old;
+  try {
+    old = (await call("GET", "/api/player/channels")).body.channels.find((c) => c.kind === "live").src;
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal((await call("GET", old)).status, 403, "link de ontem esta expirado");
+
+  const [fresh, tampered, direct] = (
+    await call("POST", "/api/player/resign", { urls: [old, old.replace(/([?&]s=)[^&]+/, "$1xxxx"), "http://direto.com/a.ts"] })
+  ).body.urls;
+  assert.notEqual(fresh, old);
+  assert.equal((await call("GET", fresh)).status, 200, "link renovado volta a tocar");
+  assert.equal(tampered, "", "link adulterado nao e renovado");
+  assert.equal(direct, "http://direto.com/a.ts", "link direto volta igual");
+
+  // outro cliente nao consegue renovar o link deste
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "edu", password: "pw" });
+  assert.equal((await call("POST", "/api/player/resign", { urls: [old] })).body.urls[0], "");
 });

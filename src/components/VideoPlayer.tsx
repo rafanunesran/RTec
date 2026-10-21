@@ -57,14 +57,45 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
 
 /** Mensagem de erro com o motivo real (codigo HTTP do fornecedor quando houver). */
 function describe(code: number | undefined, detail: string) {
-  if (code === 401 || code === 403) return `O fornecedor recusou o acesso agora (${code}). Aguarde alguns minutos e tente de novo.`;
+  if (code === 401 || code === 403) return `O fornecedor recusou o acesso agora (${code}). Feche outros aparelhos usando a mesma conta e tente em 1 minuto.`;
+  if (code === 503) return "O fornecedor está sem este conteúdo disponível agora (503). Tente de novo em instantes.";
   if (code === 404) return "Este conteudo nao existe mais no fornecedor (404).";
   if (code && code >= 500) return `O servidor do fornecedor esta com problema (${code}). Tente mais tarde.`;
   return `Canal fora do ar ou indisponivel no momento. (${detail}${code ? ` ${code}` : ""})`;
 }
 
+/** Descobre por que o arquivo nao abriu: pede o primeiro byte e olha a resposta do servidor. */
+async function probe(src: string): Promise<number> {
+  try {
+    const r = await fetch(src, { headers: { Range: "bytes=0-0" }, signal: AbortSignal.timeout(8000) });
+    void r.body?.cancel();
+    return r.status;
+  } catch {
+    return 0;
+  }
+}
+
 function native(video: HTMLVideoElement, src: string, onFail: (msg: string) => void): Stop {
-  const onError = () => onFail("Nao foi possivel reproduzir este video neste aparelho.");
+  let retried = false;
+  const onError = async () => {
+    const code = video.error?.code; // 2 = rede, 3 = decodificacao, 4 = formato/fonte
+    const status = await probe(src);
+    // Falha passageira do fornecedor ("stream temporarily unavailable"): tenta de novo uma vez.
+    if (!retried && (status === 503 || status === 429 || status === 502 || status === 504 || code === 2)) {
+      retried = true;
+      const at = video.currentTime;
+      setTimeout(() => {
+        video.src = src;
+        if (at > 0) video.currentTime = at;
+        video.play().catch(() => {});
+      }, 3000);
+      return;
+    }
+    if (status === 403 && /\/api\/player\/proxy/.test(src)) onFail("O link deste vídeo expirou. Toque em Tentar novamente.");
+    else if (status && (status < 200 || status >= 300)) onFail(describe(status, "arquivo"));
+    else if (code === 3 || code === 4) onFail("Este aparelho não consegue tocar o formato deste vídeo (áudio ou vídeo incompatível).");
+    else onFail("Não foi possível reproduzir este vídeo agora. Tente novamente.");
+  };
   video.addEventListener("error", onError);
   video.src = src;
   return () => {
