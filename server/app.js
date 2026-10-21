@@ -357,6 +357,42 @@ function requireXtream(c) {
   return creds;
 }
 
+// ---------- Sincronizacao entre aparelhos ----------
+// Um documento por cliente (colecao player_sync), fora do cadastro, para nao invalidar o cache de clientes.
+const MAX_FAVORITES = 500;
+const MAX_HISTORY = 60;
+const MAX_PROGRESS = 400;
+const MAX_SYNC_BYTES = 900 * 1024; // um documento do Firestore aceita ate 1 MB
+const CHANNEL_TEXT = ["id", "name", "group", "logo", "src", "type", "kind", "epg_id", "playlist_id", "series_id", "parent_series", "alt", "alt_type", "fallback"];
+
+/** Guarda so os campos conhecidos de um canal/filme/serie vindo do aparelho. */
+function cleanChannel(c) {
+  if (!c || typeof c !== "object" || typeof c.id !== "string" || !c.id) return null;
+  const out = {};
+  for (const k of CHANNEL_TEXT) if (typeof c[k] === "string") out[k] = c[k].slice(0, 2000);
+  for (const k of ["season", "episode"]) if (Number.isFinite(c[k])) out[k] = c[k];
+  return out;
+}
+
+const dedupe = (items) => items.filter((c, i) => items.findIndex((o) => o.id === c.id) === i);
+
+function cleanProgress(p) {
+  const [pos, dur, t] = [Number(p?.p), Number(p?.d), Number(p?.t)];
+  if (![pos, dur, t].every(Number.isFinite) || dur <= 0 || pos < 0) return null;
+  return { p: Math.round(Math.min(pos, Number.MAX_SAFE_INTEGER)), d: Math.round(dur), t: Math.round(t) };
+}
+
+async function loadSync(clientId) {
+  const doc = (await getStore().sync.get(clientId)) || {};
+  return {
+    favorites: doc.favorites || [],
+    favorites_t: doc.favorites_t || 0,
+    history: doc.history || [],
+    history_t: doc.history_t || 0,
+    progress: doc.progress || {},
+  };
+}
+
 const checkPin = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pin || ""), c.parental_pin_hash) : String(pin || "") === DEFAULT_PIN);
 
 export function createApp() {
@@ -549,6 +585,7 @@ export function createApp() {
     "/api/clients/:id",
     requireAdmin,
     wrap(async (req, res) => {
+      await db().sync.delete(req.params.id);
       await db().clients.delete(req.params.id);
       forgetClient(req.params.id);
       res.json({ ok: true });
@@ -796,6 +833,55 @@ export function createApp() {
         }
       }
       res.json({ ...out, ...(urls.size ? await nowNext([...urls], ids) : {}) });
+    }),
+  );
+
+  // ---------- Sincronizacao entre aparelhos (favoritos, historico e ponto onde parou) ----------
+  app.get(
+    "/api/player/sync",
+    requireClient,
+    wrap(async (req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await loadSync(req.client.id));
+    }),
+  );
+
+  // Recebe so o que mudou no aparelho e devolve o estado completo da conta.
+  // Listas: vale a ultima enviada (o servidor carimba a hora). Progresso: por item, vale o mais recente.
+  // merge: true (primeira sincronizacao de um aparelho antigo) junta as listas em vez de substituir.
+  app.put(
+    "/api/player/sync",
+    requireClient,
+    wrap(async (req, res) => {
+      const body = req.body || {};
+      const s = await loadSync(req.client.id);
+      let changed = false;
+      for (const [key, max] of [["favorites", MAX_FAVORITES], ["history", MAX_HISTORY]]) {
+        if (!Array.isArray(body[key])) continue;
+        const items = body[key].map(cleanChannel).filter(Boolean);
+        const next = body.merge ? [...s[key], ...items.filter((i) => !s[key].some((o) => o.id === i.id))] : items;
+        s[key] = dedupe(next).slice(0, max);
+        s[`${key}_t`] = Date.now();
+        changed = true;
+      }
+      if (body.progress && typeof body.progress === "object") {
+        for (const [id, p] of Object.entries(body.progress).slice(0, MAX_PROGRESS)) {
+          const entry = cleanProgress(p);
+          if (!entry || id.length > 200 || (s.progress[id] && s.progress[id].t >= entry.t)) continue;
+          s.progress[id] = entry;
+          changed = true;
+        }
+        const ids = Object.keys(s.progress);
+        if (ids.length > MAX_PROGRESS) {
+          ids.sort((a, b) => s.progress[a].t - s.progress[b].t);
+          for (const old of ids.slice(0, ids.length - MAX_PROGRESS)) delete s.progress[old];
+        }
+      }
+      if (changed) {
+        if (JSON.stringify(s).length > MAX_SYNC_BYTES) throw new HttpError(413, "Muitos favoritos salvos. Remova alguns e tente de novo.");
+        await db().sync.set(req.client.id, s);
+      }
+      res.json(s);
     }),
   );
 

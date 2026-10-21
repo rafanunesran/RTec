@@ -462,3 +462,51 @@ test("servidor de video separado (Oracle) aceita os links assinados pelo painel"
     proxy.kill();
   }
 });
+
+test("sincronizacao: favoritos, historico e ponto onde parou valem em qualquer aparelho da conta", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  await call("POST", "/api/clients", { username: "edu", password: "pw" });
+  const filme = { id: "m1", name: "Filme", group: "Acao", logo: "", src: "http://a/1.mp4", type: "file", kind: "movie", epg_id: "", playlist_id: "own", alt: "", alt_type: "", hack: "x" };
+  const canal = { ...filme, id: "c1", name: "Canal", kind: "live" };
+
+  // Aparelho 1
+  cookie = "";
+  assert.equal((await call("GET", "/api/player/sync")).status, 401);
+  await call("POST", "/api/player/login", { username: "edu", password: "pw" });
+  const empty = (await call("GET", "/api/player/sync")).body;
+  assert.deepEqual(empty, { favorites: [], favorites_t: 0, history: [], history_t: 0, progress: {} });
+  const saved = await call("PUT", "/api/player/sync", {
+    favorites: [filme, canal, filme, { nope: 1 }],
+    history: [canal],
+    progress: { m1: { p: 1200.4, d: 5400, t: 1000 }, ruim: { p: "x" } },
+  });
+  assert.deepEqual(saved.body.favorites.map((f) => f.id), ["m1", "c1"]);
+  assert.equal(saved.body.favorites[0].hack, undefined);
+  assert.ok(saved.body.favorites_t > 0);
+  assert.deepEqual(saved.body.progress, { m1: { p: 1200, d: 5400, t: 1000 } });
+
+  // Aparelho 2 (outra sessao, mesma conta): ve tudo e continua de onde parou
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "edu", password: "pw" });
+  const other = (await call("GET", "/api/player/sync")).body;
+  assert.deepEqual(other.favorites.map((f) => f.id), ["m1", "c1"]);
+  assert.deepEqual(other.history.map((f) => f.id), ["c1"]);
+  assert.equal(other.progress.m1.p, 1200);
+
+  // Progresso mais antigo nao sobrescreve o mais novo; lista nova substitui; merge junta
+  const next = await call("PUT", "/api/player/sync", { favorites: [canal], progress: { m1: { p: 10, d: 5400, t: 500 }, m2: { p: 60, d: 100, t: 2000 } } });
+  assert.deepEqual(next.body.favorites.map((f) => f.id), ["c1"]);
+  assert.equal(next.body.progress.m1.p, 1200);
+  assert.equal(next.body.progress.m2.p, 60);
+  const merged = await call("PUT", "/api/player/sync", { merge: true, favorites: [filme, canal] });
+  assert.deepEqual(merged.body.favorites.map((f) => f.id), ["c1", "m1"]);
+
+  // Cliente apagado: some a sincronizacao junto
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const edu = (await call("GET", "/api/clients")).body.find((c) => c.username === "edu");
+  await call("DELETE", `/api/clients/${edu.id}`);
+  const { getStore } = await import("./store/index.js");
+  assert.equal(await getStore().sync.get(edu.id), null);
+});

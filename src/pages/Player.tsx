@@ -8,6 +8,7 @@ import { Button, Dialog, EmptyState, Field, Input, Select, Skeleton } from "@/co
 import Logo from "@/components/Logo";
 import PlayerOverlay from "@/components/player/PlayerOverlay";
 import { WATCHED_AT, fraction, getProgress, useProgressVersion } from "@/lib/progress";
+import { listChanged, onRemoteList, startSync } from "@/lib/sync";
 import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
 
@@ -37,6 +38,12 @@ function load<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/** Salva favoritos/historico no aparelho e agenda o envio para a conta (outros aparelhos). */
+function saveList(key: "favorites" | "history", items: Channel[]) {
+  save(key === "favorites" ? "rtec:favs" : "rtec:history", items);
+  listChanged(key);
 }
 
 function save(key: string, value: unknown) {
@@ -197,6 +204,15 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const [series, setSeries] = useState<OpenSeries | null>(null);
   const [favorites, setFavorites] = useState<Channel[]>(() => load("rtec:favs", []));
   const [history, setHistory] = useState<Channel[]>(() => load("rtec:history", []));
+  // Favoritos, historico e progresso acompanham a conta: o que fizer aqui aparece nos outros aparelhos.
+  useEffect(() => {
+    const off = onRemoteList((key, items) => (key === "favorites" ? setFavorites(items) : setHistory(items)));
+    const stop = startSync(profile.username);
+    return () => {
+      off();
+      stop();
+    };
+  }, [profile.username]);
   const [xtPage, setXtPage] = useState<XtPage | null>(null); // Xtream: "Todos" de filmes/series, em paginas
   const [searchTerm, setSearchTerm] = useState("");
   const [unlocked, setUnlocked] = useState(false);
@@ -414,7 +430,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
       if (list !== undefined) setQueue(list);
       setHistory((old) => {
         const next = [c, ...old.filter((h) => h.id !== c.id)].slice(0, HISTORY_MAX);
-        save("rtec:history", next);
+        saveList("history", next);
         return next;
       });
     }, c.group);
@@ -586,7 +602,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     const item = favItem(c);
     const next = isFavorite(item.id) ? favorites.filter((f) => f.id !== item.id) : [...favorites, item];
     setFavorites(next);
-    save("rtec:favs", next);
+    saveList("favorites", next);
     if (item !== c) toast.success(isFavorite(item.id) ? "Série removida dos favoritos" : "Série adicionada aos favoritos");
   };
 
@@ -604,7 +620,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const clearHistory = () => {
     const next = history.filter((h) => h.kind !== section);
     setHistory(next);
-    save("rtec:history", next);
+    saveList("history", next);
   };
 
   const groupLabel =
@@ -696,7 +712,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                 }}
                 onClear={() => {
                   setHistory([]);
-                  save("rtec:history", []);
+                  saveList("history", []);
                 }}
                 currentId={current?.id}
                 isFavorite={(id) => isFav(history.find((h) => h.id === id) ?? ({ id } as Channel))}
