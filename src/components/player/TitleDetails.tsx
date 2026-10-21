@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ArrowLeft, Film, Heart, Play, RotateCcw, Star } from "lucide-react";
+import { ArrowLeft, Film, Heart, Play, RotateCcw, Sparkles, Star } from "lucide-react";
 import { api, type Channel, type TitleInfo } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button, Skeleton } from "@/components/ui";
@@ -137,6 +137,84 @@ export function TitleHeader({ kind, info, name, logo, actions }: { kind: "movie"
   );
 }
 
+const recCache = new Map<string, Channel[]>();
+
+/** Titulos semelhantes do catalogo do cliente (genero, direcao, elenco, ano e nota; a conta e no servidor). */
+export function Recommendations({
+  kind,
+  id,
+  name,
+  year,
+  skip,
+  onOpen,
+}: {
+  kind: "movie" | "series";
+  id: string | undefined;
+  name: string;
+  year?: number;
+  skip?: string;
+  onOpen: (c: Channel) => void;
+}) {
+  const key = `${kind}|${id || ""}|${skip || ""}`;
+  const [items, setItems] = useState<Channel[] | undefined>(() => recCache.get(key));
+  useEffect(() => {
+    if (!id) return setItems([]);
+    if (recCache.has(key)) return setItems(recCache.get(key));
+    setItems(undefined);
+    let alive = true;
+    const q = new URLSearchParams({ kind, id, name, ...(year ? { year: String(year) } : {}), ...(skip ? { skip } : {}) });
+    api
+      .get<Channel[]>(`/api/player/recommend?${q}`)
+      .then((r) => {
+        recCache.set(key, r);
+        if (alive) setItems(r);
+      })
+      .catch(() => alive && setItems([]));
+    return () => {
+      alive = false;
+    };
+  }, [key, kind, id, name, year, skip]);
+
+  if (items && !items.length) return null;
+  return (
+    <section className="space-y-2 pt-2">
+      <div className="px-1">
+        <h3 className="flex items-center gap-2 text-base font-bold tracking-tight">
+          <Sparkles className="h-4 w-4 text-primary" /> {kind === "series" ? "Séries semelhantes" : "Filmes semelhantes"}
+        </h3>
+        <p className="text-xs text-muted-foreground">Pelo gênero, direção, elenco, ano e nota deste título.</p>
+      </div>
+      <div className="-mx-3 flex snap-x gap-3 overflow-x-auto px-3 pb-2 [scrollbar-width:none] sm:-mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden">
+        {items === undefined
+          ? Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="w-28 shrink-0 sm:w-36">
+                <Skeleton className="aspect-[2/3] w-full rounded-xl" />
+                <Skeleton className="mt-2 h-3 w-4/5" />
+              </div>
+            ))
+          : items.map((c) => (
+              <button key={c.id} type="button" onClick={() => onOpen(c)} className="group w-28 shrink-0 snap-start text-left sm:w-36">
+                <div className="relative flex aspect-[2/3] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-b from-secondary to-card ring-1 ring-border transition-all group-hover:-translate-y-1 group-hover:ring-primary/50">
+                  {c.logo ? (
+                    <img src={c.logo} alt="" loading="lazy" className="h-full w-full object-cover" onError={hideBroken} />
+                  ) : (
+                    <Film className="h-6 w-6 text-muted-foreground" />
+                  )}
+                  {!!c.rating && (
+                    <span className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-md bg-background/85 px-1.5 py-0.5 text-[11px] font-semibold">
+                      <Star className="h-3 w-3 fill-warning text-warning" /> {c.rating.toFixed(1)}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2 line-clamp-2 text-xs font-semibold">{c.name}</div>
+                <div className="line-clamp-1 text-[11px] text-muted-foreground">{c.reasons?.[0] || (c.year ? String(c.year) : "")}</div>
+              </button>
+            ))}
+      </div>
+    </section>
+  );
+}
+
 /** Tela do filme: ficha completa + Assistir/Continuar. */
 export function MovieDetails({
   movie,
@@ -144,12 +222,16 @@ export function MovieDetails({
   onFavorite,
   onPlay,
   onClose,
+  onOpen,
+  skip,
 }: {
   movie: Channel;
   favorite: boolean;
   onFavorite: () => void;
   onPlay: () => void;
   onClose: () => void;
+  onOpen: (c: Channel) => void;
+  skip?: string;
 }) {
   const info = useTitleInfo("movie", movie.xt_id, movie.name, movie.year);
   const f = fraction(movie.id);
@@ -196,6 +278,7 @@ export function MovieDetails({
         />
         {left > 0 && <p className="px-1 text-sm text-muted-foreground">Faltam cerca de {duration(left)} para terminar.</p>}
         {movie.group && <p className="px-1 text-xs text-muted-foreground">Categoria: {movie.group}</p>}
+        <Recommendations kind="movie" id={movie.xt_id} name={movie.name} year={movie.year} skip={skip} onOpen={onOpen} />
       </div>
     </div>
   );

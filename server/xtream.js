@@ -89,6 +89,17 @@ function sortInfo(it) {
   return { added: Number(it.added) || Number(it.last_modified) || 0, year: yearOf(it), rating: Math.round(rating * 10) / 10, genre: String(it.genre || "").trim() };
 }
 
+/** Elenco e direcao quando a lista ja traz (get_series quase sempre; get_vod_streams as vezes). */
+function metaInfo(it) {
+  const out = {};
+  const split = (v, re) => String(v || "").split(re).map((s) => s.trim()).filter(Boolean);
+  const cast = split(it.cast || it.actors, /\s*,\s*/).slice(0, 12);
+  const director = split(it.director, /\s*,\s*/);
+  if (cast.length) out.cast = cast;
+  if (director.length) out.director = director;
+  return out;
+}
+
 const ext = (v, fallback) => (/^[a-z0-9]{2,5}$/i.test(String(v || "")) ? String(v).toLowerCase() : fallback);
 
 /** Itens de uma categoria (ou todos os canais ao vivo, sem categoria) ja com o link do video. */
@@ -99,7 +110,7 @@ export async function items(creds, section, categoryId) {
   const base = `${creds.server}/${section === "live" ? "live" : section === "movie" ? "movie" : "series"}/${encodeURIComponent(creds.username)}/${encodeURIComponent(creds.password)}`;
   return (Array.isArray(list) ? list : []).map((it) => {
     if (section === "series") {
-      return { kind: "series", series_id: String(it.series_id), name: it.name || it.title || "", logo: it.cover || "", category_id: String(it.category_id ?? ""), ...sortInfo(it) };
+      return { kind: "series", series_id: String(it.series_id), name: it.name || it.title || "", logo: it.cover || "", category_id: String(it.category_id ?? ""), ...sortInfo(it), ...metaInfo(it) };
     }
     if (section === "movie") {
       return {
@@ -110,6 +121,7 @@ export async function items(creds, section, categoryId) {
         url: `${base}/${it.stream_id}.${ext(it.container_extension, "mp4")}`,
         category_id: String(it.category_id ?? ""),
         ...sortInfo(it),
+        ...metaInfo(it),
       };
     }
     return {

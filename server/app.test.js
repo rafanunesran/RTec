@@ -51,6 +51,8 @@ function xtreamApi(req, res) {
     case "get_series":
       return json([{ series_id: 70, name: "Serie Teste", cover: "https://img.example/s.jpg", category_id: "30" }]);
     case "get_vod_info":
+      if (q.get("vod_id") === "50") return json({ info: { name: "Filme Teste", genre: "Action", director: "Joao Silva", cast: "Outra Pessoa" } });
+      if (q.get("vod_id") === "52") return json({ info: { name: "Zebra", genre: "Comedia, Familia" } });
       return json({
         info: { name: "Abelha Rainha", plot: "Uma apicultora aposentada enfrenta uma conspiracao para proteger a familia.", genre: "Acao, Suspense", cast: "Ana Lima, Rui Costa", director: "Joao Silva", releasedate: "2023-04-01", rating: "8.4", duration: "01:52:00", backdrop_path: ["http://img.example/b.jpg"], youtube_trailer: "abcDEF12345", movie_image: "https://img.example/a.jpg", tmdb_id: "99" },
         movie_data: { stream_id: 51, name: "Abelha Rainha" },
@@ -625,3 +627,38 @@ test("filtros do catalogo: genero, ano e nota", async () => {
   assert.equal(facets.rated, 3);
 });
 
+test("recomendacoes: pontua genero, direcao, elenco, ano e nota", async () => {
+  const { similarity, rankSimilar, normGenre, genresInText } = await import("./recommend.js");
+  assert.equal(normGenre("Ação"), "acao");
+  assert.equal(normGenre("Science Fiction"), "ficcao cientifica");
+  assert.deepEqual(genresInText("FILMES | TERROR E SUSPENSE").sort(), ["suspense", "terror"]);
+
+  const alvo = { id: "1", name: "Duna (2021) [4K]", genres: ["Ficção científica", "Aventura"], director: ["Denis Villeneuve"], cast: ["Timothée Chalamet", "Zendaya", "Rebecca Ferguson"], year: 2021, rating: 7.8 };
+  const cands = [
+    { id: "2", name: "Duna - Parte Dois", genres: ["Science Fiction", "Adventure"], director: ["Denis Villeneuve"], cast: ["Timothée Chalamet", "Zendaya"], year: 2024, rating: 8.3 },
+    { id: "3", name: "A Chegada", genres: ["Drama", "Science Fiction"], director: ["Denis Villeneuve"], cast: ["Amy Adams"], year: 2016, rating: 7.6 },
+    { id: "4", name: "Interestelar", genres: ["Ficção Científica", "Aventura", "Drama"], director: ["Christopher Nolan"], cast: [], year: 2014, rating: 8.4 },
+    { id: "5", name: "Comedia Qualquer", genres: ["Comédia"], director: ["Fulano"], cast: [], year: 1995, rating: 5 },
+    { id: "6", name: "Duna 2021 - Legendado", genres: ["Ficção científica"], year: 2021 }, // outra versao do mesmo filme
+    { id: "7", name: "Sem Ficha", category: "Filmes | Ficcao Cientifica", year: 2020, rating: 7 },
+  ];
+  const top = rankSimilar(alvo, cands, { minScore: 2 });
+  assert.deepEqual(top.map((t) => t.id), ["2", "3", "4", "7"], "continuacao > mesmo diretor > mesmo genero > so pela categoria; comedia fora");
+  assert.ok(!top.some((t) => t.id === "6"), "outra versao do mesmo titulo nao e recomendada");
+  assert.equal(top[0].reasons[0], "Da mesma franquia");
+  assert.ok(top[1].reasons.includes("Direção de Denis Villeneuve"));
+  assert.ok(similarity(alvo, { name: "X", cast: ["Zendaya"] }).reasons.includes("Com Zendaya"));
+  // nota maior desempata titulos parecidos
+  const a = similarity(alvo, { name: "A", genres: ["Aventura"], year: 2020, rating: 8.5 }).score;
+  const b = similarity(alvo, { name: "B", genres: ["Aventura"], year: 2020, rating: 5.5 }).score;
+  assert.ok(a > b);
+
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
+  const recs = (await call("GET", "/api/player/recommend?kind=movie&id=51&name=Abelha%20Rainha")).body;
+  assert.deepEqual(recs.map((r) => r.name), ["Filme Teste"], "mesmo diretor e genero (da ficha do fornecedor); comedia fica de fora");
+  assert.equal(recs[0].xt_id, "50");
+  assert.ok(recs[0].reasons.includes("Direção de Joao Silva"));
+  assert.deepEqual((await call("GET", "/api/player/recommend?kind=movie&id=51&name=Abelha%20Rainha&skip=20")).body, [], "pula categorias bloqueadas");
+  assert.deepEqual((await call("GET", "/api/player/recommend?kind=movie&name=Qualquer")).body, [], "sem id (lista M3U): vazio");
+});

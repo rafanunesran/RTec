@@ -7,7 +7,7 @@ import { cn, formatDate } from "@/lib/utils";
 import { Button, Dialog, EmptyState, Field, Input, Select, Skeleton } from "@/components/ui";
 import Logo from "@/components/Logo";
 import PlayerOverlay from "@/components/player/PlayerOverlay";
-import { MovieDetails, TitleHeader, useTitleInfo } from "@/components/player/TitleDetails";
+import { MovieDetails, Recommendations, TitleHeader, useTitleInfo } from "@/components/player/TitleDetails";
 import { WATCHED_AT, fraction, getProgress, useProgressVersion } from "@/lib/progress";
 import { listChanged, onRemoteList, startSync } from "@/lib/sync";
 import { refreshChannels } from "@/lib/links";
@@ -517,7 +517,12 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
 
   const pushNav = () => window.history.pushState({ rtecNav: true }, "");
 
-  const openSeries = (s: (typeof seriesList)[number]) => {
+  // Titulos abertos pelas recomendacoes: o "voltar" retorna ao anterior em vez de fechar a tela.
+  const prevTitles = useRef<{ movie: Channel[]; series: OpenSeries[] }>({ movie: [], series: [] });
+
+  const openSeries = (s: (typeof seriesList)[number], fromRec = false) => {
+    if (!fromRec) prevTitles.current.series = [];
+    else if (series) prevTitles.current.series.push(series);
     pushNav();
     if (s.episodes) return setSeries({ key: s.key, name: s.name, logo: s.logo, episodes: s.episodes });
     setSeries({ key: s.key, name: s.name, logo: s.logo, episodes: null });
@@ -651,8 +656,8 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
   const goBackInApp = () => {
     const n = navRef.current;
     if (n.current) setCurrent(null);
-    else if (n.movie) setMovie(null);
-    else if (n.series) setSeries(null);
+    else if (n.movie) setMovie(prevTitles.current.movie.pop() ?? null);
+    else if (n.series) setSeries(prevTitles.current.series.pop() ?? null);
     else if (n.page !== "home") setPage("home");
     else return false;
     return true;
@@ -706,8 +711,13 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
     } else setSection("series");
   };
 
-  const openMovie = (c: Channel) =>
+  // Categorias bloqueadas (PIN) de uma secao: nao aparecem nas recomendacoes.
+  const lockedIds = (k: "movie" | "series") => (catalog?.sections?.[k] ?? []).filter((g) => isLocked(g.name)).map((g) => g.id).join(",");
+
+  const openMovie = (c: Channel, fromRec = false) =>
     withPin(() => {
+      if (!fromRec) prevTitles.current.movie = [];
+      else if (movie) prevTitles.current.movie.push(movie);
       pushNav();
       setMovie(c);
     }, c.group);
@@ -951,7 +961,7 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
               </div>
             ) : series ? (
               <div>
-                <Button variant="ghost" size="sm" onClick={() => setSeries(null)} className="mb-2">
+                <Button variant="ghost" size="sm" onClick={() => window.history.back()} className="mb-2">
                   <ArrowLeft /> Voltar
                 </Button>
                 <SeriesHeader
@@ -979,6 +989,20 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
                     xt={xt}
                     onPlay={(e) => play({ ...e, group: series.name }, series.episodes!.map((x) => ({ ...x, group: series.name })))}
                   />
+                )}
+                {xt && (
+                  <div className="mt-6">
+                    <Recommendations
+                      kind="series"
+                      id={series.key}
+                      name={series.name}
+                      skip={lockedIds("series")}
+                      onOpen={(c) => {
+                        openSeries({ key: c.series_id || c.id, name: c.name, logo: c.logo, sub: "", episodes: null }, true);
+                        window.scrollTo({ top: 0 });
+                      }}
+                    />
+                  </div>
                 )}
               </div>
             ) : visible.length === 0 ? (
@@ -1039,7 +1063,10 @@ function Watch({ profile, onLogout }: { profile: ClientProfile; onLogout: () => 
 
       {movie && (
         <MovieDetails
+          key={movie.id}
           movie={movie}
+          skip={lockedIds("movie")}
+          onOpen={(c) => openMovie(c, true)}
           favorite={isFav(movie)}
           onFavorite={() => toggleFavorite(movie)}
           onPlay={() => play(movie, null)}

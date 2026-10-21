@@ -9,6 +9,7 @@ import { buildMergedM3u, countChannels, headerEpgUrls, loadPlaylistText, parseEn
 import { nowNext } from "./epg.js";
 import * as xtream from "./xtream.js";
 import { lookupOnline, mergeInfo } from "./titleinfo.js";
+import { rankSimilar } from "./recommend.js";
 
 const COOKIE = "rtec_session";
 const CLIENT_COOKIE = "rtec_player";
@@ -892,27 +893,89 @@ export function createApp() {
   );
 
   // Ficha do titulo (filme ou serie): dados do fornecedor completados pela internet quando faltam.
+  async function fullTitleInfo(c, kind, id, name, year) {
+    const creds = id ? xtream.xtreamCredentials(c.source) : null;
+    let info = { name, plot: "", genres: [], cast: [], director: [], year: year || 0, rating: 0, minutes: 0, poster: "", backdrop: "", trailer: "" };
+    if (creds) info = { ...info, ...(await xtream.titleInfo(creds, kind, id).catch(() => ({}))) };
+    if (!info.name) info.name = name;
+    if (!info.year) info.year = year || 0;
+    if ((info.plot || "").length < 40 || !info.cast?.length || !info.genres?.length) {
+      info = mergeInfo(info, await lookupOnline(kind, name || info.name, info.year, info.tmdb_id));
+    }
+    delete info.tmdb_id;
+    return info;
+  }
+  const titleQuery = (req) => ({
+    kind: req.query.kind === "series" ? "series" : "movie",
+    id: String(req.query.id || "").replace(/[^\w-]/g, "").slice(0, 40),
+    name: String(req.query.name || "").slice(0, 200),
+    year: Number(req.query.year) || 0,
+  });
+
   app.get(
     "/api/player/info",
     requireClient,
     wrap(async (req, res) => {
       const c = req.client;
-      const kind = req.query.kind === "series" ? "series" : "movie";
-      const id = String(req.query.id || "").replace(/[^\w-]/g, "").slice(0, 40);
-      const name = String(req.query.name || "").slice(0, 200);
-      const creds = id ? xtream.xtreamCredentials(c.source) : null;
-      let info = { name, plot: "", genres: [], cast: [], director: [], year: Number(req.query.year) || 0, rating: 0, minutes: 0, poster: "", backdrop: "", trailer: "" };
-      if (creds) info = { ...info, ...(await xtream.titleInfo(creds, kind, id).catch(() => ({}))) };
-      if (!info.name) info.name = name;
-      if (!info.year) info.year = Number(req.query.year) || 0;
-      if ((info.plot || "").length < 40 || !info.cast?.length || !info.genres?.length) {
-        info = mergeInfo(info, await lookupOnline(kind, name || info.name, info.year, info.tmdb_id));
-      }
-      delete info.tmdb_id;
+      const { kind, id, name, year } = titleQuery(req);
+      const info = await fullTitleInfo(c, kind, id, name, year);
       info.poster = logoUrl(c.id, info.poster);
       info.backdrop = logoUrl(c.id, info.backdrop);
       res.setHeader("Cache-Control", "private, max-age=21600");
       res.json(info);
+    }),
+  );
+
+  // Titulos semelhantes ao aberto, so do catalogo do fornecedor do cliente (recommend.js faz a conta).
+  app.get(
+    "/api/player/recommend",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      const { kind, id, name, year } = titleQuery(req);
+      const creds = xtream.xtreamCredentials(c.source);
+      if (!creds || !id) return res.json([]);
+      const skip = new Set(String(req.query.skip || "").split(",").filter(Boolean));
+      const [cats, list, info] = await Promise.all([
+        xtream.categories(creds, kind),
+        xtream.items(creds, kind, ""),
+        fullTitleInfo(c, kind, id, name, year),
+      ]);
+      const catName = new Map(cats.map((x) => [x.id, x.name]));
+      const idOf = (it) => (kind === "series" ? it.series_id : it.stream_id);
+      const self = list.find((it) => idOf(it) === id);
+      const target = { ...info, id, name: info.name || name, category: self ? catName.get(self.category_id) || "" : "" };
+      // So o genero do proprio titulo; o da categoria entra a parte (pesa menos) em recommend.js.
+      const toCand = (it) => ({ ...it, id: idOf(it), category: catName.get(it.category_id) || "", genres: genreList(it, "") });
+      const pool = list.filter((it) => !skip.has(it.category_id) && idOf(it) !== id).map(toCand);
+
+      // 1a rodada: so com o que a lista ja traz (nome, categoria, ano, nota e, as vezes, genero/elenco).
+      let ranked = rankSimilar(target, pool, { limit: 36, minScore: 0 });
+      // 2a rodada: busca a ficha dos melhores que vieram sem genero, com prazo para nao travar a tela.
+      const missing = ranked.filter((r) => !r.genres?.length).slice(0, 30);
+      if (missing.length) {
+        const deadline = Date.now() + 6000;
+        const extra = new Map();
+        let next = 0;
+        const worker = async () => {
+          while (next < missing.length && Date.now() < deadline) {
+            const r = missing[next++];
+            const left = deadline - Date.now();
+            const got = await Promise.race([xtream.titleInfo(creds, kind, r.id).catch(() => null), new Promise((ok) => setTimeout(ok, left, null))]);
+            if (got) extra.set(r.id, got);
+          }
+        };
+        await Promise.all(Array.from({ length: 8 }, worker));
+        ranked = ranked.map((r) => {
+          const e = extra.get(r.id);
+          if (!e) return r;
+          const pick = (k) => (e[k]?.length ? e[k] : r[k]);
+          return { ...r, genres: pick("genres"), cast: pick("cast"), director: pick("director"), year: r.year || e.year, rating: r.rating || e.rating };
+        });
+      }
+      const best = rankSimilar(target, ranked, { limit: 18, minScore: 2 });
+      res.setHeader("Cache-Control", "private, max-age=1800");
+      res.json(best.map((r) => ({ ...xtreamChannel(c, r, r.category, isApp(req)), reasons: r.reasons.slice(0, 2).map((t) => (kind === "series" ? t.replace(/^Direção de/, "Criação de") : t)) })));
     }),
   );
 
