@@ -509,11 +509,14 @@ test("sincronizacao: favoritos, historico e ponto onde parou valem em qualquer a
   await call("DELETE", `/api/clients/${edu.id}`);
   const { getStore } = await import("./store/index.js");
   assert.equal(await getStore().sync.get(edu.id), null);
+});
+
 test("renova links expirados do historico, so os do proprio cliente", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
   const port = source.address().port;
   await call("POST", "/api/clients", { username: "hist", password: "pw", source: { kind: "m3u_url", url: `http://127.0.0.1:${port}/hls.m3u` } });
+  await call("POST", "/api/clients", { username: "outro", password: "pw", source: { kind: "m3u_url", url: `http://127.0.0.1:${port}/hls.m3u` } });
   cookie = "";
   await call("POST", "/api/player/login", { username: "hist", password: "pw" });
 
@@ -538,6 +541,6 @@ test("renova links expirados do historico, so os do proprio cliente", async () =
 
   // outro cliente nao consegue renovar o link deste
   cookie = "";
-  await call("POST", "/api/player/login", { username: "edu", password: "pw" });
+  await call("POST", "/api/player/login", { username: "outro", password: "pw" });
   assert.equal((await call("POST", "/api/player/resign", { urls: [old] })).body.urls[0], "");
 });
