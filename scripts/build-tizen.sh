@@ -12,9 +12,9 @@ cd "$(dirname "$0")/.."
 
 : "${APP_URL:?Defina APP_URL, ex: APP_URL=https://rtec.vercel.app}"
 APP_URL="${APP_URL%/}"
-APP_HOST="$(echo "$APP_URL" | sed -E 's#^[a-z]+://##; s#[/:].*$##')"
+
 PACKAGE_ID="${TIZEN_PACKAGE_ID:-RTecTvApp1}"
-VERSION="${TIZEN_VERSION:-1.0.0}"
+VERSION="${TIZEN_VERSION:-1.0.3}"
 
 if ! [[ "$PACKAGE_ID" =~ ^[0-9A-Za-z]{10}$ ]]; then
   echo "TIZEN_PACKAGE_ID precisa ter exatamente 10 letras ou numeros" >&2
@@ -25,7 +25,7 @@ OUT=dist-tizen/app
 rm -rf dist-tizen
 mkdir -p "$OUT"
 for f in config.xml index.html; do
-  sed -e "s#@APP_URL@#$APP_URL#g" -e "s#@APP_HOST@#$APP_HOST#g" -e "s#@PACKAGE_ID@#$PACKAGE_ID#g" -e "s#@VERSION@#$VERSION#g" "tizen/$f" > "$OUT/$f"
+  sed -e "s#@APP_URL@#$APP_URL#g" -e "s#@PACKAGE_ID@#$PACKAGE_ID#g" -e "s#@VERSION@#$VERSION#g" "tizen/$f" > "$OUT/$f"
 done
 cp public/icons/icon-512.png "$OUT/icon.png"
 
