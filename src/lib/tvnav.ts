@@ -5,14 +5,17 @@
  */
 import { isNativeApp } from "./pwa";
 
-const TV_UA = /Tizen|SMART-TV|SmartTV|Web0S|webOS|NetCast|BRAVIA|HbbTV|VIDAA|Android TV|GoogleTV|AFT[A-Z]/i;
+const TV_UA = /Tizen|SMART-TV|SmartTV|Web0S|webOS|NetCast|BRAVIA|HbbTV|VIDAA|Android TV|GoogleTV|Chromecast|CrKey|AFT[A-Z]/i;
+
+/** TV Box Android (e o app RTec nela): Android sem tela de toque. Celular e tablet sempre tem toque. */
+const androidBox = () => /Android/i.test(navigator.userAgent) && navigator.maxTouchPoints === 0;
 
 let tvMode = false;
 let tvScreen = false;
 
 /** O site esta rodando numa TV (ou com ?tv=1 para testar no computador). */
 export function isTV() {
-  if (TV_UA.test(navigator.userAgent)) return true;
+  if (TV_UA.test(navigator.userAgent) || androidBox()) return true;
   try {
     const q = new URLSearchParams(location.search).get("tv");
     if (q !== null) localStorage.setItem("rtec:tv", q === "0" ? "0" : "1");
