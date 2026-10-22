@@ -4,6 +4,8 @@
  * (endereco blob:) ou arquivo pelo proprio site (servidor de video). Num link direto de outro dominio
  * o Web Audio deixaria o video mudo, entao ali o reforco fica indisponivel e o som segue normal.
  */
+import { isNativeApp } from "./pwa";
+
 const KEY = "rtec:boost";
 const GAIN = 3;
 
@@ -109,4 +111,28 @@ export function dropBoost(video: HTMLVideoElement) {
   if (!g) return;
   graphs.delete(video);
   void g.ctx.close().catch(() => {});
+}
+
+// ---------- App Android ----------
+// O app tem o reforco do proprio Android (AudioBoostPlugin.java): aumenta o som do aparelho, vale para
+// qualquer video e nao depende do fornecedor. APKs antigos nao tem o plugin e usam o reforco do site.
+type NativeBoost = { set(o: { on: boolean; gainMb?: number }): Promise<{ on: boolean }> };
+let nativePlugin: Promise<NativeBoost | null> | undefined;
+const native = () =>
+  (nativePlugin ??= isNativeApp()
+    ? import("@capacitor/core")
+        .then(({ Capacitor, registerPlugin }) => (Capacitor.isPluginAvailable("AudioBoost") ? registerPlugin<NativeBoost>("AudioBoost") : null))
+        .catch(() => null)
+    : Promise.resolve(null));
+
+/** Liga/desliga o reforco do app Android. Devolve false fora do app ou se o aparelho nao suportar. */
+export async function setNativeBoost(on: boolean) {
+  const p = await native();
+  if (!p) return false;
+  try {
+    await p.set({ on, gainMb: 900 }); // +9 dB, cerca de 3x
+    return true;
+  } catch {
+    return false;
+  }
 }

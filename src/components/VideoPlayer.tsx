@@ -3,7 +3,7 @@ import { AlertTriangle, Loader2, RotateCw, Tv, VolumeX } from "lucide-react";
 import type { Channel } from "@/lib/api";
 import { watchFullscreenOrientation } from "@/lib/orientation";
 import { tvScreenOn } from "@/lib/tvnav";
-import { boostable, boostAttached, dropBoost, setBoost } from "@/lib/boost";
+import { boostable, boostAttached, dropBoost, setBoost, setNativeBoost } from "@/lib/boost";
 
 type Stop = () => void;
 
@@ -144,12 +144,24 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
   const cb = useRef({ onProgress, onEnded, startAt });
   cb.current = { onProgress, onEnded, startAt };
 
+  const nativeOn = useRef(false);
+  useEffect(
+    () => () => {
+      if (nativeOn.current) void setNativeBoost(false);
+    },
+    [],
+  );
   const boostRef = useRef({ boost, onBoost });
   boostRef.current = { boost, onBoost };
   const applyBoost = useRef(async () => {
     const v = videoRef.current;
     if (!v || v.readyState < 2) return;
     const want = boostRef.current.boost;
+    // App Android: o reforco e do proprio aparelho e vale para qualquer video.
+    if (!boostAttached(v) && (want || nativeOn.current) && (await setNativeBoost(want))) {
+      nativeOn.current = want;
+      return boostRef.current.onBoost?.(want ? "on" : "off");
+    }
     if (!want && !boostAttached(v)) return boostRef.current.onBoost?.("off");
     if (want && !boostAttached(v) && !boostable(v) && force.current()) return boostRef.current.onBoost?.("pending");
     const r = await setBoost(v, want);
@@ -160,7 +172,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
   useEffect(() => {
     const retry = () => {
       const v = videoRef.current;
-      if (boostRef.current.boost && v && !boostAttached(v) && boostable(v)) void applyBoost();
+      if (boostRef.current.boost && v && !nativeOn.current && !boostAttached(v) && boostable(v)) void applyBoost();
     };
     window.addEventListener("pointerdown", retry);
     window.addEventListener("keydown", retry);
@@ -192,20 +204,12 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       carry.current = { ...active, triedFallback, triedAlt, at: channel!.kind === "live" ? 0 : video.currentTime };
       setEl((e) => ({ n: e.n + 1, cors }));
     };
-    // Reforco pedido num video de outro dominio: 1o pede o mesmo link com CORS; se o fornecedor nao
-    // liberar, passa pelo servidor de video (plano B, que e do proprio site).
+    // Reforco pedido num video de outro dominio: pede o mesmo link com CORS. Nao passa pelo servidor de
+    // video so por causa do reforco (gastaria a banda da Vercel).
     force.current = () => {
-      if (cancelled || corsFailed.current) return false;
-      if (!video.crossOrigin) {
-        remount(true);
-        return true;
-      }
-      if (channel!.fallback && !triedFallback) {
-        triedFallback = true;
-        start(channel!.fallback, channel!.type);
-        return true;
-      }
-      return false;
+      if (cancelled || corsFailed.current || video.crossOrigin) return false;
+      remount(true);
+      return true;
     };
     let playedAt = 0; // quando comecou a tocar (para saber se a queda foi depois de funcionar)
     let reconnects = 0;
@@ -265,9 +269,8 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
           return;
         }
       }
-      // Video pedido com CORS (para o reforco) e o fornecedor recusou: tenta pelo servidor de video ou,
-      // se nao houver, volta ao link normal sem reforco.
-      if (video!.crossOrigin && !boostable(video!) && !(channel!.fallback && !triedFallback)) {
+      // Video pedido com CORS (para o reforco) e o fornecedor recusou: volta ao link normal, sem reforco.
+      if (video!.crossOrigin && !boostable(video!)) {
         corsFailed.current = true;
         remount(false);
         return;
