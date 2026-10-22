@@ -37,7 +37,12 @@ const isApp = (req) => /\bRTecApp\b/.test(req.get("user-agent") || "");
  * Canais Xtream: alem do app Android, a TV Samsung (Tizen) tambem tenta direto do fornecedor. Esses canais
  * trazem o plano B pelo servidor (fallback), usado se a TV bloquear o link http.
  */
-const directXtream = (req) => isApp(req) || /\bTizen\b/.test(req.get("user-agent") || "");
+const directXtream = (req) => isApp(req) || liteDirect(req) || /\bTizen\b/.test(req.get("user-agent") || "");
+/**
+ * Versao leve para TVs antigas (public/tv-antiga.html, ?direct=1): o reprodutor da TV toca o link do
+ * fornecedor direto, sem passar pelo servidor (que corta o ao vivo em 50 s na Vercel).
+ */
+const liteDirect = (req) => req.query.direct === "1";
 
 let JWT_SECRET = process.env.JWT_SECRET || "";
 
@@ -889,7 +894,7 @@ export function createApp() {
         }
         playlists.push({ id: p.id, name: p.name });
         const mode = p.playback || DEFAULT_PLAYBACK;
-        const app = isApp(req);
+        const app = isApp(req) || liteDirect(req);
         const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
         for (const e of parseEntries(text, Infinity)) {
           if (!/^https?:\/\//i.test(e.url)) continue;
