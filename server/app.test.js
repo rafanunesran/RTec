@@ -257,6 +257,29 @@ test("controle parental (PIN)", async () => {
   assert.equal(reset.body.parental_pin_hash, undefined);
 });
 
+test("tocar em outro aparelho: mesmo canal e chave em todos os aparelhos da conta, diferente entre contas", async () => {
+  cookie = "";
+  assert.equal((await call("GET", "/api/player/cast")).status, 401);
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  await call("POST", "/api/clients", { username: "cast1", password: "pw" });
+  await call("POST", "/api/clients", { username: "cast2", password: "pw" });
+
+  const open = async (username) => {
+    cookie = "";
+    await call("POST", "/api/player/login", { username, password: "pw" });
+    return (await call("GET", "/api/player/cast")).body;
+  };
+  const tv = await open("cast1");
+  const celular = await open("cast1");
+  const outra = await open("cast2");
+  assert.deepEqual(tv, celular);
+  assert.equal(tv.relay, "https://ntfy.sh");
+  assert.match(tv.topic, /^rtec_[0-9a-f]{32}$/);
+  assert.equal(Buffer.from(tv.key, "base64url").length, 32);
+  assert.notEqual(outra.topic, tv.topic);
+  assert.notEqual(outra.key, tv.key);
+});
+
 test("modo direto: so links https tocam direto; http sempre passa pelo servidor", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });

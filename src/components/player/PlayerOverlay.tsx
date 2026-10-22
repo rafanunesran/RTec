@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Heart, Pause, Play, SkipForward, Volume2, X } from "lucide-react";
+import { ArrowLeft, Cast, Heart, Pause, Play, SkipForward, Volume2, X } from "lucide-react";
 import type { Channel } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { resumeAt, saveProgress } from "@/lib/progress";
@@ -37,6 +37,8 @@ export default function PlayerOverlay({
   onNext,
   onClose,
   info,
+  onCast,
+  children,
 }: {
   channel: Channel;
   next?: Channel | null;
@@ -45,6 +47,10 @@ export default function PlayerOverlay({
   onNext: (c: Channel) => void;
   onClose: () => void;
   info?: ReactNode;
+  /** Passar para outro aparelho (TV) do ponto onde esta. */
+  onCast?: () => void;
+  /** Janelas abertas por cima do player (ficam dentro dele para aparecer em tela cheia). */
+  children?: ReactNode;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [remaining, setRemaining] = useState<number | null>(null); // segundos para acabar
@@ -179,6 +185,11 @@ export default function PlayerOverlay({
             <Volume2 className="h-5 w-5" />
             <span>{boost ? "+ ligado" : "+"}</span>
           </button>
+          {onCast && (
+            <button onClick={onCast} className="grid h-10 w-10 place-items-center rounded-full bg-white/10 hover:bg-white/20" aria-label="Tocar em outro aparelho" title="Tocar em outro aparelho">
+              <Cast className="h-5 w-5" />
+            </button>
+          )}
           <button onClick={onFavorite} className="grid h-10 w-10 place-items-center rounded-full bg-white/10 hover:bg-white/20" aria-label="Favorito">
             <Heart className={cn("h-5 w-5", favorite && "fill-red-500 text-red-500")} />
           </button>
@@ -210,6 +221,7 @@ export default function PlayerOverlay({
           </button>
         </div>
       )}
+      {children}
     </div>
   );
 }

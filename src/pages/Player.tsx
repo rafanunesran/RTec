@@ -8,7 +8,7 @@ import { Button, Dialog, EmptyState, Field, Input, Select, Skeleton } from "@/co
 import Logo from "@/components/Logo";
 import PlayerOverlay from "@/components/player/PlayerOverlay";
 import { MovieDetails, Recommendations, TitleHeader, useTitleInfo } from "@/components/player/TitleDetails";
-import { WATCHED_AT, adoptProgress, fraction, getProgress, useProgressVersion } from "@/lib/progress";
+import { WATCHED_AT, adoptProgress, fraction, getProgress, resumeAt, saveProgress, useProgressVersion } from "@/lib/progress";
 import { applyRelink, relinkM3u, relinkXtream } from "@/lib/relink";
 import { episodeInfo } from "@/lib/titlekey";
 import { listChanged, onRemoteList, startSync } from "@/lib/sync";
@@ -18,6 +18,8 @@ import SettingsDialog from "@/components/player/SettingsDialog";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
 import ListExpired from "@/components/player/ListExpired";
 import { tvScreenOn } from "@/lib/tvnav";
+import { castPlay, castTarget, onCastPlay, setCastNow, startCast, useCast, type CastPlay } from "@/lib/cast";
+import { CastBar, CastButton, CastDialog } from "@/components/player/Cast";
 import { MAIN_PROFILE, fetchProfiles, lastProfile, rememberProfile, scoped, setStorageProfile, type ProfilesResponse, type Viewer } from "@/lib/profiles";
 
 const FAVORITES = "__favoritos__";
@@ -132,6 +134,10 @@ function save(key: string, value: unknown) {
   }
 }
 
+// Titulo mandado de outro aparelho: vai para a tela do perfil aberto (ou fica guardado ate o perfil abrir).
+let castInbox: ((p: CastPlay) => void) | null = null;
+let castPending: CastPlay | null = null;
+
 export default function Player() {
   const [profile, setProfile] = useState<ClientProfile | null>(null);
   const [checking, setChecking] = useState(true);
@@ -180,6 +186,31 @@ export default function Player() {
       alive = false;
     };
   }, [profile, choose]);
+
+  // Aparelho logado aparece para os outros da conta e obedece "tocar aqui", ate na tela de perfis.
+  const username = profile?.username;
+  useEffect(() => (username ? startCast(username) : undefined), [username]);
+  const castRef = useRef({ viewer, viewers, choose });
+  castRef.current = { viewer, viewers, choose };
+  useEffect(
+    () =>
+      onCastPlay((p) => {
+        const { viewer: v, viewers: vs, choose: pick } = castRef.current;
+        toast(`${p.name} mandou tocar aqui`, { description: p.item.name });
+        if (v?.id === p.profile && castInbox) return castInbox(p);
+        // Toca no perfil de quem mandou (favoritos, historico e progresso dele).
+        castPending = p;
+        const next = vs?.profiles.find((x) => x.id === p.profile) ?? v ?? vs?.profiles[0];
+        if (next && next.id !== v?.id) {
+          setManage(false);
+          pick(next);
+        } else if (castInbox) {
+          castPending = null;
+          castInbox(p);
+        }
+      }),
+    [],
+  );
 
   const logout = useCallback(() => {
     setProfile(null);
@@ -738,20 +769,60 @@ function Watch({
     else setPinFor(() => fn);
   };
 
-  const play = (c0: Channel, list?: Channel[] | null) =>
-    withPin(async () => {
-      // Itens guardados (historico, favoritos) podem ter o link do servidor de video vencido: renova antes.
-      const c = await refreshChannels([c0])
-        .then((r) => r[0])
-        .catch(() => c0);
-      setCurrent(c);
-      if (list !== undefined) setQueue(list);
-      setHistory((old) => {
-        const next = [c, ...old.filter((h) => h.id !== c.id)].slice(0, HISTORY_MAX);
-        saveList("history", next);
-        return next;
-      });
-    }, c0.group);
+  const addHistory = (c: Channel) =>
+    setHistory((old) => {
+      const next = [c, ...old.filter((h) => h.id !== c.id)].slice(0, HISTORY_MAX);
+      saveList("history", next);
+      return next;
+    });
+  const startPlay = async (c0: Channel, list?: Channel[] | null) => {
+    // Itens guardados (historico, favoritos) podem ter o link do servidor de video vencido: renova antes.
+    const c = await refreshChannels([c0])
+      .then((r) => r[0])
+      .catch(() => c0);
+    setCurrent(c);
+    if (list !== undefined) setQueue(list);
+    addHistory(c);
+  };
+  // Conectado a outro aparelho (TV): o titulo toca la, continuando de onde parou aqui.
+  const sendTo = async (c: Channel, at = resumeAt(c), dur = getProgress(c)?.d ?? 0) => {
+    const name = castTarget()?.name;
+    try {
+      await castPlay(c, viewer.id, at, dur);
+      addHistory(c);
+      toast.success(`Tocando em ${name}`, { description: c.name });
+    } catch {
+      toast.error(`Não foi possível mandar para ${name}`);
+    }
+  };
+  const play = (c0: Channel, list?: Channel[] | null) => withPin(() => (castTarget() ? sendTo(c0) : startPlay(c0, list)), c0.group);
+
+  // Recebendo de outro aparelho da conta: toca aqui (o PIN ja foi pedido la).
+  const fromCast = useRef<(p: CastPlay) => void>();
+  fromCast.current = (p) => {
+    if (p.at > 0 && p.dur > 0) saveProgress(p.item, p.at + 5, p.dur);
+    setMovie(null);
+    void startPlay(p.item, p.item.kind === "series" ? undefined : null);
+  };
+  useEffect(() => {
+    castInbox = (p) => fromCast.current?.(p);
+    if (castPending) {
+      const p = castPending;
+      castPending = null;
+      castInbox(p);
+    }
+    return () => {
+      castInbox = null;
+    };
+  }, []);
+  // O outro aparelho acompanha o que toca aqui e pode mandar parar (fecha o player como o botao voltar).
+  useEffect(() => {
+    setCastNow(current, () => (window.history.state?.rtecPlayer ? window.history.back() : setCurrent(null)));
+    return () => setCastNow(null, null);
+  }, [current]);
+  const cast = useCast();
+  const [castOpen, setCastOpen] = useState(false);
+  const [castFromPlayer, setCastFromPlayer] = useState(false);
 
   // Episodio aberto pelo historico ou pela busca: carrega a serie para saber qual e o proximo.
   useEffect(() => {
@@ -999,6 +1070,27 @@ function Watch({
     ...groups.filter((g) => !viewer.kids || !isLocked(g.name)).map((g) => ({ key: g.key, name: g.name, locked: isLocked(g.name) })),
   ];
 
+  const castDialog = (
+    <CastDialog
+      open={castOpen}
+      onClose={() => {
+        setCastOpen(false);
+        setCastFromPlayer(false);
+      }}
+      onPick={
+        castFromPlayer && current
+          ? () => {
+              // Passa o que esta tocando aqui para o outro aparelho, do mesmo ponto, e fecha o player daqui.
+              const v = document.querySelector("video");
+              const live = current.kind === "live";
+              void sendTo(current, live || !v ? 0 : v.currentTime, live || !v || !Number.isFinite(v.duration) ? 0 : v.duration);
+              if (window.history.state?.rtecPlayer) window.history.back();
+              else setCurrent(null);
+            }
+          : undefined
+      }
+    />
+  );
   return (
     <div className={cn("flex min-h-[100dvh] flex-col", tv && "pl-24")}>
       {tv ? (
@@ -1029,6 +1121,7 @@ function Watch({
               <Avatar avatar={viewer.avatar} className="w-8 rounded-md" />
               <span className="hidden max-w-[140px] truncate font-semibold text-foreground sm:block">{viewer.name}</span>
             </button>
+            <CastButton onClick={() => setCastOpen(true)} />
             <Button variant="ghost" size="icon" onClick={() => setSettingsOpen(true)} title="Configurações" aria-label="Configurações">
               <Settings className="!size-5" />
             </Button>
@@ -1088,7 +1181,7 @@ function Watch({
       </header>
       )}
 
-      <main className={cn("mx-auto w-full flex-1", tv ? "px-10 pb-10 pt-8" : "max-w-[1600px] px-4 pb-8 pt-4 lg:px-6")}>
+      <main className={cn("mx-auto w-full flex-1", tv ? "px-10 pb-10 pt-8" : "max-w-[1600px] px-4 pb-8 pt-4 lg:px-6", cast.target && !tv && "pb-24")}>
             {page === "home" ? (
               <HomePage
                 history={history}
@@ -1343,8 +1436,18 @@ function Watch({
           onFavorite={() => toggleFavorite(current)}
           onNext={(n) => play(n)}
           onClose={() => setCurrent(null)}
+          onCast={
+            tv
+              ? undefined
+              : () => {
+                  setCastFromPlayer(true);
+                  setCastOpen(true);
+                }
+          }
           info={nowPlaying ? <EpgNow programme={nowPlaying} next={upNext} /> : undefined}
-        />
+        >
+          {castFromPlayer && castDialog}
+        </PlayerOverlay>
       )}
 
       {filtersOpen && (
@@ -1364,6 +1467,8 @@ function Watch({
         />
       )}
 
+      {!tv && <CastBar onOpen={() => setCastOpen(true)} />}
+      {!castFromPlayer && castDialog}
       <PinDialog
         open={!!pinFor}
         onClose={() => setPinFor(null)}

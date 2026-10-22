@@ -1255,6 +1255,18 @@ export function createApp() {
     res.json({ custom_pin: !!req.client.parental_pin_hash, locked_groups: req.client.locked_groups || [] });
   });
 
+  // "Tocar em outro aparelho": os aparelhos abertos da conta conversam por um canal de mensagens (ntfy, sem custo
+  // para a Vercel nem leituras no Firestore). O canal e a chave saem do segredo do painel: so quem entra na conta
+  // conhece o nome do canal, e as mensagens vao cifradas (o servico de mensagens nao ve titulos nem links).
+  app.get("/api/player/cast", requireClient, (req, res) => {
+    const mac = (label) => crypto.createHmac("sha256", JWT_SECRET).update(`${label}:${req.client.id}`).digest();
+    res.json({
+      relay: (env("CAST_RELAY_URL") || "https://ntfy.sh").replace(/\/+$/, ""),
+      topic: `rtec_${mac("cast-topic").toString("hex").slice(0, 32)}`,
+      key: mac("cast-key").toString("base64url"),
+    });
+  });
+
   app.post("/api/player/pin/verify", requireClient, (req, res) => {
     if (!checkPin(req.client, req.body?.pin)) throw new HttpError(403, "PIN incorreto");
     res.json({ ok: true });
