@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>RTec TV</title>
+<style>
+  body { margin: 0; padding: 40px 60px; background: #0b0b10; color: #f4f4f6; font-family: Arial, sans-serif; font-size: 24px; }
+  h1 { font-size: 40px; margin: 0 0 10px; }
+  p { margin: 6px 0; color: #b8b8c4; }
+  table { border-collapse: collapse; margin-top: 20px; }
+  td { padding: 6px 20px 6px 0; vertical-align: top; }
+  td.k { color: #9a9aa6; white-space: nowrap; }
+  .ok { color: #4ade80; font-weight: bold; }
+  .no { color: #f87171; font-weight: bold; }
+  video { width: 480px; height: 270px; background: #000; margin-top: 20px; }
+</style>
+</head>
+<body>
+<h1>RTec TV - teste da TV</h1>
+<p>Este navegador e antigo e nao abre o RTec normal. Tire uma foto desta tela e mande para o suporte.</p>
+<table id="t"></table>
+<video id="v" autoplay></video>
+<p id="vs">Video de teste: carregando...</p>
+<script>
+// Pagina de diagnostico para TVs antigas (Samsung Orsay/Smart Hub 2011-2014, TVs sem suporte ao site atual).
+// JavaScript antigo de proposito (ES3): roda em qualquer navegador de TV.
+var rows = [];
+function row(k, v) { rows.push('<tr><td class="k">' + k + '</td><td>' + v + '</td></tr>'); }
+function yes(b) { return b ? '<span class="ok">sim</span>' : '<span class="no">nao</span>'; }
+var ua = navigator.userAgent;
+row("Navegador", ua.replace(/</g, "&lt;"));
+row("Tela", screen.width + " x " + screen.height + " (janela " + (window.innerWidth || document.body.clientWidth) + ")");
+var v = document.getElementById("v");
+var can = function (t) { try { return v.canPlayType ? (v.canPlayType(t) || "nao") : "sem video"; } catch (e) { return "erro"; } };
+row("HLS (m3u8)", can("application/vnd.apple.mpegurl") + " / " + can("application/x-mpegURL"));
+row("MP4 (H.264)", can('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'));
+row("MPEG-TS", can("video/mp2t"));
+row("MediaSource", yes(window.MediaSource || window.WebKitMediaSource));
+row("Promise / fetch", yes(window.Promise) + " / " + yes(window.fetch));
+row("JSON / localStorage", yes(window.JSON) + " / " + yes(function () { try { return !!window.localStorage; } catch (e) { return false; } }()));
+row("XHR com CORS", yes(window.XMLHttpRequest && "withCredentials" in new XMLHttpRequest()));
+row("Samsung Orsay", yes(/Maple|SmartHub|SMART-TV/i.test(ua) && !/Tizen/i.test(ua)));
+document.getElementById("t").innerHTML = rows.join("");
+
+// Video de teste em HLS (link https publico).
+var vs = document.getElementById("vs");
+var done = false;
+function status(s) { if (!done) vs.innerHTML = "Video de teste: " + s; }
+v.addEventListener && v.addEventListener("playing", function () { status('<span class="ok">tocou</span>'); done = true; }, false);
+v.addEventListener && v.addEventListener("error", function () { status('<span class="no">erro ' + (v.error ? v.error.code : "") + "</span>"); done = true; }, false);
+setTimeout(function () { status('<span class="no">nao comecou em 20 s</span>'); done = true; }, 20000);
+try { v.src = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"; v.play && v.play(); } catch (e) { status("erro " + e.message); }
+</script>
+</body>
+</html>
