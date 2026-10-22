@@ -15,13 +15,14 @@ export type CastPlay = { item: Channel; at: number; dur: number; profile: string
 
 type Msg = { from: string; to?: string; ts: number } & (
   | { type: "hello" }
-  | { type: "here"; name: string; kind: DeviceKind; title?: string }
+  | { type: "here"; name: string; kind: DeviceKind; title?: string; state?: CastState }
   | ({ type: "play" } & CastPlay)
   | { type: "ctl"; a: CastAction }
   | { type: "state"; state: CastState }
 );
 
 const ID_KEY = "rtec:device";
+const TARGET_KEY = "rtec:cast-target"; // { user, device }: ultimo aparelho conectado, para religar ao voltar ao app
 const MAX_AGE = 60; // s: ao reconectar, o canal reenvia o que perdeu; comando mais velho que isso e ignorado
 const KEEP = ["id", "name", "group", "logo", "src", "type", "kind", "epg_id", "playlist_id", "series_id", "parent_series", "xt_id", "season", "episode", "alt", "alt_type", "fallback", "more"] as const;
 
@@ -122,14 +123,51 @@ export function useCast() {
 
 export const castTarget = () => target;
 
-export function setCastTarget(d: CastDevice | null) {
+export function setCastTarget(d: CastDevice | null, state: CastState = null) {
   target = d;
-  targetState = null;
+  targetState = state;
   changed();
+  try {
+    if (d) localStorage.setItem(TARGET_KEY, JSON.stringify({ user, device: d }));
+    else localStorage.removeItem(TARGET_KEY);
+  } catch {
+    /* armazenamento indisponivel */
+  }
+}
+
+function rememberedTarget(): CastDevice | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(TARGET_KEY) || "null") as { user: string; device: CastDevice } | null;
+    return v?.user === user ? v.device : null;
+  } catch {
+    return null;
+  }
+}
+
+let resuming = false;
+/** Ao abrir ou voltar ao app: se o ultimo aparelho conectado ainda esta aberto, religa sozinho (e pega o que esta passando). */
+async function resume() {
+  const last = target ?? rememberedTarget();
+  if (!last || resuming) return;
+  resuming = true;
+  try {
+    found = new Map();
+    await send({ type: "hello", to: last.id });
+    await new Promise((r) => setTimeout(r, 2500));
+    const d = found.get(last.id);
+    const st = states.get(last.id) ?? null;
+    if (d && (!target || target.id === d.id)) setCastTarget(d, st);
+  } catch {
+    /* sem rede: fica como estava */
+  } finally {
+    found = null;
+    resuming = false;
+  }
 }
 
 // ---------- Quem esta aberto ----------
 let found: Map<string, CastDevice> | null = null;
+const states = new Map<string, CastState>(); // o que cada aparelho disse que esta passando ao responder
 
 /** Pergunta quais aparelhos da conta estao com o app aberto (respondem em ~1 s). */
 export async function findDevices(wait = 2500): Promise<CastDevice[]> {
@@ -231,11 +269,12 @@ async function receive(key: CryptoKey, text: string) {
   switch (m.type) {
     case "hello": {
       const me = thisDevice();
-      void send({ type: "here", to: m.from, ...me, title: nowPlaying?.name }).catch(() => {});
+      void send({ type: "here", to: m.from, ...me, title: nowPlaying?.name, state: stateNow() }).catch(() => {});
       break;
     }
     case "here":
       found?.set(m.from, { id: m.from, name: m.name, kind: m.kind, title: m.title });
+      states.set(m.from, m.state ?? null);
       break;
     case "play":
       controller = m.from;
@@ -283,9 +322,18 @@ export function startCast(username: string) {
     // Horario do servidor de mensagens a cada (re)conexao: o que ele reenviar de muito antes disso fica de fora.
     // (Usa o relogio dele, nao o dos aparelhos: TV costuma estar com a hora errada.)
     let since = 0;
+    let resumed = false;
+    const resumeOnce = () => {
+      if (resumed) return;
+      resumed = true;
+      void resume();
+    };
     es.addEventListener("open", (e) => {
       const t = parse((e as MessageEvent).data)?.time;
-      if (t) since = t - MAX_AGE;
+      if (t) {
+        since = t - MAX_AGE;
+        resumeOnce(); // aviso do servidor de mensagens: ja esta ouvindo
+      } else setTimeout(resumeOnce, 1000); // conexao aberta (navegador)
     });
     es.onmessage = (e) => {
       const d = parse(e.data);
@@ -305,6 +353,9 @@ export function startCast(username: string) {
     clearInterval(watch);
     document.removeEventListener("visibilitychange", onVisibility);
     disconnect();
-    setCastTarget(null);
+    // Saiu da conta (ou trocou): desconecta sem esquecer, para religar quando a mesma conta voltar.
+    target = null;
+    targetState = null;
+    changed();
   };
 }
