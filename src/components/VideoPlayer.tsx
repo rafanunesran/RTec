@@ -107,7 +107,7 @@ function native(video: HTMLVideoElement, src: string, onFail: (msg: string) => v
   };
 }
 
-export type BoostState = "on" | "off" | "unavailable";
+export type BoostState = "on" | "off" | "pending" | "unavailable" | "needs-key";
 
 type Props = {
   channel: Channel | null;
@@ -131,9 +131,12 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
   const [tried, setTried] = useState<string[]>([]); // o que aconteceu em cada caminho tentado
   const [muted, setMuted] = useState(false); // navegador bloqueou o som no inicio
   const [attempt, setAttempt] = useState(0); // "Tentar novamente"
-  // Troca o <video> por um novo quando o reforco ja pegou o audio e o caminho seguinte e de outro dominio.
-  const [el, setEl] = useState(0);
-  const carry = useRef<{ src: string; type: Channel["type"]; triedFallback: boolean; triedAlt: boolean } | null>(null);
+  // Troca o <video> por um novo: para pedir o video com CORS (reforco) ou quando o reforco ja pegou o audio
+  // e o caminho seguinte e de outro dominio (ficaria mudo).
+  const [el, setEl] = useState({ n: 0, cors: false });
+  const carry = useRef<{ src: string; type: Channel["type"]; triedFallback: boolean; triedAlt: boolean; at: number } | null>(null);
+  const corsFailed = useRef(false); // o fornecedor nao libera CORS e nao ha servidor de video: sem reforco
+  const force = useRef<() => boolean>(() => false); // tenta deixar o audio legivel para o reforco
 
   useEffect(() => watchFullscreenOrientation(), []);
 
@@ -148,8 +151,9 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     if (!v || v.readyState < 2) return;
     const want = boostRef.current.boost;
     if (!want && !boostAttached(v)) return boostRef.current.onBoost?.("off");
-    const on = await setBoost(v, want);
-    if (v === videoRef.current) boostRef.current.onBoost?.(want ? (on ? "on" : "unavailable") : "off");
+    if (want && !boostAttached(v) && !boostable(v) && force.current()) return boostRef.current.onBoost?.("pending");
+    const r = await setBoost(v, want);
+    if (v === videoRef.current) boostRef.current.onBoost?.(r === "blocked" ? "unavailable" : r);
   }).current;
   useEffect(() => void applyBoost(), [boost]);
   // Sem toque do usuario o navegador nao libera o audio: tenta de novo na proxima tecla/toque.
@@ -170,7 +174,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     return () => {
       if (v) dropBoost(v);
     };
-  }, [el]);
+  }, [el.n]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -182,6 +186,27 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     let triedAlt = resume?.triedAlt ?? false;
     let triedFallback = resume?.triedFallback ?? false;
     let active = { src: resume?.src ?? channel.src, type: resume?.type ?? channel.type };
+    const seekTo = resume ? resume.at : cb.current.startAt;
+    /** Recria o <video> e continua do mesmo caminho e do mesmo ponto. */
+    const remount = (cors: boolean) => {
+      carry.current = { ...active, triedFallback, triedAlt, at: channel!.kind === "live" ? 0 : video.currentTime };
+      setEl((e) => ({ n: e.n + 1, cors }));
+    };
+    // Reforco pedido num video de outro dominio: 1o pede o mesmo link com CORS; se o fornecedor nao
+    // liberar, passa pelo servidor de video (plano B, que e do proprio site).
+    force.current = () => {
+      if (cancelled || corsFailed.current) return false;
+      if (!video.crossOrigin) {
+        remount(true);
+        return true;
+      }
+      if (channel!.fallback && !triedFallback) {
+        triedFallback = true;
+        start(channel!.fallback, channel!.type);
+        return true;
+      }
+      return false;
+    };
     let playedAt = 0; // quando comecou a tocar (para saber se a queda foi depois de funcionar)
     let reconnects = 0;
     let firstError = ""; // o motivo da primeira tentativa e o mais util
@@ -240,6 +265,13 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
           return;
         }
       }
+      // Video pedido com CORS (para o reforco) e o fornecedor recusou: tenta pelo servidor de video ou,
+      // se nao houver, volta ao link normal sem reforco.
+      if (video!.crossOrigin && !boostable(video!) && !(channel!.fallback && !triedFallback)) {
+        corsFailed.current = true;
+        remount(false);
+        return;
+      }
       firstError ||= msg;
       steps.push(`${active.src === channel!.fallback ? "servidor" : active.src === channel!.alt ? "formato alternativo" : "direto"} (${active.type}): ${msg}`);
       // 1o plano B: o mesmo canal pelo servidor de video (quando o direto do app falha).
@@ -263,8 +295,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       clearTimers();
       // O reforco ja pegou o audio deste <video> e agora o link e de outro dominio: ficaria mudo.
       if (boostAttached(video) && !boostable(video)) {
-        carry.current = { ...active, triedFallback, triedAlt };
-        setEl((n) => n + 1);
+        remount(video.crossOrigin !== null);
         return;
       }
       playedAt ||= Date.now();
@@ -282,7 +313,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     const onCanPlay = () => video.paused && tryPlay();
     const onEnded = () => (channel!.kind === "live" ? fail("A transmissao foi encerrada.") : cb.current.onEnded?.());
     const onMeta = () => {
-      const at = cb.current.startAt;
+      const at = seekTo;
       if (channel!.kind !== "live" && at > 0 && Number.isFinite(video.duration) && at < video.duration - 10) video.currentTime = at;
     };
     const onTime = () => {
@@ -315,11 +346,11 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       onPause();
       stop?.();
     };
-  }, [channel, attempt, el]);
+  }, [channel, attempt, el.n]);
 
   return (
     <div className={className ?? "relative aspect-video w-full overflow-hidden bg-black lg:rounded-2xl lg:ring-1 lg:ring-border"}>
-      <video key={el} ref={videoRef} className="h-full w-full" controls={!tvScreenOn()} playsInline autoPlay />
+      <video key={el.n} ref={videoRef} crossOrigin={el.cors ? "anonymous" : undefined} className="h-full w-full" controls={!tvScreenOn()} playsInline autoPlay />
       {!channel && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-glow text-muted-foreground">
           <div className="grid h-14 w-14 place-items-center rounded-2xl bg-muted ring-1 ring-border">

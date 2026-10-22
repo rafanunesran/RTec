@@ -28,6 +28,8 @@ export function boostable(video: HTMLVideoElement) {
   const src = video.currentSrc || video.src;
   if (!src) return false;
   if (src.startsWith("blob:")) return true;
+  // Pedido com CORS e ja carregou: o fornecedor liberou (se recusasse, o video nem abria).
+  if (video.crossOrigin !== null && video.readyState >= 2 && !video.error) return true;
   try {
     return new URL(src, location.href).origin === location.origin;
   } catch {
@@ -37,20 +39,22 @@ export function boostable(video: HTMLVideoElement) {
 
 type Graph = { ctx: AudioContext; source: MediaElementAudioSourceNode; gain: GainNode; comp: DynamicsCompressorNode };
 const graphs = new WeakMap<HTMLVideoElement, Graph>();
-const pending = new WeakMap<HTMLVideoElement, Promise<Graph | null>>();
+const pending = new WeakMap<HTMLVideoElement, Promise<Graph | Fail>>();
 
 /** O audio deste video ja passa pelo reforco (fica assim ate o elemento sair da tela). */
 export const boostAttached = (video: HTMLVideoElement) => graphs.has(video);
 
-async function build(video: HTMLVideoElement): Promise<Graph | null> {
+type Fail = "blocked" | "needs-key";
+
+async function build(video: HTMLVideoElement): Promise<Graph | Fail> {
   const AC = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AC || !boostable(video)) return null;
+  if (!AC || !boostable(video)) return "blocked";
   const ctx = new AC();
   if (ctx.state !== "running") await Promise.race([ctx.resume().catch(() => {}), new Promise((r) => setTimeout(r, 600))]);
   // Sem um toque/tecla do usuario o navegador deixa o audio parado: ligar agora deixaria o video mudo.
   if (ctx.state !== "running") {
     void ctx.close().catch(() => {});
-    return null;
+    return "needs-key";
   }
   try {
     const source = ctx.createMediaElementSource(video);
@@ -66,23 +70,24 @@ async function build(video: HTMLVideoElement): Promise<Graph | null> {
     return g;
   } catch {
     void ctx.close().catch(() => {});
-    return null;
+    return "blocked";
   }
 }
 
-/** Liga ou desliga o reforco. Devolve true quando ficou ligado de fato. */
-export async function setBoost(video: HTMLVideoElement, on: boolean) {
-  let g = graphs.get(video) ?? null;
+/** Liga ou desliga o reforco. "blocked": o navegador nao deixa ler o audio; "needs-key": falta um toque/tecla. */
+export async function setBoost(video: HTMLVideoElement, on: boolean): Promise<"on" | "off" | Fail> {
+  let g = graphs.get(video);
   if (!g) {
-    if (!on) return false;
+    if (!on) return "off";
     let p = pending.get(video);
     if (!p) {
       p = build(video);
       pending.set(video, p);
       void p.finally(() => pending.delete(video));
     }
-    g = await p;
-    if (!g) return false;
+    const r = await p;
+    if (typeof r === "string") return r;
+    g = r;
   }
   const { ctx, source, gain, comp } = g;
   source.disconnect();
@@ -95,7 +100,7 @@ export async function setBoost(video: HTMLVideoElement, on: boolean) {
     source.connect(ctx.destination);
   }
   if (ctx.state !== "running") void ctx.resume().catch(() => {});
-  return on;
+  return on ? "on" : "off";
 }
 
 /** Fecha o audio do reforco quando o video sai da tela (o navegador limita quantos podem existir). */

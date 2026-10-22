@@ -70,7 +70,9 @@ export default function PlayerOverlay({
     (s: BoostState) => {
       setBoostState(s);
       if (s === "on") say("Reforço de volume ligado");
-      else if (s === "unavailable") say("Reforço de volume indisponível neste vídeo");
+      else if (s === "pending") say("Ligando o reforço de volume…");
+      else if (s === "needs-key") say(tvScreenOn() ? "Aperte OK para ligar o reforço de volume" : "Toque na tela para ligar o reforço de volume");
+      else if (s === "unavailable") say("Este canal não permite o reforço de volume");
     },
     [],
   );
