@@ -23,7 +23,7 @@ var APP_URL = "@APP_URL@";
 
 try {
   // Sem registrar, o Tizen nao entrega as teclas de midia (play, pause, avancar...) para o app.
-  tizen.tvinputdevice.registerKeyBatch(["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind"]);
+  tizen.tvinputdevice.registerKeyBatch(["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind", "ChannelUp", "ChannelDown", "ColorF0Red"]);
 } catch (e) {}
 
 function show(msg, hint) {

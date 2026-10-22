@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, Search, Settings, Share, SquarePlus, Tv, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, RotateCw, Search, Settings, Share, SquarePlus, Tv, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, isListExpired, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
@@ -839,6 +839,43 @@ function Watch({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // TV: "voltar" no Inicio leva para a escolha de perfil (de la, outro "voltar" sai do app).
+  const switchProfileRef = useRef(onSwitchProfile);
+  switchProfileRef.current = onSwitchProfile;
+  useEffect(() => {
+    if (!tv) return;
+    const onHome = (e: Event) => {
+      e.preventDefault();
+      switchProfileRef.current(false);
+    };
+    window.addEventListener("rtec:back-home", onHome);
+    return () => window.removeEventListener("rtec:back-home", onHome);
+  }, [tv]);
+
+  // CH+/CH- do controle: proximo/anterior canal da lista ou episodio da serie.
+  const zapRef = useRef({ current, queue, visible, channels, play });
+  zapRef.current = { current, queue, visible, channels, play };
+  useEffect(() => {
+    const onChannel = (e: Event) => {
+      const step = (e as CustomEvent<number>).detail;
+      const z = zapRef.current;
+      const c = z.current;
+      if (!c) return;
+      if (c.kind === "series") {
+        const i = z.queue?.findIndex((q) => q.id === c.id) ?? -1;
+        const n = i >= 0 ? z.queue![i + step] : undefined;
+        if (n) z.play({ ...n, group: c.group });
+        return;
+      }
+      if (c.kind !== "live") return;
+      const list = z.visible.some((x) => x.id === c.id) ? z.visible : z.channels.filter((x) => x.kind === "live" && x.group === c.group);
+      const i = list.findIndex((x) => x.id === c.id);
+      if (i >= 0 && list.length > 1) z.play(list[(i + step + list.length) % list.length]);
+    };
+    window.addEventListener("rtec:channel", onChannel);
+    return () => window.removeEventListener("rtec:channel", onChannel);
+  }, []);
+
   // Abre uma serie a partir das paginas Inicio/Tudo.
   const openSeriesFrom = (c: Channel) => {
     const item = xt
@@ -1075,6 +1112,9 @@ function Watch({
               />
             ) : (
               <div className="flex min-w-0 flex-col gap-3">
+          {/* Dentro de uma serie a busca e as categorias saem da frente (o "Voltar" leva de volta a lista). */}
+          {!series && (
+          <>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -1113,6 +1153,8 @@ function Watch({
               </div>
             )}
           </div>
+          </>
+          )}
 
           <div>
             {loading ? (
@@ -1781,7 +1823,7 @@ function AllPage({
     <div className="space-y-6">
       <div className="relative">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input className="h-12 pl-10 text-base" aria-label="Buscar em tudo" placeholder="Buscar canais, filmes e séries..." value={query} onChange={(e) => onQuery(e.target.value)} autoFocus />
+        <Input className="h-12 pl-10 text-base" aria-label="Buscar em tudo" placeholder="Buscar canais, filmes e séries..." value={query} onChange={(e) => onQuery(e.target.value)} autoFocus={!tvScreenOn()} />
         {result?.loading && <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-primary" />}
       </div>
       {!result ? (
@@ -1981,6 +2023,11 @@ function TvSidebar({ items, viewer, onProfile, onSettings }: { items: TvMenuItem
         <button onClick={onProfile} className={itemClass(false)} aria-label={`Perfil ${viewer.name}. Trocar perfil`}>
           <Avatar avatar={viewer.avatar} className="w-7 shrink-0 rounded-md" />
           <span className={label}>{viewer.name}</span>
+        </button>
+        {/* Pega a versao nova do site sem fechar o app da TV (tambem no botao vermelho do controle). */}
+        <button onClick={() => location.reload()} className={itemClass(false)} aria-label="Atualizar">
+          <RotateCw className="h-6 w-6 shrink-0" />
+          <span className={label}>Atualizar</span>
         </button>
         <button onClick={onSettings} className={itemClass(false)} aria-label="Configurações">
           <Settings className="h-6 w-6 shrink-0" />

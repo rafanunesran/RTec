@@ -45,6 +45,9 @@ const KEY = {
   stop: [413],
   forward: [417, 228],
   rewind: [412, 227],
+  channelUp: [427],
+  channelDown: [428],
+  reload: [403], // botao vermelho (A)
 };
 const NAMES: Record<string, keyof typeof KEY> = {
   ArrowLeft: "left",
@@ -66,6 +69,9 @@ const NAMES: Record<string, keyof typeof KEY> = {
   MediaRewind: "rewind",
   MediaTrackNext: "forward",
   MediaTrackPrevious: "rewind",
+  ChannelUp: "channelUp",
+  ChannelDown: "channelDown",
+  ColorF0Red: "reload",
 };
 
 function keyOf(e: KeyboardEvent): keyof typeof KEY | null {
@@ -143,8 +149,26 @@ function nearest(from: DOMRect, list: HTMLElement[], dir: Dir, self?: HTMLElemen
 // Ultimo item selecionado em cada camada: ao fechar um dialogo, o foco volta para onde estava.
 const lastFocus = new WeakMap<HTMLElement, HTMLElement>();
 
+/**
+ * Na TV, focar um campo de texto ja abre o teclado na tela. O campo fica so leitura enquanto
+ * o foco passa por ele e libera a digitacao quando o usuario aperta OK.
+ */
+function lockText(el: HTMLElement) {
+  if (!tvScreen || !isText(el) || el.readOnly) return;
+  el.readOnly = true;
+  el.dataset.tvLocked = "1";
+  el.addEventListener("blur", () => unlockText(el), { once: true });
+}
+function unlockText(el: HTMLInputElement | HTMLTextAreaElement) {
+  if (el.dataset.tvLocked !== "1") return false;
+  delete el.dataset.tvLocked;
+  el.readOnly = false;
+  return true;
+}
+
 function focusEl(el: HTMLElement, scope: HTMLElement) {
   lastFocus.set(scope, el);
+  lockText(el);
   el.focus({ preventScroll: true });
   // Na TV o item escolhido fica no meio da tela, como nos apps de streaming; no celular so o necessario.
   const opts: ScrollIntoViewOptions = { block: tvScreen ? "center" : "nearest", inline: "nearest" };
@@ -181,6 +205,56 @@ function media(video: HTMLVideoElement, k: keyof typeof KEY) {
   return true;
 }
 
+/**
+ * A lista nativa (<select>) nao abre pelo controle na TV: mostra as opcoes numa janela propria
+ * e repassa a escolha para o <select> (o React recebe o "change" normalmente).
+ */
+function openSelect(select: HTMLSelectElement) {
+  const box = document.createElement("div");
+  box.setAttribute("role", "dialog");
+  box.className = "fixed inset-0 z-[70] flex items-center justify-center bg-background/80 backdrop-blur-sm";
+  const list = document.createElement("div");
+  list.className = "flex max-h-[80vh] w-[28rem] max-w-[90vw] flex-col gap-1 overflow-y-auto rounded-2xl border bg-card p-3 shadow-2xl";
+  const title = select.getAttribute("aria-label");
+  if (title) {
+    const h = document.createElement("div");
+    h.className = "px-3 pb-2 pt-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground";
+    h.textContent = title;
+    list.appendChild(h);
+  }
+  const close = () => {
+    window.removeEventListener("keydown", onEsc);
+    box.remove();
+    select.focus({ preventScroll: true });
+  };
+  const onEsc = (e: KeyboardEvent) => e.key === "Escape" && close();
+  let current: HTMLButtonElement | null = null;
+  Array.from(select.options).forEach((o) => {
+    if (o.disabled) return;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = o.text;
+    const on = o.value === select.value;
+    b.className = "flex h-12 w-full items-center rounded-lg px-4 text-left font-semibold " + (on ? "bg-primary/15 text-foreground" : "text-muted-foreground");
+    b.addEventListener("click", () => {
+      if (o.value !== select.value) {
+        // Setter nativo: sem ele o React nao percebe a troca de valor.
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(select, o.value);
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      close();
+    });
+    if (on) current = b;
+    list.appendChild(b);
+  });
+  box.appendChild(list);
+  box.addEventListener("click", (e) => e.target === box && close());
+  window.addEventListener("keydown", onEsc);
+  document.body.appendChild(box);
+  const f = current ?? list.querySelector("button");
+  if (f) focusEl(f, box);
+}
+
 function back() {
   const scope = topScope();
   // Dialogos e menus fecham com Esc; telas cheias (ficha, player) deixaram um passo no historico.
@@ -192,7 +266,8 @@ function back() {
     history.back();
     return;
   }
-  // Ja esta no Inicio: sai do app da TV.
+  // Ja esta no Inicio: a tela avisa (o player volta para a escolha de perfil); se ninguem tratar, sai do app.
+  if (!window.dispatchEvent(new CustomEvent("rtec:back-home", { cancelable: true }))) return;
   try {
     tizen()?.application?.getCurrentApplication().exit();
   } catch {
@@ -217,6 +292,20 @@ function onKey(e: KeyboardEvent) {
   const focused = active && active !== document.body && scope.contains(active) ? active : null;
   const video = videoIn(scope);
 
+  // Botao vermelho: recarrega o site (pega a versao nova sem fechar o app da TV).
+  if (k === "reload") {
+    e.preventDefault();
+    location.reload();
+    return;
+  }
+
+  // CH+/CH-: proximo/anterior canal ou episodio (o player escuta o evento).
+  if (k === "channelUp" || k === "channelDown") {
+    e.preventDefault();
+    window.dispatchEvent(new CustomEvent("rtec:channel", { detail: k === "channelUp" ? 1 : -1 }));
+    return;
+  }
+
   if (k !== "left" && k !== "right" && k !== "up" && k !== "down" && k !== "enter") {
     const v = video ?? document.querySelector("video");
     if (v && media(v, k)) e.preventDefault();
@@ -225,9 +314,18 @@ function onKey(e: KeyboardEvent) {
 
   if (k === "enter") {
     if (focused) {
-      if (isText(focused)) return; // abre o teclado da TV / envia o formulario
+      if (isText(focused)) {
+        // Primeiro OK no campo: libera a digitacao e abre o teclado da TV; depois, envia o formulario.
+        if (unlockText(focused)) {
+          e.preventDefault();
+          focused.blur();
+          focused.focus();
+        }
+        return;
+      }
       e.preventDefault();
-      focused.click();
+      if (focused instanceof HTMLSelectElement) openSelect(focused);
+      else focused.click();
     } else if (video) {
       e.preventDefault();
       media(video, k);
@@ -273,7 +371,7 @@ export function setupTvNavigation() {
   if (tvScreen) document.documentElement.classList.add("tv-screen");
   try {
     // Sem registrar, o Tizen nao entrega as teclas de midia para a pagina.
-    tizen()?.tvinputdevice?.registerKeyBatch?.(["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind"]);
+    tizen()?.tvinputdevice?.registerKeyBatch?.(["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind", "ChannelUp", "ChannelDown", "ColorF0Red"]);
   } catch {
     /* fora do Tizen */
   }

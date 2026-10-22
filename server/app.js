@@ -33,6 +33,11 @@ function viaProxy(mode, url, app = false) {
 
 /** O app Android (WebView) se identifica com "RTecApp" no User-Agent. */
 const isApp = (req) => /\bRTecApp\b/.test(req.get("user-agent") || "");
+/**
+ * Canais Xtream: alem do app Android, a TV Samsung (Tizen) tambem tenta direto do fornecedor. Esses canais
+ * trazem o plano B pelo servidor (fallback), usado se a TV bloquear o link http.
+ */
+const directXtream = (req) => isApp(req) || /\bTizen\b/.test(req.get("user-agent") || "");
 
 let JWT_SECRET = process.env.JWT_SECRET || "";
 
@@ -953,7 +958,7 @@ export function createApp() {
       if (!category && section !== "live" && !limit) throw new HttpError(400, "Escolha uma categoria");
       const [cats, raw] = await Promise.all([xtream.categories(creds, section), xtream.items(creds, section, category)]);
       const names = new Map(cats.map((x) => [x.id, x.name]));
-      const toChannel = (it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "", isApp(req));
+      const toChannel = (it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "", directXtream(req));
       res.setHeader("Cache-Control", "no-store");
       let list = section === "live" ? raw : raw.map((it) => ({ ...it, genres: genreList(it, names.get(it.category_id)) }));
       const filters = section === "live" ? null : readFilters(req.query);
@@ -1015,7 +1020,7 @@ export function createApp() {
       const episodes = await xtream.seriesEpisodes(requireXtream(c), req.params.id);
       res.setHeader("Cache-Control", "no-store");
       // parent_series: permite achar o proximo episodio mesmo abrindo pelo historico.
-      res.json(episodes.map((ep) => ({ ...xtreamChannel(c, ep, String(req.query.name || ""), isApp(req)), parent_series: req.params.id })));
+      res.json(episodes.map((ep) => ({ ...xtreamChannel(c, ep, String(req.query.name || ""), directXtream(req)), parent_series: req.params.id })));
     }),
   );
 
@@ -1102,7 +1107,7 @@ export function createApp() {
       }
       const best = rankSimilar(target, ranked, { limit: 18, minScore: 2 });
       res.setHeader("Cache-Control", "private, max-age=1800");
-      res.json(best.map((r) => ({ ...xtreamChannel(c, r, r.category, isApp(req)), reasons: r.reasons.slice(0, 2).map((t) => (kind === "series" ? t.replace(/^Direção de/, "Criação de") : t)) })));
+      res.json(best.map((r) => ({ ...xtreamChannel(c, r, r.category, directXtream(req)), reasons: r.reasons.slice(0, 2).map((t) => (kind === "series" ? t.replace(/^Direção de/, "Criação de") : t)) })));
     }),
   );
 

@@ -121,6 +121,7 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
   const videoRef = useRef<HTMLVideoElement>(null);
   const [state, setState] = useState<"idle" | "loading" | "playing" | "error">("idle");
   const [error, setError] = useState("");
+  const [tried, setTried] = useState<string[]>([]); // o que aconteceu em cada caminho tentado
   const [muted, setMuted] = useState(false); // navegador bloqueou o som no inicio
   const [attempt, setAttempt] = useState(0); // "Tentar novamente"
 
@@ -141,6 +142,7 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
     let playedAt = 0; // quando comecou a tocar (para saber se a queda foi depois de funcionar)
     let reconnects = 0;
     let firstError = ""; // o motivo da primeira tentativa e o mais util
+    const steps: string[] = [];
     let lastSaved = 0;
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     let stallTimer: ReturnType<typeof setTimeout> | undefined;
@@ -159,6 +161,7 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
 
     setState("loading");
     setError("");
+    setTried([]);
     setMuted(false);
 
     const start = async (src: string, type: Channel["type"]) => {
@@ -195,6 +198,7 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
         }
       }
       firstError ||= msg;
+      steps.push(`${active.src === channel!.fallback ? "servidor" : active.src === channel!.alt ? "formato alternativo" : "direto"} (${active.type}): ${msg}`);
       // 1o plano B: o mesmo canal pelo servidor de video (quando o direto do app falha).
       if (channel!.fallback && !triedFallback) {
         triedFallback = true;
@@ -208,6 +212,7 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
         return;
       }
       setError(firstError || msg);
+      setTried(steps.length > 1 ? steps : []);
       setState("error");
     }
 
@@ -282,6 +287,13 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/95 p-6 text-center">
           <AlertTriangle className="h-8 w-8 text-warning" />
           <span className="text-sm text-white/90">{error}</span>
+          {tried.length > 0 && (
+            <ul className="max-w-xl space-y-0.5 text-xs text-white/50">
+              {tried.map((t, i) => (
+                <li key={i}>{t}</li>
+              ))}
+            </ul>
+          )}
           <button
             onClick={() => setAttempt((n) => n + 1)}
             className="mt-1 flex items-center gap-2 rounded-full bg-white px-5 py-2.5 text-sm font-bold text-black hover:bg-white/90"
