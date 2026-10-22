@@ -166,7 +166,7 @@ after(() => {
   source.close();
 });
 
-test("fluxo completo: admin, lista, cliente, M3U e dispositivo", async () => {
+test("fluxo completo: admin, lista, cliente e dispositivo", async () => {
   assert.equal((await call("GET", "/api/clients")).status, 401);
   assert.equal((await call("POST", "/api/auth/login", { username: "admin", password: "errada" })).status, 401);
   assert.equal((await call("POST", "/api/auth/login", { username: "admin", password: "secret123" })).status, 200);
@@ -197,20 +197,11 @@ test("fluxo completo: admin, lista, cliente, M3U e dispositivo", async () => {
   assert.equal(client.status, 201);
   assert.equal((await call("POST", "/api/clients", { username: "joao" })).status, 409);
 
-  const m3u = await call("GET", "/get.php?username=joao&password=1234&type=m3u_plus");
-  assert.equal(m3u.status, 200);
-  assert.match(m3u.body, /^#EXTM3U\n/);
-  assert.equal(m3u.body.match(/#EXTM3U/g).length, 1);
-  assert.match(m3u.body, /Canal Remoto/);
-  assert.match(m3u.body, /Canal Manual/);
-
-  const byToken = await call("GET", `/m3u/${client.body.token}.m3u`);
-  assert.equal(byToken.status, 200);
-  assert.equal((await call("GET", "/get.php?username=joao&password=errada")).status, 401);
-
+  assert.equal(client.body.token, undefined);
+  assert.deepEqual(Object.keys(client.body.links), ["server"]);
+  assert.equal((await call("GET", "/get.php?username=joao&password=1234&type=m3u_plus")).status, 404);
 
   await call("PUT", `/api/clients/${client.body.id}`, { active: false });
-  assert.equal((await call("GET", "/get.php?username=joao&password=1234")).status, 401);
   assert.equal((await call("POST", "/api/player/login", { username: "joao", password: "1234" })).status, 403);
 });
 
@@ -385,8 +376,6 @@ test("lista propria do cliente: colar no cadastro, testar e assistir", async () 
   const res = await call("GET", "/api/player/channels");
   assert.equal(res.body.channels.length, 3);
   assert.equal(res.body.playlists[0].name, "Edu");
-  const m3u = await call("GET", `/m3u/${client.body.token}.m3u`);
-  assert.match(m3u.body, /Canal HLS/);
 
   // Trocar para lista colada
   cookie = adminCookie;

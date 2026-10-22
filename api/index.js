@@ -1,4 +1,4 @@
-// Funcao serverless da Vercel: atende /api/*, /get.php e /m3u/* (ver vercel.json).
+// Funcao serverless da Vercel: atende /api/* (ver vercel.json).
 import { createApp } from "../server/app.js";
 
 export default createApp();

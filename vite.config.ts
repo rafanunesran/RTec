@@ -11,6 +11,6 @@ export default defineConfig({
   resolve: { alias: { "@": path.resolve(__dirname, "src") } },
   server: {
     port: 8080,
-    proxy: { "/api": api, "/get.php": api, "/m3u": api },
+    proxy: { "/api": api },
   },
 });

@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { DuplicateError, getStore } from "./store/index.js";
-import { buildMergedM3u, countChannels, headerEpgUrls, loadPlaylistText, parseEntries, sourceUrl } from "./m3u.js";
+import { countChannels, headerEpgUrls, loadPlaylistText, parseEntries, sourceUrl } from "./m3u.js";
 import { nowNext } from "./epg.js";
 import * as xtream from "./xtream.js";
 import { lookupOnline, mergeInfo } from "./titleinfo.js";
@@ -352,7 +352,7 @@ async function clientPlaylists(c) {
 }
 
 function serializeClient(c) {
-  const { parental_pin_hash, locked_groups: _locked, ...rest } = c;
+  const { parental_pin_hash, locked_groups: _locked, token: _token, ...rest } = c;
   return { ...rest, playlist_ids: c.playlist_ids || [], valid: isClientValid(c), custom_pin: !!parental_pin_hash };
 }
 
@@ -367,23 +367,9 @@ function baseUrl(req) {
   return process.env.PUBLIC_URL?.replace(/\/+$/, "") || `${req.protocol}://${req.get("host")}`;
 }
 
-function clientLinks(req, c) {
+function clientLinks(req) {
   const base = baseUrl(req);
-  const q = new URLSearchParams({ username: c.username, password: c.password });
-  return {
-    m3u: `${base}/get.php?${q}&type=m3u_plus&output=ts`,
-    m3u_token: `${base}/m3u/${c.token}.m3u`,
-    server: base,
-  };
-}
-
-async function sendM3u(res, client) {
-  await touch("clients", client, "last_access_at");
-  const text = await buildMergedM3u(await clientPlaylists(client));
-  res.setHeader("Content-Type", "audio/x-mpegurl; charset=utf-8");
-  res.setHeader("Content-Disposition", `inline; filename="${client.username}.m3u"`);
-  res.setHeader("Cache-Control", "no-store");
-  res.send(text);
+  return { server: base };
 }
 
 async function findClientByLogin(username, password) {
@@ -746,7 +732,7 @@ export function createApp() {
   );
 
   // ---------- Clientes (login/senha) ----------
-  const clientResponse = (req, c) => ({ ...serializeClient(c), links: clientLinks(req, c) });
+  const clientResponse = (req, c) => ({ ...serializeClient(c), links: clientLinks(req) });
 
   app.get(
     "/api/clients",
@@ -797,7 +783,7 @@ export function createApp() {
     wrap(async (req, res) => {
       const data = await readClientBody(req.body || {});
       const c = await unique(() =>
-        db().clients.create({ ...data, expires_at: null, list_status: null, token: randomToken(), last_access_at: null, parental_pin_hash: "", locked_groups: [] }),
+        db().clients.create({ ...data, expires_at: null, list_status: null, last_access_at: null, parental_pin_hash: "", locked_groups: [] }),
       );
       await refreshListStatus(c, { force: true });
       res.status(201).json(clientResponse(req, c));
@@ -832,7 +818,6 @@ export function createApp() {
             notes: account.max_connections ? `Fornecedor: ${account.max_connections} tela(s) simultanea(s)` : "",
             source,
             playlist_ids: [],
-            token: randomToken(),
             last_access_at: null,
             parental_pin_hash: "",
             locked_groups: [],
@@ -869,16 +854,6 @@ export function createApp() {
       if (!c) throw new HttpError(404, "Cliente nao encontrado");
       await refreshListStatus(c, { force: true });
       forgetClient(c.id);
-      res.json(clientResponse(req, c));
-    }),
-  );
-
-  app.post(
-    "/api/clients/:id/regenerate-token",
-    requireAdmin,
-    wrap(async (req, res) => {
-      const c = await db().clients.update(req.params.id, { token: randomToken() });
-      if (!c) throw new HttpError(404, "Cliente nao encontrado");
       res.json(clientResponse(req, c));
     }),
   );
@@ -1589,28 +1564,6 @@ export function createApp() {
       Readable.fromWeb(upstream.body)
         .on("error", () => res.end())
         .pipe(res);
-    }),
-  );
-
-  // ---------- Endpoints publicos para apps IPTV ----------
-  // Compativel com apps que aceitam "URL M3U" no formato Xtream (get.php).
-  app.get(
-    "/get.php",
-    wrap(async (req, res) => {
-      const c = await findClientByLogin(req.query.username, req.query.password);
-      if (c?.active) await refreshListStatus(c);
-      if (!isClientValid(c)) return res.status(401).type("text").send("Unauthorized");
-      await sendM3u(res, c);
-    }),
-  );
-
-  app.get(
-    "/m3u/:token.m3u",
-    wrap(async (req, res) => {
-      const c = await db().clients.findOne("token", req.params.token);
-      if (c?.active) await refreshListStatus(c);
-      if (!isClientValid(c)) return res.status(401).type("text").send("Unauthorized");
-      await sendM3u(res, c);
     }),
   );
 

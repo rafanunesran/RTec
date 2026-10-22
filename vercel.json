@@ -21,14 +21,6 @@
       "destination": "/api/index"
     },
     {
-      "source": "/get.php",
-      "destination": "/api/index"
-    },
-    {
-      "source": "/m3u/(.*)",
-      "destination": "/api/index"
-    },
-    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

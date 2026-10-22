@@ -78,7 +78,7 @@ export function createMemoryStore() {
   return {
     kind: "memory",
     admins: new MemoryCollection(["username"]),
-    clients: new MemoryCollection(["username", "token"]),
+    clients: new MemoryCollection(["username"]),
     playlists: new MemoryCollection(),
     sync: new MemoryCollection(),
     profiles: new MemoryCollection(),

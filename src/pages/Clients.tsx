@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Link2, Loader2, MessageSquareText, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, Users, Wand2, Zap } from "lucide-react";
+import { Link2, Loader2, MessageSquareText, Pencil, Plus, Search, ShieldCheck, Trash2, Users, Wand2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Client, type Source } from "@/lib/api";
 import { copy, formatDate } from "@/lib/utils";
 import { Badge, Button, Card, Dialog, EmptyState, Field, Input, Skeleton, Switch, Textarea } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
-import CopyRow from "@/components/CopyRow";
 import SourceEditor, { emptySource, sourceLabel } from "@/components/SourceEditor";
 
 type Form = {
@@ -62,6 +61,12 @@ function status(c: Client) {
 
 /** Vencimento que o fornecedor informa (listas Xtream). */
 const expiry = (c: Client) => (c.expires_at ? formatDate(c.expires_at) : c.list_status?.state === "active" ? "Lista ativa" : "—");
+
+/** Texto pronto para mandar ao cliente: site, usuario, senha e o link curto do app. */
+function clientMessage(c: Client) {
+  const site = c.links.server;
+  return `Seu acesso IPTV\nAssista em: ${site}\nUsuario: ${c.username}\nSenha: ${c.password}\n\nAndroid, TV Box e Fire TV: baixe o app em ${site}/apk\nComo instalar (passo a passo com imagens): ${site}/instalar\niPhone: abra o link no Safari e use "Adicionar a Tela de Inicio".`;
+}
 
 export default function Clients() {
   const [clients, setClients] = useState<Client[]>([]);
@@ -155,13 +160,6 @@ export default function Clients() {
     load();
   };
 
-  const regenerate = async (c: Client) => {
-    if (!confirm("Gerar um novo link curto? O link anterior deixará de funcionar.")) return;
-    const updated = await api.post<Client>(`/api/clients/${c.id}/regenerate-token`);
-    setLinksFor(updated);
-    load();
-  };
-
   const resetPin = async (c: Client) => {
     const updated = await api.put<Client>(`/api/clients/${c.id}`, { reset_pin: true });
     setEditing(updated);
@@ -192,7 +190,7 @@ export default function Clients() {
       <Button size="icon-sm" variant="ghost" title="Conferir lista no fornecedor" aria-label="Conferir lista no fornecedor" disabled={checkingId === c.id} onClick={() => checkList(c)}>
         {checkingId === c.id ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
       </Button>
-      <Button size="icon-sm" variant="ghost" title="Dados de acesso" aria-label="Dados de acesso" onClick={() => setLinksFor(c)}>
+      <Button size="icon-sm" variant="ghost" title="Mensagem para o cliente" aria-label="Mensagem para o cliente" onClick={() => setLinksFor(c)}>
         <Link2 />
       </Button>
       <Button size="icon-sm" variant="ghost" title="Editar" aria-label="Editar" onClick={() => openEdit(c)}>
@@ -437,36 +435,13 @@ export default function Clients() {
         </form>
       </Dialog>
 
-      <Dialog open={!!linksFor} onClose={() => setLinksFor(null)} title="Dados de acesso" description="Toque para copiar. O cliente assiste pelo site com usuário e senha; os links M3U servem para apps IPTV externos." wide>
+      <Dialog open={!!linksFor} onClose={() => setLinksFor(null)} title="Mensagem para o cliente" description="Copie e envie ao cliente pelo WhatsApp." wide>
         {linksFor && (
           <div className="space-y-4">
-            <div className="space-y-2">
-              <CopyRow label="Site do reprodutor" value={linksFor.links.server} />
-              <CopyRow label="Link M3U (usuário e senha)" value={linksFor.links.m3u} />
-              <CopyRow label="Link M3U curto" value={linksFor.links.m3u_token} />
-              <div className="grid gap-2 sm:grid-cols-3">
-                <CopyRow label="Servidor" value={linksFor.links.server} />
-                <CopyRow label="Usuário" value={linksFor.username} />
-                <CopyRow label="Senha" value={linksFor.password} />
-              </div>
-            </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Button variant="outline" className="flex-1" onClick={() => regenerate(linksFor)}>
-                <RefreshCw /> Gerar novo link curto
-              </Button>
-              <Button
-                variant="gradient"
-                className="flex-1"
-                onClick={() =>
-                  copy(
-                    `Seu acesso IPTV\nAssista em: ${linksFor.links.server}\nUsuario: ${linksFor.username}\nSenha: ${linksFor.password}\n\nAndroid, TV Box e Fire TV: baixe o app em ${linksFor.links.server}/apk\nComo instalar (passo a passo com imagens): ${linksFor.links.server}/instalar\niPhone: abra o link no Safari e use "Adicionar a Tela de Inicio".`,
-                    "Mensagem copiada",
-                  )
-                }
-              >
-                <MessageSquareText /> Copiar mensagem para o cliente
-              </Button>
-            </div>
+            <pre className="whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/40 p-3 font-sans text-sm">{clientMessage(linksFor)}</pre>
+            <Button variant="gradient" className="w-full" onClick={() => copy(clientMessage(linksFor), "Mensagem copiada")}>
+              <MessageSquareText /> Copiar mensagem
+            </Button>
           </div>
         )}
       </Dialog>

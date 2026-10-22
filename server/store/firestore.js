@@ -120,7 +120,7 @@ export function createFirestoreStore() {
   return {
     kind: "firestore",
     admins: new FirestoreCollection(db, "admins", ["username"]),
-    clients: new FirestoreCollection(db, "clients", ["username", "token"]),
+    clients: new FirestoreCollection(db, "clients", ["username"]),
     playlists: new FirestoreCollection(db, "playlists"),
     sync: new FirestoreCollection(db, "player_sync"),
     profiles: new FirestoreCollection(db, "player_profiles"),

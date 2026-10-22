@@ -1,4 +1,4 @@
-export type Links = { m3u: string; m3u_token: string; server: string };
+export type Links = { server: string };
 
 export type PlaybackMode = "auto" | "direct" | "proxy";
 
@@ -20,7 +20,6 @@ export type Client = {
   name: string;
   username: string;
   password: string;
-  token: string;
   active: boolean;
   valid: boolean;
   /** Vencimento informado pelo fornecedor (Xtream). */
