@@ -12,8 +12,21 @@
     }
   },
   "redirects": [
-    { "source": "/apk", "destination": "/download/rtec-tv.apk", "permanent": false },
-    { "source": "/APK", "destination": "/download/rtec-tv.apk", "permanent": false }
+    {
+      "source": "/apk",
+      "destination": "/download/rtec-tv.apk",
+      "permanent": false
+    },
+    {
+      "source": "/apk",
+      "destination": "/download/rtec-tv.apk",
+      "permanent": false
+    },
+    {
+      "source": "/APK",
+      "destination": "/download/rtec-tv.apk",
+      "permanent": false
+    }
   ],
   "rewrites": [
     {
