@@ -1,7 +1,11 @@
 import { useSyncExternalStore } from "react";
+import type { Channel } from "@/lib/api";
 import { scoped } from "@/lib/profiles";
+import { titleKey } from "@/lib/titlekey";
 
 // Quanto de cada filme/episodio ja foi assistido, por perfil. Fica no aparelho e e sincronizado com a conta (sync.ts).
+// Guardado pela chave do titulo (titlekey.ts), nao pelo id da lista: trocar ou atualizar a lista nao perde o progresso.
+// Progresso antigo, gravado pelo id, ainda e lido e passa para a chave na proxima vez que salvar.
 export type Progress = { p: number; d: number; t: number }; // posicao (s), duracao (s), quando (ms)
 
 const KEY = "rtec:progress";
@@ -24,28 +28,49 @@ function read(): Record<string, Progress> {
   return cache!;
 }
 
-export function getProgress(id: string): Progress | undefined {
-  return read()[id];
+export function getProgress(c: Channel): Progress | undefined {
+  const all = read();
+  return all[titleKey(c)] ?? all[c.id];
 }
 
 /** Fracao assistida (0 a 1), ou 0 se nunca assistiu. */
-export function fraction(id: string): number {
-  const pr = getProgress(id);
+export function fraction(c: Channel): number {
+  const pr = getProgress(c);
   return pr && pr.d > 0 ? Math.min(1, pr.p / pr.d) : 0;
 }
 
 /** Onde retomar: so se ja passou do comeco e ainda nao terminou. */
-export function resumeAt(id: string): number {
-  const pr = getProgress(id);
+export function resumeAt(c: Channel): number {
+  const pr = getProgress(c);
   if (!pr || !pr.d) return 0;
   const f = pr.p / pr.d;
   return pr.p > 30 && f < WATCHED_AT ? Math.max(0, pr.p - 5) : 0;
 }
 
-export function saveProgress(id: string, pos: number, dur: number) {
-  if (!id || !Number.isFinite(dur) || dur <= 0) return;
-  write({ ...read(), [id]: { p: Math.round(pos), d: Math.round(dur), t: Date.now() } });
-  saveListeners.forEach((l) => l(id));
+export function saveProgress(c: Channel, pos: number, dur: number) {
+  const key = titleKey(c);
+  if (!key || !Number.isFinite(dur) || dur <= 0) return;
+  const all = { ...read(), [key]: { p: Math.round(pos), d: Math.round(dur), t: Date.now() } };
+  if (key !== c.id) delete all[c.id];
+  write(all);
+  saveListeners.forEach((l) => l(key));
+}
+
+/** Passa para a chave do titulo o progresso antigo, guardado pelo id da lista (antes de trocar a lista). */
+export function adoptProgress(items: Channel[]) {
+  const all = read();
+  const moved: string[] = [];
+  for (const c of items) {
+    const old = all[c.id];
+    const key = titleKey(c);
+    if (!old || key === c.id) continue;
+    if (!all[key] || all[key].t < old.t) all[key] = old;
+    delete all[c.id];
+    moved.push(key);
+  }
+  if (!moved.length) return;
+  write({ ...all });
+  moved.forEach((k) => saveListeners.forEach((l) => l(k)));
 }
 
 export function allProgress(): Record<string, Progress> {

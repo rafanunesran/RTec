@@ -8,7 +8,9 @@ import { Button, Dialog, EmptyState, Field, Input, Select, Skeleton } from "@/co
 import Logo from "@/components/Logo";
 import PlayerOverlay from "@/components/player/PlayerOverlay";
 import { MovieDetails, Recommendations, TitleHeader, useTitleInfo } from "@/components/player/TitleDetails";
-import { WATCHED_AT, fraction, getProgress, useProgressVersion } from "@/lib/progress";
+import { WATCHED_AT, adoptProgress, fraction, getProgress, useProgressVersion } from "@/lib/progress";
+import { applyRelink, relinkM3u, relinkXtream } from "@/lib/relink";
+import { episodeInfo } from "@/lib/titlekey";
 import { listChanged, onRemoteList, startSync } from "@/lib/sync";
 import { refreshChannels } from "@/lib/links";
 import PinDialog from "@/components/player/PinDialog";
@@ -128,13 +130,6 @@ function save(key: string, value: unknown) {
   } catch {
     /* armazenamento indisponivel (aba anonima etc.) */
   }
-}
-
-/** "Nome da Serie S01 E02" -> { series: "Nome da Serie", season: 1, episode: 2 } */
-function episodeInfo(name: string) {
-  const m = /^(.*?)[\s._-]*S(\d{1,2})\s*E(\d{1,3})\b/i.exec(name);
-  if (!m) return { series: name.trim(), season: 1, episode: 0 };
-  return { series: m[1].trim() || name, season: Number(m[2]), episode: Number(m[3]) };
 }
 
 export default function Player() {
@@ -503,6 +498,41 @@ function Watch({
       alive = false;
     };
   }, []);
+
+  // Lista trocada ou atualizada: historico e favoritos voltam a apontar para os mesmos titulos na lista nova.
+  // M3U: confere a cada abertura (o catalogo inteiro ja esta aqui). Xtream: quando a lista muda (sig).
+  const relinkSaved = useCallback((map: Map<string, Channel>) => {
+    adoptProgress([...load<Channel[]>(scoped("rtec:history"), []), ...load<Channel[]>(scoped("rtec:favs"), [])]);
+    if (!map.size) return;
+    for (const [key, set] of [["history", setHistory], ["favorites", setFavorites]] as const) {
+      set((old) => {
+        const next = applyRelink(old, map);
+        if (next !== old) saveList(key, next);
+        return next;
+      });
+    }
+  }, []);
+  useEffect(() => {
+    if (!data?.channels.length || catalog?.mode !== "m3u") return;
+    adoptProgress(data.channels);
+    relinkSaved(relinkM3u([...load<Channel[]>(scoped("rtec:history"), []), ...load<Channel[]>(scoped("rtec:favs"), [])], data.channels));
+  }, [data, catalog, relinkSaved]);
+  useEffect(() => {
+    const sig = catalog?.mode === "xtream" && !catalog.errors?.length ? catalog.sig : "";
+    if (!sig || load(scoped("rtec:linksig"), "") === sig) return;
+    let alive = true;
+    const saved = [...load<Channel[]>(scoped("rtec:history"), []), ...load<Channel[]>(scoped("rtec:favs"), [])];
+    (saved.length ? relinkXtream(saved) : Promise.resolve(new Map<string, Channel>()))
+      .then((map) => {
+        if (!alive) return;
+        relinkSaved(map);
+        save(scoped("rtec:linksig"), sig);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [catalog, relinkSaved]);
 
   useEffect(() => {
     loadAll();
@@ -1270,7 +1300,7 @@ function Watch({
                 ))}
               </ul>
             ) : section === "movie" || special ? (
-              <PosterGrid items={visible.slice(0, cap).map((c) => ({ ...c, progress: fraction(c.id), sub: metaLine(c) }))} activeId={current?.id} onSelect={(c) => openItem(c)} />
+              <PosterGrid items={visible.slice(0, cap).map((c) => ({ ...c, progress: fraction(c), sub: metaLine(c) }))} activeId={current?.id} onSelect={(c) => openItem(c)} />
             ) : (
               <PosterGrid items={seriesList.slice(0, cap).map((s) => ({ ...s, id: s.key }))} onSelect={openSeries} />
             )}
@@ -1632,11 +1662,11 @@ function EpisodeList({
 }) {
   // Ultimo episodio mexido = onde o cliente parou ("Continuar").
   const lastId = episodes.reduce<{ id: string; t: number } | null>((best, e) => {
-    const pr = getProgress(e.id);
+    const pr = getProgress(e);
     return pr && (!best || pr.t > best.t) ? { id: e.id, t: pr.t } : best;
   }, null)?.id;
   const resume = episodes.find((e) => e.id === lastId);
-  const nextUp = resume && fraction(resume.id) >= WATCHED_AT ? episodes[episodes.indexOf(resume) + 1] : resume;
+  const nextUp = resume && fraction(resume) >= WATCHED_AT ? episodes[episodes.indexOf(resume) + 1] : resume;
 
   const seasons = useMemo(() => [...new Set(episodes.map((e) => e.season))].sort((a, b) => a - b), [episodes]);
   const playingSeason = episodes.find((e) => e.id === currentId)?.season;
@@ -1657,14 +1687,14 @@ function EpisodeList({
           }}
           className="w-full sm:w-auto"
         >
-          <Play className="fill-current" /> {fraction(nextUp.id) > 0 ? "Continuar" : "Assistir"} T{nextUp.season} · E{nextUp.episode}
+          <Play className="fill-current" /> {fraction(nextUp) > 0 ? "Continuar" : "Assistir"} T{nextUp.season} · E{nextUp.episode}
         </Button>
       )}
       {seasons.length > 1 && (
         <div className="scrollbar-none -mx-1 flex gap-2 overflow-x-auto px-1 pb-1" role="tablist" aria-label="Temporadas">
           {seasons.map((n) => {
             const eps = episodes.filter((e) => e.season === n);
-            const done = eps.filter((e) => fraction(e.id) >= WATCHED_AT).length;
+            const done = eps.filter((e) => fraction(e) >= WATCHED_AT).length;
             return (
               <button
                 key={n}
@@ -1690,7 +1720,7 @@ function EpisodeList({
       </div>
       <ul className="grid gap-1 md:grid-cols-2">
         {list.map((e) => {
-          const f = fraction(e.id);
+          const f = fraction(e);
           const watched = f >= WATCHED_AT;
           const playing = currentId === e.id;
           return (
@@ -1743,7 +1773,7 @@ function HomePage({
   onFavorite: (c: Channel) => void;
   epg: Record<string, Programme[]>;
 }) {
-  const resume = history.filter((c) => c.kind !== "live" && fraction(c.id) > 0 && fraction(c.id) < WATCHED_AT);
+  const resume = history.filter((c) => c.kind !== "live" && fraction(c) > 0 && fraction(c) < WATCHED_AT);
   if (!loading && !history.length) {
     return (
       <EmptyState
@@ -1763,7 +1793,7 @@ function HomePage({
       {!!resume.length && (
         <section>
           <h2 className="mb-3 text-lg font-bold tracking-tight">Continuar assistindo</h2>
-          <PosterGrid items={resume.slice(0, 16).map((c) => ({ ...c, progress: fraction(c.id), sub: c.kind === "series" ? c.group : undefined }))} activeId={currentId} onSelect={onOpen} />
+          <PosterGrid items={resume.slice(0, 16).map((c) => ({ ...c, progress: fraction(c), sub: c.kind === "series" ? c.group : undefined }))} activeId={currentId} onSelect={onOpen} />
         </section>
       )}
       <section>
@@ -1782,7 +1812,7 @@ function HomePage({
               favorite={isFavorite(c.id)}
               onPlay={() => onOpen(c)}
               onFavorite={() => onFavorite(c)}
-              progress={c.kind === "live" ? 0 : fraction(c.id)}
+              progress={c.kind === "live" ? 0 : fraction(c)}
               now={c.epg_id ? epg[c.epg_id]?.[0]?.title : undefined}
               badge={<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-bold uppercase">{KIND_LABEL[c.kind]}</span>}
             />
@@ -1855,7 +1885,7 @@ function AllPage({
                   ))}
                 </ul>
               ) : (
-                <PosterGrid items={r.items.map((c) => ({ ...c, progress: fraction(c.id), sub: metaLine(c) }))} activeId={currentId} onSelect={onOpen} />
+                <PosterGrid items={r.items.map((c) => ({ ...c, progress: fraction(c), sub: metaLine(c) }))} activeId={currentId} onSelect={onOpen} />
               )}
             </section>
           );

@@ -429,6 +429,34 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
   assert.equal(epg["xt:1"][0].title, "Jogo ao vivo");
 });
 
+test("trocar a lista nao perde historico e favoritos: religa cada titulo pelo nome", async () => {
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
+  const catalog = (await call("GET", "/api/player/catalog")).body;
+  assert.match(catalog.sig, /^[0-9a-f]{12}$/, "assinatura da lista, para o aparelho saber quando ela mudou");
+  const old = (id, kind, name, extra = {}) => ({ id, kind, name, group: "Lista antiga", logo: "", src: "http://antigo/x", type: "hls", epg_id: "", playlist_id: "own-x", alt: "", alt_type: "", ...extra });
+  const { items } = (
+    await call("POST", "/api/player/relink", {
+      items: [
+        old("a1", "live", "BR: ESPN HD"),
+        old("a2", "movie", "Abelha Rainha (2023) [4K] - Dublado"),
+        old("serie:Serie Teste", "series", "Serie Teste"),
+        old("a4", "series", "Serie Teste S01E02"),
+        old("a5", "movie", "Filme que saiu da lista"),
+      ],
+    })
+  ).body;
+  assert.equal(items[0].name, "ESPN");
+  assert.equal(items[0].epg_id, "xt:1");
+  assert.equal(items[1].name, "Abelha Rainha");
+  assert.equal(items[1].group, "Filmes | Acao");
+  assert.equal(items[2].series_id, "70");
+  assert.equal(items[3].parent_series, "70");
+  assert.deepEqual([items[3].season, items[3].episode, items[3].group], [1, 2, "Serie Teste"]);
+  assert.match(decodeURIComponent(items[3].src), /902\.mkv/);
+  assert.equal(items[4], null, "titulo que nao existe mais fica como estava no aparelho");
+});
+
 test("app Android recebe link direto; servidor de video externo recebe links absolutos", async () => {
   cookie = "";
   await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });

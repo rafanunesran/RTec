@@ -112,13 +112,13 @@ export default function PlayerOverlay({
       <VideoPlayer
         key={channel.id}
         channel={channel}
-        startAt={isVod ? resumeAt(channel.id) : 0}
+        startAt={isVod ? resumeAt(channel) : 0}
         onProgress={(pos, dur) => {
-          saveProgress(channel.id, pos, dur);
+          saveProgress(channel, pos, dur);
           setRemaining(dur - pos);
         }}
         onEnded={() => {
-          saveProgress(channel.id, Number.MAX_SAFE_INTEGER, 1);
+          saveProgress(channel, Number.MAX_SAFE_INTEGER, 1);
           if (next) setCountdown(5);
         }}
         className="relative h-full w-full flex-1 overflow-hidden bg-black"

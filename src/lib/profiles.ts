@@ -65,7 +65,7 @@ export async function fetchProfiles(user: string): Promise<ProfilesResponse> {
 /** Apaga do aparelho os dados de um perfil excluido. */
 export function forgetProfile(id: string) {
   if (id === MAIN_PROFILE) return;
-  for (const k of ["rtec:favs", "rtec:history", "rtec:progress", "rtec:sync"]) {
+  for (const k of ["rtec:favs", "rtec:history", "rtec:progress", "rtec:sync", "rtec:linksig"]) {
     try {
       localStorage.removeItem(scoped(k, id));
     } catch {

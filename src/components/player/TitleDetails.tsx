@@ -235,10 +235,10 @@ export function MovieDetails({
   skip?: string;
 }) {
   const info = useTitleInfo("movie", movie.xt_id, movie.name, movie.year);
-  const f = fraction(movie.id);
+  const f = fraction(movie);
   const started = f > 0 && f < WATCHED_AT;
   const left = (() => {
-    const pr = getProgress(movie.id);
+    const pr = getProgress(movie);
     return pr && started ? Math.max(1, Math.round((pr.d - pr.p) / 60)) : 0;
   })();
   // Controle remoto: a ficha ja abre com "Assistir" selecionado.
@@ -273,8 +273,8 @@ export function MovieDetails({
                 <Button
                   variant="outline"
                   onClick={() => {
-                    const pr = getProgress(movie.id);
-                    if (pr) saveProgress(movie.id, 0, pr.d);
+                    const pr = getProgress(movie);
+                    if (pr) saveProgress(movie, 0, pr.d);
                     onPlay();
                   }}
                 >

@@ -120,6 +120,8 @@ export type Catalog = {
   mode: "xtream" | "m3u";
   sections?: Record<"live" | "movie" | "series", { id: string; name: string }[]>;
   errors?: string[];
+  /** Xtream: identifica a lista (servidor e usuario); muda quando o link e trocado. */
+  sig?: string;
 };
 
 export type ChannelsResponse = {
