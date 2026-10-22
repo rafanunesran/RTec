@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Heart, Pause, Play, SkipForward, X } from "lucide-react";
+import { ArrowLeft, Heart, Pause, Play, SkipForward, Volume2, X } from "lucide-react";
 import type { Channel } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { resumeAt, saveProgress } from "@/lib/progress";
-import VideoPlayer from "@/components/VideoPlayer";
+import VideoPlayer, { type BoostState } from "@/components/VideoPlayer";
+import { boostSaved, saveBoost } from "@/lib/boost";
 import { restorePortrait } from "@/lib/orientation";
 import { tvScreenOn } from "@/lib/tvnav";
 
@@ -50,6 +51,29 @@ export default function PlayerOverlay({
   const [countdown, setCountdown] = useState<number | null>(null); // contagem para o proximo episodio
   const [chrome, setChrome] = useState(true); // barra de cima visivel
   const hideTimer = useRef<ReturnType<typeof setTimeout>>();
+  const [boost, setBoost] = useState(boostSaved); // reforco de volume (fica lembrado no aparelho)
+  const [boostState, setBoostState] = useState<BoostState>("off");
+  const [notice, setNotice] = useState("");
+  const noticeTimer = useRef<ReturnType<typeof setTimeout>>();
+  const say = (msg: string) => {
+    setNotice(msg);
+    clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(""), 3000);
+  };
+  const toggleBoost = () => {
+    const on = !boost;
+    setBoost(on);
+    saveBoost(on);
+    if (!on) say("Reforço de volume desligado");
+  };
+  const onBoost = useCallback(
+    (s: BoostState) => {
+      setBoostState(s);
+      if (s === "on") say("Reforço de volume ligado");
+      else if (s === "unavailable") say("Reforço de volume indisponível neste vídeo");
+    },
+    [],
+  );
 
   // Fullscreen ao abrir; o botao "voltar" do celular fecha o player.
   useEffect(() => {
@@ -112,6 +136,8 @@ export default function PlayerOverlay({
       <VideoPlayer
         key={channel.id}
         channel={channel}
+        boost={boost}
+        onBoost={onBoost}
         startAt={isVod ? resumeAt(channel) : 0}
         onProgress={(pos, dur) => {
           saveProgress(channel, pos, dur);
@@ -138,12 +164,31 @@ export default function PlayerOverlay({
             <div className="truncate text-sm font-semibold sm:text-base">{channel.name}</div>
             {channel.group && <div className="truncate text-xs text-white/70">{channel.group}</div>}
           </div>
+          <button
+            onClick={toggleBoost}
+            className={cn(
+              "flex h-10 items-center gap-1 rounded-full px-3 text-xs font-bold",
+              boost ? (boostState === "unavailable" ? "bg-white/25 text-white/70" : "bg-brand text-white") : "bg-white/10 hover:bg-white/20",
+            )}
+            aria-label="Reforço de volume"
+            aria-pressed={boost}
+            title="Reforço de volume"
+          >
+            <Volume2 className="h-5 w-5" />
+            <span>{boost ? "+ ligado" : "+"}</span>
+          </button>
           <button onClick={onFavorite} className="grid h-10 w-10 place-items-center rounded-full bg-white/10 hover:bg-white/20" aria-label="Favorito">
             <Heart className={cn("h-5 w-5", favorite && "fill-red-500 text-red-500")} />
           </button>
         </div>
         {info && chrome && <div className="pointer-events-auto mt-2 max-w-xl">{info}</div>}
       </div>
+
+      {notice && (
+        <div className="pointer-events-none absolute left-1/2 top-[max(64px,calc(env(safe-area-inset-top)+52px))] z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/75 px-4 py-2 text-sm font-semibold ring-1 ring-white/20">
+          {notice}
+        </div>
+      )}
 
       {tvScreenOn() && <TvBar root={rootRef} live={!isVod} visible={chrome} />}
 

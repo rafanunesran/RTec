@@ -3,6 +3,7 @@ import { AlertTriangle, Loader2, RotateCw, Tv, VolumeX } from "lucide-react";
 import type { Channel } from "@/lib/api";
 import { watchFullscreenOrientation } from "@/lib/orientation";
 import { tvScreenOn } from "@/lib/tvnav";
+import { boostable, boostAttached, dropBoost, setBoost } from "@/lib/boost";
 
 type Stop = () => void;
 
@@ -106,8 +107,14 @@ function native(video: HTMLVideoElement, src: string, onFail: (msg: string) => v
   };
 }
 
+export type BoostState = "on" | "off" | "unavailable";
+
 type Props = {
   channel: Channel | null;
+  /** Reforco de volume pedido pelo usuario. */
+  boost?: boolean;
+  /** Se o reforco ficou ligado, desligado ou nao pode ser usado neste video. */
+  onBoost?: (s: BoostState) => void;
   /** Segundo para retomar (filmes e episodios). */
   startAt?: number;
   /** Chamado a cada poucos segundos com a posicao e a duracao. */
@@ -117,13 +124,16 @@ type Props = {
   className?: string;
 };
 
-export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded, className }: Props) {
+export default function VideoPlayer({ channel, boost = false, onBoost, startAt = 0, onProgress, onEnded, className }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [state, setState] = useState<"idle" | "loading" | "playing" | "error">("idle");
   const [error, setError] = useState("");
   const [tried, setTried] = useState<string[]>([]); // o que aconteceu em cada caminho tentado
   const [muted, setMuted] = useState(false); // navegador bloqueou o som no inicio
   const [attempt, setAttempt] = useState(0); // "Tentar novamente"
+  // Troca o <video> por um novo quando o reforco ja pegou o audio e o caminho seguinte e de outro dominio.
+  const [el, setEl] = useState(0);
+  const carry = useRef<{ src: string; type: Channel["type"]; triedFallback: boolean; triedAlt: boolean } | null>(null);
 
   useEffect(() => watchFullscreenOrientation(), []);
 
@@ -131,14 +141,47 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
   const cb = useRef({ onProgress, onEnded, startAt });
   cb.current = { onProgress, onEnded, startAt };
 
+  const boostRef = useRef({ boost, onBoost });
+  boostRef.current = { boost, onBoost };
+  const applyBoost = useRef(async () => {
+    const v = videoRef.current;
+    if (!v || v.readyState < 2) return;
+    const want = boostRef.current.boost;
+    if (!want && !boostAttached(v)) return boostRef.current.onBoost?.("off");
+    const on = await setBoost(v, want);
+    if (v === videoRef.current) boostRef.current.onBoost?.(want ? (on ? "on" : "unavailable") : "off");
+  }).current;
+  useEffect(() => void applyBoost(), [boost]);
+  // Sem toque do usuario o navegador nao libera o audio: tenta de novo na proxima tecla/toque.
+  useEffect(() => {
+    const retry = () => {
+      const v = videoRef.current;
+      if (boostRef.current.boost && v && !boostAttached(v) && boostable(v)) void applyBoost();
+    };
+    window.addEventListener("pointerdown", retry);
+    window.addEventListener("keydown", retry);
+    return () => {
+      window.removeEventListener("pointerdown", retry);
+      window.removeEventListener("keydown", retry);
+    };
+  }, []);
+  useEffect(() => {
+    const v = videoRef.current;
+    return () => {
+      if (v) dropBoost(v);
+    };
+  }, [el]);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !channel) return;
     let stop: Stop | undefined;
     let cancelled = false;
-    let triedAlt = false;
-    let triedFallback = false;
-    let active = { src: channel.src, type: channel.type };
+    const resume = carry.current;
+    carry.current = null;
+    let triedAlt = resume?.triedAlt ?? false;
+    let triedFallback = resume?.triedFallback ?? false;
+    let active = { src: resume?.src ?? channel.src, type: resume?.type ?? channel.type };
     let playedAt = 0; // quando comecou a tocar (para saber se a queda foi depois de funcionar)
     let reconnects = 0;
     let firstError = ""; // o motivo da primeira tentativa e o mais util
@@ -218,8 +261,15 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
 
     const onPlaying = () => {
       clearTimers();
+      // O reforco ja pegou o audio deste <video> e agora o link e de outro dominio: ficaria mudo.
+      if (boostAttached(video) && !boostable(video)) {
+        carry.current = { ...active, triedFallback, triedAlt };
+        setEl((n) => n + 1);
+        return;
+      }
       playedAt ||= Date.now();
       setState("playing");
+      void applyBoost();
     };
     const onWaiting = () => {
       setState((s) => (s === "error" ? s : "loading"));
@@ -250,7 +300,7 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
     video.addEventListener("timeupdate", onTime);
     video.addEventListener("pause", onPause);
     video.addEventListener("canplay", onCanPlay);
-    start(channel.src, channel.type);
+    start(active.src, active.type);
 
     return () => {
       cancelled = true;
@@ -265,11 +315,11 @@ export default function VideoPlayer({ channel, startAt = 0, onProgress, onEnded,
       onPause();
       stop?.();
     };
-  }, [channel, attempt]);
+  }, [channel, attempt, el]);
 
   return (
     <div className={className ?? "relative aspect-video w-full overflow-hidden bg-black lg:rounded-2xl lg:ring-1 lg:ring-border"}>
-      <video ref={videoRef} className="h-full w-full" controls={!tvScreenOn()} playsInline autoPlay />
+      <video key={el} ref={videoRef} className="h-full w-full" controls={!tvScreenOn()} playsInline autoPlay />
       {!channel && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-glow text-muted-foreground">
           <div className="grid h-14 w-14 place-items-center rounded-2xl bg-muted ring-1 ring-border">
