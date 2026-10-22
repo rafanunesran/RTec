@@ -6,7 +6,7 @@ import { resumeAt, saveProgress } from "@/lib/progress";
 import VideoPlayer, { type BoostState } from "@/components/VideoPlayer";
 import { boostSaved, saveBoost } from "@/lib/boost";
 import { restorePortrait } from "@/lib/orientation";
-import { tvScreenOn } from "@/lib/tvnav";
+import { tvNavigationOn, tvScreenOn } from "@/lib/tvnav";
 
 const fsElement = () =>
   document.fullscreenElement ?? (document as Document & { webkitFullscreenElement?: Element | null }).webkitFullscreenElement ?? null;
@@ -138,6 +138,27 @@ export default function PlayerOverlay({
 
   const isVod = channel.kind !== "live";
   const nearEnd = isVod && next && remaining !== null && remaining < 45;
+  const showNext = !!next && (!!nearEnd || countdown !== null);
+
+  // Controle remoto: o botao "Proximo episodio" ja aparece selecionado, entao um OK basta.
+  const nextRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (showNext && tvNavigationOn()) nextRef.current?.focus({ preventScroll: true });
+  }, [showNext]);
+
+  // Alguns aparelhos (e o video em pedacos pelo servidor) nao avisam o fim do arquivo: perto do fim,
+  // confere o video a cada segundo e comeca a contagem para o proximo episodio quando ele parar no final.
+  useEffect(() => {
+    if (!nearEnd || countdown !== null) return;
+    const t = setInterval(() => {
+      const v = rootRef.current?.querySelector("video");
+      if (v && (v.ended || (v.paused && Number.isFinite(v.duration) && v.duration - v.currentTime < 1.5))) {
+        saveProgress(channel, Number.MAX_SAFE_INTEGER, 1);
+        setCountdown(5);
+      }
+    }, 1000);
+    return () => clearInterval(t);
+  }, [nearEnd, countdown, channel]);
 
   return (
     <div ref={rootRef} data-tv-scope="50" className="fixed inset-0 z-50 flex flex-col bg-black text-white" onMouseMove={showChrome} onTouchStart={showChrome}>
@@ -205,7 +226,7 @@ export default function PlayerOverlay({
 
       {tvScreenOn() && <TvBar root={rootRef} live={!isVod} visible={chrome} />}
 
-      {(nearEnd || countdown !== null) && next && (
+      {showNext && next && (
         <div className="absolute bottom-20 right-4 z-10 flex items-center gap-2">
           {countdown !== null && (
             <button onClick={() => setCountdown(null)} className="grid h-11 w-11 place-items-center rounded-full bg-black/60 ring-1 ring-white/20" aria-label="Cancelar">
@@ -213,6 +234,7 @@ export default function PlayerOverlay({
             </button>
           )}
           <button
+            ref={nextRef}
             onClick={() => onNext(next)}
             className="flex items-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-bold text-black shadow-lg hover:bg-white/90"
           >

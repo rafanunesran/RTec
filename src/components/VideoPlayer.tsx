@@ -99,9 +99,14 @@ function native(video: HTMLVideoElement, src: string, onFail: (msg: string) => v
     else onFail("Não foi possível reproduzir este vídeo agora. Tente novamente.");
   };
   video.addEventListener("error", onError);
+  const attemptId = String(Math.random());
+  video.dataset.attempt = attemptId;
   video.src = src;
   return () => {
     video.removeEventListener("error", onError);
+    // Troca rapida de canal (CH+/CH-) pode desligar uma tentativa antiga depois que a nova ja comecou
+    // no mesmo <video>: so limpa se o video ainda for o desta tentativa.
+    if (video.dataset.attempt !== attemptId) return;
     video.removeAttribute("src");
     video.load();
   };
