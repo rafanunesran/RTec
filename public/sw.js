@@ -27,8 +27,11 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       fetch(req)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put("/", copy));
+          // So guarda paginas HTML (o link /apk e um download, nao pode virar a pagina inicial offline).
+          if (res.ok && (res.headers.get("content-type") || "").includes("text/html")) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put("/", copy));
+          }
           return res;
         })
         .catch(() => caches.match("/")),

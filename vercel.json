@@ -11,6 +11,10 @@
       "maxDuration": 60
     }
   },
+  "redirects": [
+    { "source": "/apk", "destination": "/download/rtec-tv.apk", "permanent": false },
+    { "source": "/APK", "destination": "/download/rtec-tv.apk", "permanent": false }
+  ],
   "rewrites": [
     {
       "source": "/api/(.*)",
