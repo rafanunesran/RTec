@@ -2006,7 +2006,7 @@ function TvSidebar({ items, viewer, onProfile, onSettings }: { items: TvMenuItem
     );
   const label = "whitespace-nowrap opacity-0 transition-opacity group-focus-within/side:opacity-100";
   return (
-    <aside className="group/side fixed inset-y-0 left-0 z-30 flex w-24 flex-col gap-1 overflow-hidden bg-gradient-to-r from-background via-background to-background/0 px-4 py-8 transition-[width] duration-200 focus-within:w-80 focus-within:to-background/90">
+    <aside data-tv-group className="group/side fixed inset-y-0 left-0 z-30 flex w-24 flex-col gap-1 overflow-hidden bg-gradient-to-r from-background via-background to-background/0 px-4 py-8 transition-[width] duration-200 focus-within:w-80 focus-within:to-background/90">
       <div className="mb-6 flex h-12 items-center px-1.5">
         <Logo className="[&>div:last-child]:opacity-0 [&>div:last-child]:transition-opacity group-focus-within/side:[&>div:last-child]:opacity-100" />
       </div>

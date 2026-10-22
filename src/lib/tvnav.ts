@@ -355,7 +355,11 @@ function onKey(e: KeyboardEvent) {
     if (f) focusEl(f, scope);
     return;
   }
-  const next = nearest(focused.getBoundingClientRect(), list, k, focused);
+  // Menus em coluna (data-tv-group, ex: menu lateral): para cima/baixo continua dentro do menu,
+  // mesmo que o catalogo atras esteja mais perto na tela; no fim do menu, o foco fica parado.
+  const group = k === "up" || k === "down" ? focused.closest<HTMLElement>("[data-tv-group]") : null;
+  const inGroup = group ? nearest(focused.getBoundingClientRect(), list.filter((el) => group.contains(el)), k, focused) : null;
+  const next = group ? inGroup : nearest(focused.getBoundingClientRect(), list, k, focused);
   if (next) focusEl(next, scope);
   else if (video) focused.blur(); // sai dos botoes e volta a controlar o video
   else if (k === "up") scrollTo({ top: 0 });
