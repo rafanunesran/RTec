@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  App RTec TV para TVs Samsung antigas (Smart Hub "Orsay", 2011 a 2014, antes do Tizen).
+  O app so abre a versao leve do site (public/tv-antiga.html). Pacote gerado por scripts/build-orsay.sh.
+-->
+<widget>
+  <previewjspath></previewjspath>
+  <category>video</category>
+  <autoUpdate>n</autoUpdate>
+  <cpname>RTec</cpname>
+  <login>n</login>
+  <ver>@VERSION@</ver>
+  <mgrver></mgrver>
+  <fullwidget>y</fullwidget>
+  <srcctl>n</srcctl>
+  <ticker>n</ticker>
+  <childlock>n</childlock>
+  <videomute>n</videomute>
+  <dcont>y</dcont>
+  <network>y</network>
+  <widgetname itemtype="string">RTec TV</widgetname>
+  <description itemtype="string">TV ao vivo, filmes e series</description>
+  <width>1280</width>
+  <height>720</height>
+  <author>
+    <name>RTec</name>
+    <email></email>
+    <link></link>
+    <organization>RTec</organization>
+  </author>
+  <ThumbIcon>icon/icon_106.png</ThumbIcon>
+  <BigThumbIcon>icon/icon_115.png</BigThumbIcon>
+  <ListIcon>icon/icon_85.png</ListIcon>
+  <BigListIcon>icon/icon_95.png</BigListIcon>
+  <type>user</type>
+</widget>

@@ -18,3 +18,4 @@ android/local.properties
 # Samsung TV (Tizen)
 dist-tizen
 *.p12
+dist-orsay

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>RTec TV</title>
+<script type="text/javascript" src="$MANAGER_WIDGET/Common/API/Widget.js"></script>
+<script type="text/javascript" src="$MANAGER_WIDGET/Common/API/TVKeyValue.js"></script>
+<style>
+  html, body { margin: 0; width: 1280px; height: 720px; background: #0b0b10; color: #f4f4f6; font-family: Arial, sans-serif; }
+  #box { position: absolute; left: 0; right: 0; top: 260px; text-align: center; }
+  img { width: 115px; height: 95px; }
+  p { font-size: 30px; margin: 20px 0 0; }
+  small { font-size: 22px; color: #9a9aa6; }
+</style>
+</head>
+<body onload="start()">
+<a href="javascript:void(0)" id="anchor" onkeydown="keyDown()"></a>
+<div id="box"><img src="icon/icon_115.png" alt=""><p id="msg">Carregando...</p><small id="hint"></small></div>
+<script type="text/javascript">
+// Abre a versao leve do RTec (o mesmo site, em JavaScript antigo). URL trocada por scripts/build-orsay.sh.
+var APP_URL = "@APP_URL@";
+var widgetAPI = null;
+var tvKey = null;
+var tries = 0;
+
+function start() {
+  try { widgetAPI = new Common.API.Widget(); tvKey = new Common.API.TVKeyValue(); widgetAPI.sendReadyEvent(); } catch (e) {}
+  try { document.getElementById("anchor").focus(); } catch (e) {}
+  load();
+}
+
+function show(msg, hint) {
+  document.getElementById("msg").innerHTML = msg;
+  document.getElementById("hint").innerHTML = hint || "";
+}
+
+// Testa a conexao com uma imagem do site antes de sair desta tela (sem internet mostra o aviso aqui).
+function load() {
+  tries++;
+  show("Carregando...");
+  var img = new Image();
+  var done = false;
+  var timer = setTimeout(function () { finish(false); }, 15000);
+  function finish(ok) {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    if (ok) window.location.href = APP_URL + "/tv-antiga.html";
+    else {
+      show("Sem conexao com a internet.", "Verifique a internet da TV e aperte OK para tentar de novo.");
+      if (tries < 3) setTimeout(load, 5000);
+    }
+  }
+  img.onload = function () { finish(true); };
+  img.onerror = function () { finish(false); };
+  img.src = APP_URL + "/icons/icon-192.png?t=" + new Date().getTime();
+}
+
+function keyDown() {
+  var k = event.keyCode;
+  if (tvKey && (k === tvKey.KEY_ENTER)) load();
+  else if (tvKey && (k === tvKey.KEY_RETURN || k === tvKey.KEY_EXIT) && widgetAPI) widgetAPI.sendReturnEvent();
+}
+</script>
+</body>
+</html>

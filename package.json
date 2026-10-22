@@ -12,7 +12,8 @@
     "test": "node --test server/app.test.js",
     "test:firestore": "npx -y firebase-tools@14 emulators:exec --only firestore --project demo-rtec \"node --test server/app.test.js\"",
     "app:android": "bash scripts/build-android.sh",
-    "app:tizen": "bash scripts/build-tizen.sh"
+    "app:tizen": "bash scripts/build-tizen.sh",
+    "app:orsay": "bash scripts/build-orsay.sh"
   },
   "engines": {
     "node": "22.x"

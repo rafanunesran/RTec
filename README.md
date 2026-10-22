@@ -117,6 +117,19 @@ revisa o app antes de publicar.
 Limitacao: dentro do app o site continua em `https`, entao os canais `http` passam pelo servidor (proxy), como no
 navegador. Para video direto sem limite, use o servidor de video da Oracle (acima) ou fontes `https`.
 
+## TVs Samsung antigas (Smart Hub "Orsay", 2011 a 2014)
+
+Navegadores antigos demais para o site (sem modulos JavaScript) vao sozinhos para a versao leve
+`/tv-antiga.html` (login, ao vivo, filmes, series e reprodutor da propria TV). Para ter um icone no
+Smart Hub dessas TVs:
+
+```bash
+APP_URL=https://seu-site.vercel.app npm run app:orsay
+```
+
+Copie a pasta `dist-orsay/RTecTV` para a raiz de um pendrive, ligue o pendrive na TV e desligue e
+ligue a TV. O app aparece em Smart Hub > Mais apps. O pendrive precisa ficar ligado na TV.
+
 ## Ficha dos filmes e series (opcional)
 
 A tela de cada filme/serie mostra sinopse, genero, ano, duracao, nota, direcao, elenco e trailer vindos do fornecedor.
