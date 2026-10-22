@@ -18,9 +18,11 @@ function expiresSoon(url: string) {
 /** Devolve os canais com os links do servidor de video renovados (os que ja venceram ou vencem em 1 h). */
 export async function refreshChannels(list: Channel[]): Promise<Channel[]> {
   const need: string[] = [];
-  for (const c of list) for (const f of FIELDS) {
-    const v = c[f];
-    if (v && expiresSoon(v) && !need.includes(v)) need.push(v);
+  for (const c of list) {
+    // Inclui as reservas de outras listas do cliente ("more").
+    for (const v of [...FIELDS.map((f) => c[f]), ...(c.more || []).flatMap((m) => [m.src, m.alt, m.fallback])]) {
+      if (v && expiresSoon(v) && !need.includes(v)) need.push(v);
+    }
   }
   if (!need.length) return list;
   const fresh = new Map<string, string>();
@@ -35,6 +37,8 @@ export async function refreshChannels(list: Channel[]): Promise<Channel[]> {
       const v = c[f];
       if (v && fresh.has(v)) n[f] = fresh.get(v)!;
     }
+    const renew = (v?: string) => (v && fresh.get(v)) || v || "";
+    if (c.more) n.more = c.more.map((m) => ({ ...m, src: renew(m.src), alt: renew(m.alt), fallback: renew(m.fallback) }));
     return n;
   });
 }

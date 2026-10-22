@@ -31,6 +31,8 @@ export type Client = {
   created_at: string;
   playlist_ids: string[];
   source: Source | null;
+  /** Listas extras: completam a principal no mesmo catalogo (titulos repetidos aparecem uma vez). */
+  extra_sources?: Source[];
   custom_pin: boolean;
   links: Links;
 };
@@ -42,6 +44,8 @@ export type ListStatus = {
   checked_at: string | null;
   last_error: string;
   provider_status: string;
+  /** Com varias listas: estado de cada uma (pela chave da lista). */
+  sources?: Record<string, ListStatus["state"]>;
 };
 
 export type PlaylistKind = "m3u_url" | "xtream" | "manual";
@@ -112,9 +116,13 @@ export type Channel = {
   alt_type: "hls" | "mpegts" | "file" | "";
   /** Link pelo servidor de video, usado se o direto falhar (app). */
   fallback?: string;
+  /** O mesmo titulo nas outras listas do cliente: tentado em ordem se este nao tocar. */
+  more?: PlayLink[];
   /** Recomendacoes: por que o titulo foi sugerido ("Direção de ...", "Com ..."). */
   reasons?: string[];
 };
+
+export type PlayLink = Pick<Channel, "src" | "type" | "alt" | "alt_type" | "fallback">;
 
 export type Catalog = {
   mode: "xtream" | "m3u";

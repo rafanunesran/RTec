@@ -31,6 +31,7 @@ function xtreamApi(req, res) {
     const exp = renova === "active" ? "1893456000" : "1600000000";
     return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ user_info: { auth: 1, status: renova === "active" ? "Active" : "Expired", exp_date: exp } }));
   }
+  if (q.get("username") === "Extra" && q.get("password") === "E1") return extraApi(q, res);
   if (q.get("username") !== "TiaX" || q.get("password") !== "Sen@1") return res.end(JSON.stringify({ user_info: { auth: 0 } }));
   const json = (d) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(d));
   const port = source.address().port;
@@ -71,6 +72,38 @@ function xtreamApi(req, res) {
       const now = Math.floor(Date.now() / 1000);
       return json({ epg_listings: [{ title: b64("Jogo ao vivo"), description: b64("Final"), start_timestamp: now - 600, stop_timestamp: now + 600 }] });
     }
+  }
+  res.end("[]");
+}
+
+// Segunda lista (outro fornecedor): repete alguns titulos da primeira e traz outros que faltam nela.
+function extraApi(q, res) {
+  const json = (d) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(d));
+  switch (q.get("action")) {
+    case null:
+      return json({ user_info: { auth: 1, status: "Active", exp_date: "1924992000" } });
+    case "get_live_categories":
+      return json([{ category_id: "5", category_name: "ESPORTES" }, { category_id: "6", category_name: "Abertos" }]);
+    case "get_vod_categories":
+      return json([{ category_id: "7", category_name: "Filmes | Ação" }]);
+    case "get_series_categories":
+      return json([{ category_id: "8", category_name: "Series | Drama" }]);
+    case "get_live_streams":
+      return json([
+        { stream_id: 101, name: "ESPN FHD", stream_icon: "", category_id: "5" },
+        { stream_id: 102, name: "Globo", stream_icon: "", category_id: "6" },
+      ]);
+    case "get_vod_streams":
+      return json([
+        { stream_id: 150, name: "Filme Teste (2015)", stream_icon: "", container_extension: "mkv", category_id: "7", year: "2015" },
+        { stream_id: 151, name: "Filme Novo", stream_icon: "", container_extension: "mp4", category_id: "7" },
+      ]);
+    case "get_series":
+      return json([{ series_id: 80, name: "Serie Teste", cover: "", category_id: "8" }]);
+    case "get_series_info":
+      return json({ episodes: { 1: [{ id: 801, episode_num: 1, season: 1, title: "Ep 1", container_extension: "mp4" }, { id: 803, episode_num: 3, season: 1, title: "Ep 3", container_extension: "mp4" }] } });
+    case "get_short_epg":
+      return json({ epg_listings: [] });
   }
   res.end("[]");
 }
@@ -478,6 +511,108 @@ test("trocar a lista nao perde historico e favoritos: religa cada titulo pelo no
   assert.deepEqual([items[3].season, items[3].episode, items[3].group], [1, 2, "Serie Teste"]);
   assert.match(decodeURIComponent(items[3].src), /902\.mkv/);
   assert.equal(items[4], null, "titulo que nao existe mais fica como estava no aparelho");
+});
+
+test("varias listas no mesmo cliente: um catalogo so, sem repetir titulos, com as outras listas de reserva", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const port = source.address().port;
+  const server = `http://127.0.0.1:${port}`;
+  const created = await call("POST", "/api/clients", {
+    username: "duas_listas",
+    password: "x1",
+    source: { kind: "xtream", xtream_server: server, xtream_username: "TiaX", xtream_password: "Sen@1", playback: "direct" },
+    extra_sources: [
+      { kind: "m3u_url", url: `${server}/get.php?username=Extra&password=E1&type=m3u_plus`, playback: "direct" },
+      { kind: "xtream", xtream_server: server, xtream_username: "TiaX", xtream_password: "Sen@1" }, // repetida: ignorada
+    ],
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.extra_sources.length, 1);
+  assert.equal(created.body.list_status.state, "active");
+  assert.equal(created.body.expires_at, "2031-01-01T00:00:00.000Z", "vale a lista que vence por ultimo");
+
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "duas_listas", password: "x1" });
+  const catalog = (await call("GET", "/api/player/catalog")).body;
+  assert.equal(catalog.mode, "xtream");
+  // Categorias de mesmo nome viram uma so; as da principal mantem o id.
+  assert.deepEqual(catalog.sections.live.map((c) => c.name), ["Esportes", "Adultos", "Abertos"]);
+  assert.equal(catalog.sections.live[0].id, "10");
+  assert.deepEqual(catalog.sections.movie.map((c) => c.id), ["20"]);
+
+  const live = (await call("GET", "/api/player/xtream/items?section=live")).body;
+  assert.deepEqual(live.map((c) => c.name), ["ESPN", "Canal +18", "Globo"], "ESPN nao se repete");
+  assert.equal(live[0].epg_id, "xt:1", "item da principal fica com o mesmo id de sempre");
+  assert.equal(live[0].more.length, 1, "ESPN da outra lista vira reserva");
+  assert.match(decodeURIComponent(live[0].more[0].src), /\/live\/Extra\/E1\/101\.ts/);
+  assert.match(live[2].epg_id, /^xt:[0-9a-f]{6}~102$/);
+  const esportes = (await call("GET", "/api/player/xtream/items?section=live&category=10")).body;
+  assert.deepEqual(esportes.map((c) => c.name), ["ESPN"]);
+  const abertos = (await call("GET", `/api/player/xtream/items?section=live&category=${encodeURIComponent(catalog.sections.live[2].id)}`)).body;
+  assert.deepEqual(abertos.map((c) => c.name), ["Globo"]);
+
+  const movies = (await call("GET", "/api/player/xtream/items?section=movie&category=20&sort=az")).body;
+  assert.deepEqual(movies.map((m) => m.name), ["Abelha Rainha", "Filme Novo", "Filme Teste", "Zebra (1999)"]);
+  const teste = movies.find((m) => m.name === "Filme Teste");
+  assert.match(decodeURIComponent(teste.more[0].src), /\/movie\/Extra\/E1\/150\.mkv/);
+  const novo = movies.find((m) => m.name === "Filme Novo");
+  assert.match(novo.xt_id, /^[0-9a-f]{6}~151$/);
+  const paged = (await call("GET", "/api/player/xtream/items?section=movie&limit=10")).body;
+  assert.equal(paged.total, 4);
+
+  const series = (await call("GET", "/api/player/xtream/items?section=series&category=30")).body;
+  assert.deepEqual(series.map((s) => s.series_id), ["70"]);
+  const eps = (await call("GET", "/api/player/xtream/series/70?name=Serie%20Teste")).body;
+  assert.deepEqual(eps.map((e) => [e.season, e.episode]), [[1, 1], [1, 2], [1, 3]], "episodio que falta vem da outra lista");
+  assert.match(decodeURIComponent(eps[0].more[0].src), /801\.mp4/);
+  assert.equal(eps[1].more, undefined);
+  assert.match(decodeURIComponent(eps[2].src), /803\.mp4/);
+  assert.equal(eps[2].parent_series, "70");
+
+  const epg = (await call("GET", `/api/player/epg?ids=${encodeURIComponent(live[2].epg_id)}`)).body;
+  assert.deepEqual(epg[live[2].epg_id], []);
+  const info = (await call("GET", `/api/player/info?kind=movie&id=${encodeURIComponent(novo.xt_id)}&name=Filme%20Novo`)).body;
+  assert.equal(info.name, "Filme Novo");
+
+  // Historico guarda as reservas e religa pelo nome.
+  const sync = (await call("PUT", "/api/player/sync", { history: [teste] })).body;
+  assert.equal(sync.history[0].more.length, 1);
+  const { items } = (await call("POST", "/api/player/relink", { items: [{ ...teste, id: "x", src: "http://antigo" }, { ...eps[2], id: "y" }] })).body;
+  assert.equal(items[0].id, teste.id);
+  assert.match(decodeURIComponent(items[1].src), /803\.mp4/);
+
+  // Lista extra vencida sai do catalogo; o cliente continua com a principal.
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  renova = "expired";
+  const id = created.body.id;
+  const upd = await call("PUT", `/api/clients/${id}`, {
+    extra_sources: [{ kind: "xtream", xtream_server: server, xtream_username: "Renova", xtream_password: "r" }, { kind: "m3u_url", url: `${server}/get.php?username=Extra&password=E1` }],
+  });
+  assert.equal(upd.body.list_status.state, "active");
+  assert.deepEqual(Object.values(upd.body.list_status.sources).sort(), ["active", "active", "expired"]);
+  renova = "active";
+});
+
+test("varias listas M3U: titulos repetidos aparecem uma vez, com reserva", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const port = source.address().port;
+  const created = await call("POST", "/api/clients", {
+    username: "duas_m3u",
+    password: "x1",
+    source: { kind: "manual", content: "#EXTM3U\n#EXTINF:-1 group-title=\"Noticias\",Canal Remoto HD\nhttps://a.example/1.m3u8\n#EXTINF:-1 group-title=\"Filmes\",Filme A (2020)\nhttps://a.example/f.mp4\n" },
+    extra_sources: [{ kind: "m3u_url", url: `http://127.0.0.1:${port}/lista.m3u` }],
+  });
+  assert.equal(created.status, 201);
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "duas_m3u", password: "x1" });
+  assert.equal((await call("GET", "/api/player/catalog")).body.mode, "m3u");
+  const data = (await call("GET", "/api/player/channels")).body;
+  assert.equal(data.playlists.length, 1, "aparece como uma lista so");
+  assert.deepEqual(data.channels.map((c) => c.name), ["Canal Remoto HD", "Filme A (2020)"]);
+  assert.equal(data.channels[0].more[0].src.includes("remoto.ts") || data.channels[0].more[0].src.includes("proxy"), true);
 });
 
 test("app Android recebe link direto; servidor de video externo recebe links absolutos", async () => {

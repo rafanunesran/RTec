@@ -23,7 +23,7 @@ type Msg = { from: string; to?: string; ts: number } & (
 
 const ID_KEY = "rtec:device";
 const MAX_AGE = 60; // s: ao reconectar, o canal reenvia o que perdeu; comando mais velho que isso e ignorado
-const KEEP = ["id", "name", "group", "logo", "src", "type", "kind", "epg_id", "playlist_id", "series_id", "parent_series", "xt_id", "season", "episode", "alt", "alt_type", "fallback"] as const;
+const KEEP = ["id", "name", "group", "logo", "src", "type", "kind", "epg_id", "playlist_id", "series_id", "parent_series", "xt_id", "season", "episode", "alt", "alt_type", "fallback", "more"] as const;
 
 const deviceId = (() => {
   try {

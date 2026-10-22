@@ -139,7 +139,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
   // Troca o <video> por um novo: para pedir o video com CORS (reforco) ou quando o reforco ja pegou o audio
   // e o caminho seguinte e de outro dominio (ficaria mudo).
   const [el, setEl] = useState({ n: 0, cors: false });
-  const carry = useRef<{ src: string; type: Channel["type"]; triedFallback: boolean; triedAlt: boolean; at: number } | null>(null);
+  const carry = useRef<{ src: string; type: Channel["type"]; step: number; at: number } | null>(null);
   const corsFailed = useRef(false); // o fornecedor nao libera CORS e nao ha servidor de video: sem reforco
   const force = useRef<() => boolean>(() => false); // tenta deixar o audio legivel para o reforco
 
@@ -200,13 +200,21 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     let cancelled = false;
     const resume = carry.current;
     carry.current = null;
-    let triedAlt = resume?.triedAlt ?? false;
-    let triedFallback = resume?.triedFallback ?? false;
+    // Caminhos, em ordem: o link do canal, pelo servidor de video, o outro formato (HLS <-> MPEG-TS) e depois
+    // o mesmo titulo nas outras listas do cliente ("more"), cada uma com seus planos B.
+    const paths: { src: string; type: Channel["type"]; label: string }[] = [];
+    [channel, ...(channel.more || [])].forEach((s, n) => {
+      const list = n ? `lista ${n + 1}, ` : "";
+      if (s.src) paths.push({ src: s.src, type: s.type, label: `${list}direto` });
+      if (s.fallback) paths.push({ src: s.fallback, type: s.type, label: `${list}servidor` });
+      if (s.alt) paths.push({ src: s.alt, type: s.alt_type || "hls", label: `${list}formato alternativo` });
+    });
+    let step = resume?.step ?? 0;
     let active = { src: resume?.src ?? channel.src, type: resume?.type ?? channel.type };
     const seekTo = resume ? resume.at : cb.current.startAt;
     /** Recria o <video> e continua do mesmo caminho e do mesmo ponto. */
     const remount = (cors: boolean) => {
-      carry.current = { ...active, triedFallback, triedAlt, at: channel!.kind === "live" ? 0 : video.currentTime };
+      carry.current = { ...active, step, at: channel!.kind === "live" ? 0 : video.currentTime };
       setEl((e) => ({ n: e.n + 1, cors }));
     };
     // Reforco pedido num video de outro dominio: pede o mesmo link com CORS. Nao passa pelo servidor de
@@ -281,17 +289,11 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
         return;
       }
       firstError ||= msg;
-      steps.push(`${active.src === channel!.fallback ? "servidor" : active.src === channel!.alt ? "formato alternativo" : "direto"} (${active.type}): ${msg}`);
-      // 1o plano B: o mesmo canal pelo servidor de video (quando o direto do app falha).
-      if (channel!.fallback && !triedFallback) {
-        triedFallback = true;
-        start(channel!.fallback, channel!.type);
-        return;
-      }
-      // 2o plano B: o outro formato do mesmo canal (HLS <-> MPEG-TS no Xtream).
-      if (channel!.alt && !triedAlt) {
-        triedAlt = true;
-        start(channel!.alt, channel!.alt_type || "hls");
+      steps.push(`${paths[step]?.label ?? "direto"} (${active.type}): ${msg}`);
+      // Plano B: o proximo caminho (servidor de video, outro formato, outra lista do cliente).
+      if (step + 1 < paths.length) {
+        step++;
+        start(paths[step].src, paths[step].type);
         return;
       }
       setError(firstError || msg);

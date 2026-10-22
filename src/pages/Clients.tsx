@@ -15,7 +15,11 @@ type Form = {
   active: boolean;
   notes: string;
   source: Source;
+  /** Listas extras: completam a principal (o cliente ve um catalogo so). */
+  extra: Source[];
 };
+
+const MAX_EXTRA = 4;
 
 const emptyForm = (): Form => ({
   name: "",
@@ -24,7 +28,14 @@ const emptyForm = (): Form => ({
   active: true,
   notes: "",
   source: emptySource(),
+  extra: [],
 });
+
+/** Lista deixada em branco no formulario (nao vai para o servidor). */
+const isBlank = (src: Source) =>
+  (src.kind === "m3u_url" && !src.url.trim()) ||
+  (src.kind === "xtream" && !src.xtream_server.trim() && !src.xtream_username.trim()) ||
+  (src.kind === "manual" && !/#EXTINF/i.test(src.content));
 
 function randomPass() {
   return Math.random().toString(36).slice(2, 10);
@@ -36,6 +47,14 @@ function status(c: Client) {
   const title = [s?.reason, s?.last_error && `Ultima tentativa: ${s.last_error}`, s?.checked_at && `Conferida em ${formatDate(s.checked_at)}`].filter(Boolean).join(" · ");
   if (!c.active) return <Badge variant="warning">Bloqueado</Badge>;
   if (s?.state === "expired") return <span title={title}><Badge variant="danger">Lista expirada</Badge></span>;
+  const down = Object.values(s?.sources ?? {}).filter((x) => x === "expired").length;
+  if (s?.state === "active" && down)
+    return (
+      <span title={`${down} das ${Object.keys(s.sources!).length} listas venceu no fornecedor; o cliente continua com as outras`} className="inline-flex flex-wrap gap-1">
+        <Badge variant="success">Ativo</Badge>
+        <Badge variant="warning">{down} lista(s) vencida(s)</Badge>
+      </span>
+    );
   if (s?.state === "active") return <span title={title}><Badge variant="success">Ativo</Badge></span>;
   if (s?.state === "none") return <Badge variant="success">Ativo</Badge>;
   return <span title={title || "Confere no próximo acesso do cliente"}><Badge variant="muted">Não conferida</Badge></span>;
@@ -87,6 +106,7 @@ export default function Clients() {
       active: c.active,
       notes: c.notes,
       source: c.source ? { ...emptySource(), ...c.source } : emptySource(),
+      extra: (c.extra_sources ?? []).map((x) => ({ ...emptySource(), ...x })),
     });
     setFormOpen(true);
   };
@@ -95,12 +115,8 @@ export default function Clients() {
     e.preventDefault();
     setBusy(true);
     try {
-      const src = form.source;
-      const blank =
-        (src.kind === "m3u_url" && !src.url.trim()) ||
-        (src.kind === "xtream" && !src.xtream_server.trim() && !src.xtream_username.trim()) ||
-        (src.kind === "manual" && !/#EXTINF/i.test(src.content));
-      const body = { ...form, source: blank ? null : src };
+      const { extra, ...rest } = form;
+      const body = { ...rest, source: isBlank(form.source) ? null : form.source, extra_sources: extra.filter((x) => !isBlank(x)) };
       const saved = editing
         ? await api.put<Client>(`/api/clients/${editing.id}`, body)
         : await api.post<Client>("/api/clients", body);
@@ -188,7 +204,17 @@ export default function Clients() {
     </div>
   );
 
-  const sourceBadge = (c: Client) => (c.source ? <Badge variant="info">{sourceLabel(c.source)}</Badge> : <Badge variant="muted">Sem lista</Badge>);
+  const sourceBadge = (c: Client) =>
+    c.source ? (
+      <Badge variant="info">
+        {sourceLabel(c.source)}
+        {c.extra_sources?.length ? ` +${c.extra_sources.length}` : ""}
+      </Badge>
+    ) : (
+      <Badge variant="muted">Sem lista</Badge>
+    );
+  const setExtra = (i: number, src: Source | null) =>
+    setForm((f) => ({ ...f, extra: src ? f.extra.map((x, j) => (j === i ? src : x)) : f.extra.filter((_x, j) => j !== i) }));
 
   return (
     <>
@@ -360,6 +386,28 @@ export default function Clients() {
             <p className="text-xs text-muted-foreground">Cole o link ou o login do fornecedor deste cliente. É só isso que ele vai ver no reprodutor.</p>
             <SourceEditor value={form.source} onChange={(source) => setForm({ ...form, source })} />
           </div>
+
+          {form.extra.map((src, i) => (
+            <div key={i} className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-medium">Lista extra {i + 1}</div>
+                <Button type="button" variant="ghost" size="sm" className="hover:text-destructive" onClick={() => setExtra(i, null)}>
+                  <Trash2 /> Remover
+                </Button>
+              </div>
+              <SourceEditor value={src} onChange={(next) => setExtra(i, next)} />
+            </div>
+          ))}
+          {form.extra.length < MAX_EXTRA && (
+            <div className="space-y-1">
+              <Button type="button" variant="outline" size="sm" onClick={() => setForm((f) => ({ ...f, extra: [...f.extra, emptySource()] }))}>
+                <Plus /> Adicionar outra lista
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                O cliente continua com o mesmo login e vê um catálogo só: o que falta na lista principal vem das outras, títulos repetidos aparecem uma vez e, se um não tocar, o player tenta a outra lista.
+              </p>
+            </div>
+          )}
 
           {editing?.custom_pin && (
             <div className="flex items-center justify-between gap-3 rounded-xl border px-4 py-3">

@@ -11,7 +11,8 @@ import * as xtream from "./xtream.js";
 import { lookupOnline, mergeInfo } from "./titleinfo.js";
 import { rankSimilar } from "./recommend.js";
 import { checkSource } from "./listcheck.js";
-import { episodeOf, normTitle } from "./titlekey.js";
+import { episodeInfo, episodeOf, normTitle } from "./titlekey.js";
+import { createCatalog, sourceKey } from "./merge.js";
 
 const COOKIE = "rtec_session";
 const CLIENT_COOKIE = "rtec_player";
@@ -159,7 +160,9 @@ async function refreshListStatus(c, { force = false } = {}) {
   const last = listChecks.get(c.id);
   if (!force && last && Date.now() - last.at < LIST_CHECK_TTL_MS) return last.promise;
   const promise = (async () => {
-    const result = await checkSource(c.source).catch((err) => ({ state: "unknown", reason: err.message }));
+    const list = allSources(c);
+    const results = await Promise.all(list.map((p) => checkSource(p).catch((err) => ({ state: "unknown", reason: err.message }))));
+    const result = combineChecks(results);
     const prev = c.list_status || null;
     // Sem lista para conferir: libera. Fornecedor fora do ar: mantem o ultimo resultado (nao bloqueia por engano).
     const state = !result ? "none" : result.state === "unknown" ? prev?.state || "unknown" : result.state;
@@ -170,6 +173,16 @@ async function refreshListStatus(c, { force = false } = {}) {
       last_error: result?.state === "unknown" ? result.reason : "",
       provider_status: result?.provider_status ?? prev?.provider_status ?? "",
     };
+    // Varias listas: o estado de cada uma (as vencidas saem do catalogo, as outras continuam valendo).
+    if (list.length > 1) {
+      next.sources = Object.fromEntries(
+        list.map((p, i) => {
+          const key = sourceKey(p);
+          const r = results[i];
+          return [key, !r ? "none" : r.state === "unknown" ? prev?.sources?.[key] || "unknown" : r.state];
+        }),
+      );
+    }
     const patch = { list_status: next };
     if (result && result.state !== "unknown" && "expires_at" in result) patch.expires_at = result.expires_at;
     else if (result && result.state !== "unknown") patch.expires_at = null;
@@ -179,6 +192,7 @@ async function refreshListStatus(c, { force = false } = {}) {
       prev.state !== next.state ||
       prev.reason !== next.reason ||
       prev.last_error !== next.last_error ||
+      JSON.stringify(prev.sources || null) !== JSON.stringify(next.sources || null) ||
       ("expires_at" in patch && (patch.expires_at ?? null) !== (c.expires_at ?? null)) ||
       Date.now() - new Date(prev.checked_at || 0).getTime() > LIST_SAVE_MS;
     Object.assign(c, patch);
@@ -189,6 +203,44 @@ async function refreshListStatus(c, { force = false } = {}) {
   listChecks.set(c.id, { at: Date.now(), promise });
   promise.catch(() => listChecks.delete(c.id));
   return promise;
+}
+
+/**
+ * Junta a conferencia de varias listas: basta uma valer para o cliente continuar assistindo.
+ * Uma lista sem o que conferir (colada) tambem vale. Com uma lista so, e o resultado dela.
+ */
+function combineChecks(results) {
+  if (results.length <= 1) return results[0] ?? null;
+  const real = results.filter(Boolean);
+  if (!real.length) return null;
+  const active = real.filter((r) => r.state === "active");
+  if (active.length || real.length < results.length) {
+    const dates = active.map((r) => r.expires_at || null);
+    const expires_at = !active.length || dates.includes(null) ? null : dates.sort().at(-1);
+    return { state: "active", reason: "", expires_at, provider_status: active[0]?.provider_status || "Active" };
+  }
+  return real.find((r) => r.state === "unknown") || real[0];
+}
+
+const MAX_LISTS = 5;
+
+/** Listas do cliente: a principal (source) e as extras (extra_sources), que completam o catalogo. */
+function allSources(c) {
+  return [c.source, ...(c.extra_sources || [])].filter((p) => p?.kind);
+}
+
+/** Listas em uso: as que o fornecedor deu como vencidas saem (se ainda sobrar alguma). */
+function activeSources(c) {
+  const all = allSources(c);
+  const states = c.list_status?.sources || {};
+  const ok = all.filter((p) => states[sourceKey(p)] !== "expired");
+  return ok.length ? ok : all;
+}
+
+/** Catalogo no formato Xtream (lista principal Xtream), juntando as listas extras. null: lista M3U comum. */
+function catalogFor(c) {
+  const srcs = activeSources(c);
+  return srcs.length && xtream.xtreamCredentials(srcs[0]) ? createCatalog(srcs) : null;
 }
 
 /** Atualiza "ultimo acesso" no maximo a cada 5 minutos, para nao gastar gravacoes. */
@@ -294,7 +346,7 @@ const clientSession = wrap(async (req, _res, next) => {
 
 async function clientPlaylists(c) {
   const db = getStore();
-  const own = c.source?.kind ? [{ ...c.source, id: `own-${c.id}`, name: c.name || c.username, active: true }] : [];
+  const own = activeSources(c).map((p, i) => ({ ...p, id: i ? `own-${c.id}-${sourceKey(p)}` : `own-${c.id}`, name: c.name || c.username, active: true }));
   const shared = await Promise.all((c.playlist_ids || []).map((id) => db.playlists.get(id)));
   return [...own, ...shared.filter((p) => p && p.active).sort(byName)];
 }
@@ -447,40 +499,100 @@ const listSig = (creds) => hashId(creds.server.toLowerCase(), creds.username, cr
 
 const hashId = (...parts) => crypto.createHash("sha1").update(parts.join("|")).digest("hex").slice(0, 12);
 
-/** Converte um item da API Xtream no formato de canal usado pelo reprodutor. */
-function xtreamChannel(c, item, group, app = false) {
-  const mode = c.source?.playback || DEFAULT_PLAYBACK;
+/** Links de video de um item (direto ou pelo servidor, conforme o modo da lista), com os planos B. */
+function playLinks(c, item, p, app) {
+  const mode = p?.playback || DEFAULT_PLAYBACK;
   const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
-  if (item.kind === "series" && item.series_id) {
-    return { id: `s${item.series_id}`, series_id: item.series_id, name: item.name, group, logo: logoUrl(c.id, item.logo), src: "", type: "file", alt: "", alt_type: "", kind: "series", epg_id: "", playlist_id: "own", added: item.added, year: item.year, rating: item.rating, genres: item.genres || [] };
-  }
   return {
-    id: hashId(c.id, item.kind, item.stream_id),
-    name: item.name,
-    group,
-    logo: logoUrl(c.id, item.logo),
     src: link(item.url),
     type: streamType(item.url),
     alt: item.alt_url ? link(item.alt_url) : "",
     alt_type: item.alt_url ? streamType(item.alt_url) : "",
+    // Ultimo recurso: se o link direto (app) falhar, tenta pelo servidor de video.
+    fallback: !viaProxy(mode, item.url, app) ? proxyUrl(c.id, item.url) : "",
+  };
+}
+
+const MAX_MORE = 4;
+
+/**
+ * Converte um item do catalogo no formato de canal usado pelo reprodutor. srcs: listas do catalogo (o item diz
+ * de qual veio em _i). "more": o mesmo titulo nas outras listas do cliente, tentado se este nao tocar.
+ */
+function xtreamChannel(c, item, group, app = false, srcs = [c.source]) {
+  const i = item._i || 0;
+  const p = srcs[i] || {};
+  const pre = i ? `${p.key}~` : "";
+  if (item.kind === "series" && item.series_id) {
+    return { id: `s${pre}${item.series_id}`, series_id: pre + item.series_id, name: item.name, group, logo: logoUrl(c.id, item.logo), src: "", type: "file", alt: "", alt_type: "", kind: "series", epg_id: "", playlist_id: "own", added: item.added, year: item.year, rating: item.rating, genres: item.genres || [] };
+  }
+  const more = (item._alts || []).filter((a) => a.url).slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app));
+  return {
+    id: i ? hashId(c.id, p.key, item.kind, item.stream_id) : hashId(c.id, item.kind, item.stream_id),
+    name: item.name,
+    group,
+    logo: logoUrl(c.id, item.logo || (item._alts || []).find((a) => a.logo)?.logo),
+    ...playLinks(c, item, p, app),
     kind: item.kind,
-    epg_id: item.kind === "live" ? `xt:${item.stream_id}` : "",
+    // Lista M3U comum: guia pelo tvg-id (XMLTV); Xtream: pela API do fornecedor.
+    epg_id: item.kind !== "live" ? "" : item.tvg_id != null ? item.tvg_id : `xt:${pre}${item.stream_id}`,
     playlist_id: "own",
-    ...(item.kind === "movie" ? { xt_id: item.stream_id } : {}),
+    ...(item.kind === "movie" ? { xt_id: pre + item.stream_id } : {}),
     ...(item.added ? { added: item.added } : {}),
     ...(item.year ? { year: item.year } : {}),
     ...(item.rating ? { rating: item.rating } : {}),
     ...(item.genres?.length ? { genres: item.genres } : {}),
-    // Ultimo recurso: se o link direto (app) falhar, tenta pelo servidor de video.
-    fallback: !viaProxy(mode, item.url, app) ? proxyUrl(c.id, item.url) : "",
     ...(item.season ? { season: item.season, episode: item.episode } : {}),
+    ...(more.length ? { more } : {}),
   };
 }
 
+/** Chave para achar o mesmo titulo em outra lista: tipo + nome normalizado (episodio: serie + temporada + numero). */
+function channelKey(ch) {
+  if (ch.kind === "series") {
+    const ep = episodeInfo(ch.name);
+    if (ep) return `e|${normTitle(ep.series)}|${ep.season}|${ep.episode}`;
+  }
+  const n = normTitle(ch.name);
+  return n ? `${ch.kind}|${n}` : "";
+}
+const yearInName = (name) => Number(/\((19|20)\d{2}\)/.exec(String(name))?.[0].slice(1, 5)) || 0;
+
+/**
+ * Listas M3U do mesmo cliente: o titulo que ja veio de uma lista nao se repete; os links das outras listas
+ * viram reserva ("more"). Dentro de uma mesma lista nada e juntado.
+ */
+function mergeOwnChannels(channels, own, mainId) {
+  if (own.size < 2) return channels;
+  const out = [];
+  const byKey = new Map();
+  for (const ch of channels) {
+    if (!own.has(ch.playlist_id)) {
+      out.push(ch);
+      continue;
+    }
+    const k = channelKey(ch);
+    const y = yearInName(ch.name);
+    const pid = ch.playlist_id;
+    const hit = k && (byKey.get(k) || []).find((e) => e.pid !== pid && (!e.y || !y || e.y === y));
+    if (hit) {
+      const more = (hit.ch.more ||= []);
+      if (more.length < MAX_MORE) more.push({ src: ch.src, type: ch.type, alt: ch.alt, alt_type: ch.alt_type, fallback: "" });
+      if (!hit.ch.logo && ch.logo) hit.ch.logo = ch.logo;
+      continue;
+    }
+    // Some no seletor de listas: tudo do cliente aparece como a lista principal.
+    if (mainId && ch.playlist_id !== mainId && own.has(mainId)) ch.playlist_id = mainId;
+    out.push(ch);
+    if (k) (byKey.get(k) || byKey.set(k, []).get(k)).push({ ch, y, pid });
+  }
+  return out;
+}
+
 function requireXtream(c) {
-  const creds = xtream.xtreamCredentials(c.source);
-  if (!creds) throw new HttpError(400, "A lista deste cliente nao e Xtream");
-  return creds;
+  const cat = catalogFor(c);
+  if (!cat) throw new HttpError(400, "A lista deste cliente nao e Xtream");
+  return cat;
 }
 
 // ---------- Sincronizacao entre aparelhos ----------
@@ -497,6 +609,14 @@ function cleanChannel(c) {
   const out = {};
   for (const k of CHANNEL_TEXT) if (typeof c[k] === "string") out[k] = c[k].slice(0, 2000);
   for (const k of ["season", "episode"]) if (Number.isFinite(c[k])) out[k] = c[k];
+  // Reservas de outras listas do cliente (mesmo titulo), para o historico tocar mesmo se uma lista cair.
+  if (Array.isArray(c.more)) {
+    const more = c.more
+      .slice(0, MAX_MORE)
+      .map((m) => (m && typeof m.src === "string" ? Object.fromEntries(["src", "type", "alt", "alt_type", "fallback"].map((k) => [k, typeof m[k] === "string" ? m[k].slice(0, 2000) : ""])) : null))
+      .filter(Boolean);
+    if (more.length) out.more = more;
+  }
   return out;
 }
 
@@ -615,7 +735,7 @@ export function createApp() {
         clients: clients.length,
         active_clients: clients.filter(isClientValid).length,
         expired_clients: clients.filter(isListExpired).length,
-        playlists: clients.filter((c) => c.source?.kind).length + playlists.length,
+        playlists: clients.reduce((n, c) => n + allSources(c).length, 0) + playlists.length,
         recent: clients
           .filter((c) => c.last_access_at)
           .sort((a, b) => b.last_access_at.localeCompare(a.last_access_at))
@@ -649,8 +769,19 @@ export function createApp() {
     }
     let source = existing?.source ?? null;
     if (body.source !== undefined) source = body.source && body.source.kind ? readSource(body.source) : null;
+    // Listas extras: completam a principal (mesmo login; titulos repetidos aparecem uma vez so).
+    let extra = existing?.extra_sources || [];
+    if (Array.isArray(body.extra_sources)) {
+      extra = body.extra_sources.filter((p) => p && p.kind).map((p) => readSource(p));
+      const seen = new Set(source ? [sourceKey(source)] : []);
+      extra = extra.filter((p) => !seen.has(sourceKey(p)) && seen.add(sourceKey(p)));
+      if (extra.length > MAX_LISTS - 1) throw new HttpError(400, `No maximo ${MAX_LISTS} listas por cliente`);
+    }
+    // Sem lista principal, a primeira extra passa a ser a principal.
+    if (!source && extra.length) [source, ...extra] = extra;
     return {
       source,
+      extra_sources: extra,
       name: str(body.name ?? existing?.name, "nome", { max: 120 }),
       username,
       password,
@@ -723,7 +854,8 @@ export function createApp() {
       if (req.body?.reset_pin) patch.parental_pin_hash = "";
       const c = await unique(() => db().clients.update(existing.id, patch));
       forgetClient(existing.id);
-      if (JSON.stringify(existing.source ?? null) !== JSON.stringify(c.source ?? null) || !c.list_status) await refreshListStatus(c, { force: true });
+      const lists = (x) => JSON.stringify([x.source ?? null, x.extra_sources || []]);
+      if (lists(existing) !== lists(c) || !c.list_status) await refreshListStatus(c, { force: true });
       res.json(clientResponse(req, c));
     }),
   );
@@ -896,7 +1028,8 @@ export function createApp() {
           errors.push(err.message);
           continue;
         }
-        playlists.push({ id: p.id, name: p.name });
+        // Varias listas do cliente: aparecem como uma lista so (as extras completam a principal).
+        if (!p.id.startsWith(`own-${c.id}`) || !playlists.some((x) => x.id.startsWith(`own-${c.id}`))) playlists.push({ id: p.id, name: p.name });
         const mode = p.playback || DEFAULT_PLAYBACK;
         const app = isApp(req) || liteDirect(req);
         const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
@@ -929,7 +1062,9 @@ export function createApp() {
           errors: [`A lista tem ${channels.length.toLocaleString("pt-BR")} itens, grande demais para carregar de uma vez. Cadastre no formato Xtream (servidor, usuario e senha).`],
         });
       }
-      res.json({ playlists, channels, errors, no_source: sources.length === 0 });
+      const own = new Set(sources.filter((p) => p.id.startsWith(`own-${c.id}`)).map((p) => p.id));
+      const merged = mergeOwnChannels(channels, own, playlists[0]?.id);
+      res.json({ playlists, channels: merged, errors, no_source: sources.length === 0 });
     }),
   );
 
@@ -940,14 +1075,17 @@ export function createApp() {
     wrap(async (req, res) => {
       const c = req.client;
       await touch("clients", c, "last_access_at");
-      const creds = xtream.xtreamCredentials(c.source);
-      if (!creds) return res.json({ mode: "m3u" });
+      const cat = catalogFor(c);
+      if (!cat) return res.json({ mode: "m3u" });
+      // Muda quando a lista principal e trocada ou quando entra/sai uma lista extra (o aparelho religa o historico).
+      const main = listSig(xtream.xtreamCredentials(cat.sources[0]));
+      const sig = cat.merged ? hashId(main, ...cat.sources.slice(1).map((p) => p.key)) : main;
       try {
-        const [live, movie, series] = await Promise.all(["live", "movie", "series"].map((s) => xtream.categories(creds, s)));
-        res.json({ mode: "xtream", sections: { live, movie, series }, sig: listSig(creds) });
+        const [live, movie, series] = await Promise.all(["live", "movie", "series"].map((s) => cat.categories(s)));
+        res.json({ mode: "xtream", sections: { live, movie, series }, sig });
       } catch (err) {
         console.warn(`[rtec] Xtream do cliente "${c.username}" falhou: ${err.message}`);
-        res.json({ mode: "xtream", sections: { live: [], movie: [], series: [] }, errors: [err.message], sig: listSig(creds) });
+        res.json({ mode: "xtream", sections: { live: [], movie: [], series: [] }, errors: [err.message], sig });
       }
     }),
   );
@@ -957,7 +1095,7 @@ export function createApp() {
     requireClient,
     wrap(async (req, res) => {
       const c = req.client;
-      const creds = requireXtream(c);
+      const cat = requireXtream(c);
       const section = String(req.query.section || "");
       if (!["live", "movie", "series"].includes(section)) throw new HttpError(400, "Secao invalida");
       const category = String(req.query.category || "");
@@ -965,9 +1103,9 @@ export function createApp() {
       // entao vai em paginas (limit/offset), com busca (q) e sem as categorias bloqueadas (skip).
       const limit = Math.min(500, Math.max(0, Number(req.query.limit) || 0));
       if (!category && section !== "live" && !limit) throw new HttpError(400, "Escolha uma categoria");
-      const [cats, raw] = await Promise.all([xtream.categories(creds, section), xtream.items(creds, section, category)]);
+      const [cats, raw] = await Promise.all([cat.categories(section), cat.items(section, category)]);
       const names = new Map(cats.map((x) => [x.id, x.name]));
-      const toChannel = (it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "", directXtream(req));
+      const toChannel = (it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "", directXtream(req), cat.sources);
       res.setHeader("Cache-Control", "no-store");
       let list = section === "live" ? raw : raw.map((it) => ({ ...it, genres: genreList(it, names.get(it.category_id)) }));
       const filters = section === "live" ? null : readFilters(req.query);
@@ -987,11 +1125,11 @@ export function createApp() {
     "/api/player/xtream/facets",
     requireClient,
     wrap(async (req, res) => {
-      const creds = requireXtream(req.client);
+      const cat = requireXtream(req.client);
       const section = String(req.query.section || "");
       if (!["movie", "series"].includes(section)) throw new HttpError(400, "Secao invalida");
       const category = String(req.query.category || "");
-      const [cats, list] = await Promise.all([xtream.categories(creds, section), xtream.items(creds, section, category)]);
+      const [cats, list] = await Promise.all([cat.categories(section), cat.items(section, category)]);
       const names = new Map(cats.map((x) => [x.id, x.name]));
       const skip = new Set(String(req.query.skip || "").split(",").filter(Boolean));
       const genres = new Map();
@@ -1026,18 +1164,22 @@ export function createApp() {
     requireClient,
     wrap(async (req, res) => {
       const c = req.client;
-      const episodes = await xtream.seriesEpisodes(requireXtream(c), req.params.id);
+      const cat = requireXtream(c);
+      const episodes = await cat.episodes(req.params.id);
       res.setHeader("Cache-Control", "no-store");
       // parent_series: permite achar o proximo episodio mesmo abrindo pelo historico.
-      res.json(episodes.map((ep) => ({ ...xtreamChannel(c, ep, String(req.query.name || ""), directXtream(req)), parent_series: req.params.id })));
+      res.json(episodes.map((ep) => ({ ...xtreamChannel(c, ep, String(req.query.name || ""), directXtream(req), cat.sources), parent_series: req.params.id })));
     }),
   );
 
   // Ficha do titulo (filme ou serie): dados do fornecedor completados pela internet quando faltam.
   async function fullTitleInfo(c, kind, id, name, year) {
-    const creds = id ? xtream.xtreamCredentials(c.source) : null;
+    const cat = id ? catalogFor(c) : null;
     let info = { name, plot: "", genres: [], cast: [], director: [], year: year || 0, rating: 0, minutes: 0, poster: "", backdrop: "", trailer: "" };
-    if (creds) info = { ...info, ...(await xtream.titleInfo(creds, kind, id).catch(() => ({}))) };
+    if (cat) {
+      const r = cat.ref(id);
+      info = { ...info, ...(await r.prov.info(kind, r.id).catch(() => ({}))) };
+    }
     if (!info.name) info.name = name;
     if (!info.year) info.year = year || 0;
     if ((info.plot || "").length < 40 || !info.cast?.length || !info.genres?.length) {
@@ -1048,7 +1190,7 @@ export function createApp() {
   }
   const titleQuery = (req) => ({
     kind: req.query.kind === "series" ? "series" : "movie",
-    id: String(req.query.id || "").replace(/[^\w-]/g, "").slice(0, 40),
+    id: String(req.query.id || "").replace(/[^\w~-]/g, "").slice(0, 60),
     name: String(req.query.name || "").slice(0, 200),
     year: Number(req.query.year) || 0,
   });
@@ -1074,16 +1216,12 @@ export function createApp() {
     wrap(async (req, res) => {
       const c = req.client;
       const { kind, id, name, year } = titleQuery(req);
-      const creds = xtream.xtreamCredentials(c.source);
-      if (!creds || !id) return res.json([]);
+      const cat = catalogFor(c);
+      if (!cat || !id) return res.json([]);
       const skip = new Set(String(req.query.skip || "").split(",").filter(Boolean));
-      const [cats, list, info] = await Promise.all([
-        xtream.categories(creds, kind),
-        xtream.items(creds, kind, ""),
-        fullTitleInfo(c, kind, id, name, year),
-      ]);
+      const [cats, list, info] = await Promise.all([cat.categories(kind), cat.items(kind, ""), fullTitleInfo(c, kind, id, name, year)]);
       const catName = new Map(cats.map((x) => [x.id, x.name]));
-      const idOf = (it) => (kind === "series" ? it.series_id : it.stream_id);
+      const idOf = (it) => cat.qid(it);
       const self = list.find((it) => idOf(it) === id);
       const target = { ...info, id, name: info.name || name, category: self ? catName.get(self.category_id) || "" : "" };
       // So o genero do proprio titulo; o da categoria entra a parte (pesa menos) em recommend.js.
@@ -1102,7 +1240,8 @@ export function createApp() {
           while (next < missing.length && Date.now() < deadline) {
             const r = missing[next++];
             const left = deadline - Date.now();
-            const got = await Promise.race([xtream.titleInfo(creds, kind, r.id).catch(() => null), new Promise((ok) => setTimeout(ok, left, null))]);
+            const ref = cat.ref(r.id);
+            const got = await Promise.race([ref.prov.info(kind, ref.id).catch(() => null), new Promise((ok) => setTimeout(ok, left, null))]);
             if (got) extra.set(r.id, got);
           }
         };
@@ -1116,7 +1255,7 @@ export function createApp() {
       }
       const best = rankSimilar(target, ranked, { limit: 18, minScore: 2 });
       res.setHeader("Cache-Control", "private, max-age=1800");
-      res.json(best.map((r) => ({ ...xtreamChannel(c, r, r.category, directXtream(req)), reasons: r.reasons.slice(0, 2).map((t) => (kind === "series" ? t.replace(/^Direção de/, "Criação de") : t)) })));
+      res.json(best.map((r) => ({ ...xtreamChannel(c, r, r.category, directXtream(req), cat.sources), reasons: r.reasons.slice(0, 2).map((t) => (kind === "series" ? t.replace(/^Direção de/, "Criação de") : t)) })));
     }),
   );
 
@@ -1130,11 +1269,12 @@ export function createApp() {
       const xtIds = all.filter((id) => id.startsWith("xt:")).slice(0, 25);
       const ids = all.filter((id) => !id.startsWith("xt:"));
       const out = {};
-      const creds = xtIds.length ? xtream.xtreamCredentials(req.client.source) : null;
-      if (creds) {
+      const cat = xtIds.length ? catalogFor(req.client) : null;
+      if (cat) {
         await Promise.all(
           xtIds.map(async (id) => {
-            out[id] = await xtream.shortEpg(creds, id.slice(3)).catch(() => []);
+            const r = cat.ref(id.slice(3));
+            out[id] = await r.prov.epg(r.id).catch(() => []);
           }),
         );
       }
@@ -1331,20 +1471,20 @@ export function createApp() {
     requireClient,
     wrap(async (req, res) => {
       const c = req.client;
-      const creds = requireXtream(c);
+      const cat = requireXtream(c);
       const items = (Array.isArray(req.body?.items) ? req.body.items : []).slice(0, MAX_FAVORITES + MAX_HISTORY).map(cleanChannel);
       const direct = directXtream(req);
       const lists = {};
       const section = async (kind) => {
         if (!lists[kind]) {
-          lists[kind] = Promise.all([xtream.categories(creds, kind), xtream.items(creds, kind, "")]).then(([cats, list]) => {
+          lists[kind] = Promise.all([cat.categories(kind), cat.items(kind, "")]).then(([cats, list]) => {
             const names = new Map(cats.map((x) => [x.id, x.name]));
             const byName = new Map();
             const byId = new Map();
             for (const it of list) {
               const n = normTitle(it.name);
               if (n && !byName.has(n)) byName.set(n, it);
-              byId.set(it.series_id || it.stream_id, it);
+              byId.set(cat.qid(it), it);
             }
             return { byName, byId, group: (it) => names.get(it.category_id) || "" };
           });
@@ -1363,26 +1503,27 @@ export function createApp() {
         if (!it) return null;
         if (it.kind === "series" && (it.series_id || it.id.startsWith("serie:"))) {
           const found = await findSeries(it.series_id, it.name);
-          return found ? xtreamChannel(c, found, (await section("series")).group(found), direct) : null;
+          return found ? xtreamChannel(c, found, (await section("series")).group(found), direct, cat.sources) : null;
         }
         if (it.kind === "series") {
           const ep = episodeOf(it);
           if (!ep) return null;
           const found = await findSeries(it.parent_series, ep.series);
           if (!found) return null;
-          if (!episodes.has(found.series_id)) {
+          const sid = cat.qid(found);
+          if (!episodes.has(sid)) {
             if (episodes.size >= MAX_SERIES) return null;
-            episodes.set(found.series_id, xtream.seriesEpisodes(creds, found.series_id).catch(() => []));
+            episodes.set(sid, cat.episodes(sid).catch(() => []));
           }
-          const hit = (await episodes.get(found.series_id)).find((e) => e.season === ep.season && e.episode === ep.episode);
-          return hit ? { ...xtreamChannel(c, hit, found.name, direct), parent_series: found.series_id } : null;
+          const hit = (await episodes.get(sid)).find((e) => e.season === ep.season && e.episode === ep.episode);
+          return hit ? { ...xtreamChannel(c, hit, found.name, direct, cat.sources), parent_series: sid } : null;
         }
         if (it.kind !== "live" && it.kind !== "movie") return null;
         const s = await section(it.kind);
         const xtId = it.epg_id?.startsWith("xt:") ? it.epg_id.slice(3) : it.xt_id;
         const same = xtId && s.byId.get(xtId);
         const found = same && normTitle(same.name) === normTitle(it.name) ? same : s.byName.get(normTitle(it.name));
-        return found ? xtreamChannel(c, found, s.group(found), direct) : null;
+        return found ? xtreamChannel(c, found, s.group(found), direct, cat.sources) : null;
       };
       const out = await Promise.all(items.map((it) => relink(it).catch(() => null)));
       res.setHeader("Cache-Control", "no-store");
