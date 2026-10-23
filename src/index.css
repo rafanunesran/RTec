@@ -59,8 +59,10 @@
 }
 
 /* ---- Layout de TV (html.tv-screen: Samsung/LG/Android TV ou ?tv=1) ---- */
-/* Tudo em rem cresce 50%: textos e botoes legiveis a 3 metros, como nos apps de streaming. */
-html.tv-screen { font-size: 150%; }
+/* Tudo em rem cresce: textos e botoes legiveis a 3 metros, como nos apps de streaming.
+   Proporcional a largura (24px numa tela de 1920), para ficar igual em toda TV: o Fire Stick
+   mostra o site com 960 px de largura e, com tamanho fixo, tudo ficava com o dobro do tamanho. */
+html.tv-screen { font-size: max(16px, 1.25vw); }
 .tv-screen ::-webkit-scrollbar { display: none; }
 .tv-screen * { scrollbar-width: none; }
 

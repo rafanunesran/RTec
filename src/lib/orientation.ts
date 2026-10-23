@@ -1,8 +1,22 @@
 import { ScreenOrientation } from "@capacitor/screen-orientation";
+import { isTV } from "./tvnav";
 
-/** Celular (tela de toque e pequena). Tablet, TV Box e computador ficam livres para girar. */
+/**
+ * Celular (tela de toque e pequena). Tablet, TV Box e computador ficam livres para girar.
+ * TV nunca: o Fire Stick diz "pointer: coarse" e tela de 960x540, e travar em retrato la deixava
+ * o app deitado e esticado na TV.
+ */
 const isPhone = () =>
-  typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)").matches && Math.min(screen.width, screen.height) < 600;
+  typeof window !== "undefined" &&
+  !isTV() &&
+  navigator.maxTouchPoints > 0 &&
+  !!window.matchMedia?.("(pointer: coarse)").matches &&
+  Math.min(screen.width, screen.height) < 600;
+
+/** Na TV: solta qualquer trava de retrato que uma versao antiga do site tenha deixado no app. */
+export function releaseTvOrientation() {
+  if (isTV()) ScreenOrientation.unlock().catch(() => {});
+}
 
 const fullscreenElement = () =>
   document.fullscreenElement ?? (document as Document & { webkitFullscreenElement?: Element | null }).webkitFullscreenElement ?? null;
