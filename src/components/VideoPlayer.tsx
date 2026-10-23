@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Loader2, RotateCw, Tv, VolumeX } from "lucide-react";
 import type { Channel } from "@/lib/api";
 import { watchFullscreenOrientation } from "@/lib/orientation";
@@ -8,6 +8,9 @@ import { boostable, boostAttached, dropBoost, setBoost, setNativeBoost } from "@
 type Stop = () => void;
 
 class Unsupported extends Error {}
+
+/** <video> tocando por hls.js guarda a instancia (faixas de audio e legenda). */
+export type HlsVideo = HTMLVideoElement & { hls?: import("hls.js").default };
 
 /** Liga a fonte ao <video> com o motor certo. Chama onFail quando a reproducao quebra. */
 async function attach(video: HTMLVideoElement, src: string, type: Channel["type"], onFail: (msg: string) => void): Promise<Stop> {
@@ -22,7 +25,12 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
       });
       hls.loadSource(src);
       hls.attachMedia(video);
-      return () => hls.destroy();
+      // Os controles do player leem daqui as faixas de audio e legenda.
+      (video as HlsVideo).hls = hls;
+      return () => {
+        if ((video as HlsVideo).hls === hls) delete (video as HlsVideo).hls;
+        hls.destroy();
+      };
     }
     if (video.canPlayType("application/vnd.apple.mpegurl")) return native(video, src, onFail);
     throw new Unsupported();
@@ -127,9 +135,11 @@ type Props = {
   /** Filme/episodio chegou ao fim. */
   onEnded?: () => void;
   className?: string;
+  /** Camadas por cima do video e por baixo dos avisos (carregando, erro). */
+  children?: ReactNode;
 };
 
-export default function VideoPlayer({ channel, boost = false, onBoost, startAt = 0, onProgress, onEnded, className }: Props) {
+export default function VideoPlayer({ channel, boost = false, onBoost, startAt = 0, onProgress, onEnded, className, children }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [state, setState] = useState<"idle" | "loading" | "playing" | "error">("idle");
   const [error, setError] = useState("");
@@ -360,7 +370,8 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
 
   return (
     <div className={className ?? "relative aspect-video w-full overflow-hidden bg-black lg:rounded-2xl lg:ring-1 lg:ring-border"}>
-      <video key={el.n} ref={videoRef} crossOrigin={el.cors ? "anonymous" : undefined} className="h-full w-full" controls={!tvScreenOn()} playsInline autoPlay />
+      <video key={el.n} ref={videoRef} crossOrigin={el.cors ? "anonymous" : undefined} className="h-full w-full" controls={!children && !tvScreenOn()} playsInline autoPlay />
+      {children}
       {!channel && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-glow text-muted-foreground">
           <div className="grid h-14 w-14 place-items-center rounded-2xl bg-muted ring-1 ring-border">

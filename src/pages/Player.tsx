@@ -849,11 +849,22 @@ function Watch({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, queue, xt]);
 
-  const nextEpisode = useMemo(() => {
-    if (!current || current.kind !== "series" || !queue) return null;
-    const i = queue.findIndex((q) => q.id === current.id);
-    return i >= 0 && i + 1 < queue.length ? { ...queue[i + 1], group: current.group } : null;
-  }, [current, queue]);
+  // Lista em que o titulo tocando esta: episodios da serie ou canais da mesma lista/categoria (anterior/proximo e "EPs").
+  const playlist = useMemo(() => {
+    if (!current) return null;
+    if (current.kind === "series") return queue?.some((q) => q.id === current.id) ? queue.map((q) => ({ ...q, group: current.group })) : null;
+    if (current.kind !== "live") return null;
+    const list = visible.some((x) => x.id === current.id) ? visible : channels.filter((x) => x.kind === "live" && x.group === current.group);
+    return list.length > 1 && list.some((x) => x.id === current.id) ? list : null;
+  }, [current, queue, visible, channels]);
+  const neighbor = (step: number) => {
+    if (!current || !playlist) return null;
+    const i = playlist.findIndex((q) => q.id === current.id);
+    if (current.kind === "live") return playlist[(i + step + playlist.length) % playlist.length];
+    return playlist[i + step] ?? null;
+  };
+  const nextEpisode = neighbor(1);
+  const prevEpisode = neighbor(-1);
 
   // Pagina "Tudo": busca em canais, filmes e series ao mesmo tempo.
   useEffect(() => {
@@ -954,24 +965,12 @@ function Watch({
   }, [tv]);
 
   // CH+/CH- do controle: proximo/anterior canal da lista ou episodio da serie.
-  const zapRef = useRef({ current, queue, visible, channels, play });
-  zapRef.current = { current, queue, visible, channels, play };
+  const zapRef = useRef({ neighbor, play });
+  zapRef.current = { neighbor, play };
   useEffect(() => {
     const onChannel = (e: Event) => {
-      const step = (e as CustomEvent<number>).detail;
-      const z = zapRef.current;
-      const c = z.current;
-      if (!c) return;
-      if (c.kind === "series") {
-        const i = z.queue?.findIndex((q) => q.id === c.id) ?? -1;
-        const n = i >= 0 ? z.queue![i + step] : undefined;
-        if (n) z.play({ ...n, group: c.group });
-        return;
-      }
-      if (c.kind !== "live") return;
-      const list = z.visible.some((x) => x.id === c.id) ? z.visible : z.channels.filter((x) => x.kind === "live" && x.group === c.group);
-      const i = list.findIndex((x) => x.id === c.id);
-      if (i >= 0 && list.length > 1) z.play(list[(i + step + list.length) % list.length]);
+      const n = zapRef.current.neighbor((e as CustomEvent<number>).detail);
+      if (n) zapRef.current.play(n);
     };
     window.addEventListener("rtec:channel", onChannel);
     return () => window.removeEventListener("rtec:channel", onChannel);
@@ -1432,6 +1431,9 @@ function Watch({
         <PlayerOverlay
           channel={current}
           next={nextEpisode}
+          prev={prevEpisode}
+          playlist={playlist}
+          onPick={(c) => play(c)}
           favorite={isFav(current)}
           onFavorite={() => toggleFavorite(current)}
           onNext={(n) => play(n)}

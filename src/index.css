@@ -80,3 +80,30 @@ html.tv-screen { font-size: 150%; }
 /* Linhas de canal: selecionada fica preenchida, como na lista do Duplecast. */
 .tv-nav .channel-row:focus { outline: none; background: hsl(var(--foreground)); color: hsl(var(--background)); }
 .tv-nav .channel-row:focus * { color: hsl(var(--background)) !important; }
+
+/* Barra de tempo e volume do player: trilho desenhado por baixo, so a bolinha aparece. */
+.seek-range::-webkit-slider-runnable-track { height: 100%; background: transparent; }
+.seek-range::-moz-range-track { background: transparent; }
+.seek-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: 4px;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #fff;
+  box-shadow: 0 0 0 4px rgb(0 0 0 / 0.25);
+}
+.seek-range::-moz-range-thumb { width: 16px; height: 16px; border: 0; border-radius: 9999px; background: #fff; }
+.seek-range:disabled::-webkit-slider-thumb { opacity: 0; }
+.vol-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: linear-gradient(to right, #fff var(--seek), rgb(255 255 255 / 0.3) var(--seek));
+}
+.vol-range::-moz-range-track { height: 4px; border-radius: 9999px; background: rgb(255 255 255 / 0.3); }
+.vol-range::-moz-range-progress { height: 4px; border-radius: 9999px; background: #fff; }
+.vol-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; margin-top: -4px; width: 12px; height: 12px; border-radius: 9999px; background: #fff; }
+.vol-range::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 9999px; background: #fff; }
+.tv-nav .seek-range:focus { outline: none; }
+.tv-nav .seek-range:focus::-webkit-slider-thumb { width: 22px; height: 22px; margin-top: 1px; box-shadow: 0 0 0 5px hsl(var(--brand-2)); }
