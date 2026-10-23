@@ -86,6 +86,16 @@ desde 30/09/2026) e pedir revisao pelo formulario de contestacao do Play Protect
 
 O servidor de video so aceita links assinados pelo painel, com validade de 12 h.
 
+## Seguranca das listas do fornecedor
+
+- O Firestore fica fechado para o navegador (`firestore.rules`); so o servidor le e grava.
+- Links que passam pelo servidor de video levam o link do fornecedor **cifrado** (o aparelho nao ve usuario/senha).
+- `DATA_KEY` (variavel na Vercel, texto longo aleatorio): cifra no banco os links, usuarios e senhas das listas.
+  Ao fazer Redeploy com ela, o que ja estava salvo e cifrado sozinho. Guarde o valor: sem ele as listas nao abrem mais.
+- Login do painel e do reprodutor: depois de 8 senhas erradas seguidas o mesmo endereco espera 15 minutos.
+- Modo direto (app Android, TV): o aparelho precisa do link do fornecedor para tocar sem passar pela Vercel,
+  entao esse link continua chegando ao aparelho do cliente.
+
 ## App para TV Samsung (Tizen)
 
 A pasta `tizen/` tem o app da TV Samsung (Smart TVs de 2016 em diante). Como o app Android, ele so abre o site

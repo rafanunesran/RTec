@@ -13,6 +13,7 @@ import { rankSimilar } from "./recommend.js";
 import { checkSource } from "./listcheck.js";
 import { episodeInfo, episodeOf, normTitle } from "./titlekey.js";
 import { createCatalog, sourceKey } from "./merge.js";
+import { hasDataKey, needsSeal, openUrl, sealUrl } from "./seal.js";
 
 const COOKIE = "rtec_session";
 const CLIENT_COOKIE = "rtec_player";
@@ -109,12 +110,30 @@ export async function ensureAdminAccount(db) {
   console.log(`[rtec] Admin inicial criado: ${username} / ${env("ADMIN_PASSWORD") ? "(senha de ADMIN_PASSWORD)" : password}`);
 }
 
+/** Com DATA_KEY configurada, cifra os links/senhas do fornecedor que ainda estavam abertos no banco. */
+async function sealStoredSources(db) {
+  if (!hasDataKey()) return;
+  const fingerprint = crypto.createHash("sha256").update(`seal|${process.env.DATA_KEY.trim()}`).digest("hex").slice(0, 16);
+  if ((await db.config.get("data_seal"))?.fingerprint === fingerprint) return;
+  for (const [name, fields] of [["clients", ["source", "extra_sources"]], ["playlists", ["url", "xtream_server", "xtream_username", "xtream_password", "epg_url"]]]) {
+    // O banco cru (sem abrir), para achar o que ainda esta sem cifra.
+    const raw = await Object.getPrototypeOf(db[name]).list();
+    for (const doc of raw) {
+      if (!needsSeal(name, doc)) continue;
+      const opened = await db[name].get(doc.id);
+      await db[name].update(doc.id, Object.fromEntries(fields.filter((f) => f in opened).map((f) => [f, opened[f]])));
+    }
+  }
+  await db.config.set("data_seal", { fingerprint, sealed_at: nowIso() });
+}
+
 let ready;
 function init() {
   ready ??= (async () => {
     const db = getStore();
     if (!JWT_SECRET) JWT_SECRET = await db.getOrCreateSecret(() => crypto.randomBytes(32).toString("hex"));
     await ensureAdminAccount(db);
+    await sealStoredSources(db);
   })().catch((err) => {
     ready = undefined;
     throw err;
@@ -270,11 +289,25 @@ function verifySignature(clientId, exp, url, sig, { allowExpired = false } = {})
   return expected.length === given.length && crypto.timingSafeEqual(expected, given);
 }
 
+/**
+ * O link do fornecedor vai cifrado no link do proxy (o aparelho nao ve usuario/senha). Servidor de video
+ * separado (STREAM_PROXY_URL) instalado antes desta versao so entende o link aberto: cifra la so com PROXY_ENCRYPT=1.
+ */
+const sealLinks = (base) => !base || process.env.PROXY_ENCRYPT === "1";
+
 function proxyUrl(clientId, url, base = proxyBase()) {
   // Validade arredondada para a hora: o mesmo link se repete e aproveita cache do navegador.
   const exp = Math.ceil((Date.now() / 1000 + LINK_TTL_SECONDS) / 3600) * 3600;
-  const q = new URLSearchParams({ u: url, c: clientId, e: String(exp), s: signUrl(clientId, exp, url) });
+  const u = sealLinks(base) ? sealUrl(proxySecret(), url) : url;
+  const q = new URLSearchParams({ u, c: clientId, e: String(exp), s: signUrl(clientId, exp, u) });
   return `${base}/api/player/proxy?${q}`;
+}
+
+/** URL do fornecedor de um link do proxy (cifrado ou, nos links antigos, aberto); "" se nao for valido. */
+function proxyTarget(u, c, e, s, opts) {
+  if (!u || !verifySignature(c, e, u, s || "", opts)) return "";
+  const url = /^https?:\/\//i.test(u) ? u : openUrl(proxySecret(), u);
+  return /^https?:\/\//i.test(url) ? url : "";
 }
 
 function streamType(url) {
@@ -656,6 +689,23 @@ async function loadSync(docId) {
   };
 }
 
+// Muitas senhas erradas seguidas do mesmo endereco: espera um pouco (dificulta adivinhar senhas).
+const LOGIN_MAX_FAILS = 8;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const loginFails = new Map();
+function assertLoginAllowed(req, scope) {
+  const f = loginFails.get(`${scope}|${req.ip}`);
+  if (f && Date.now() - f.at < LOGIN_WINDOW_MS && f.count >= LOGIN_MAX_FAILS) {
+    throw new HttpError(429, "Muitas tentativas erradas. Aguarde 15 minutos e tente de novo.");
+  }
+}
+function loginFailed(req, scope) {
+  const k = `${scope}|${req.ip}`;
+  const f = loginFails.get(k);
+  loginFails.set(k, f && Date.now() - f.at < LOGIN_WINDOW_MS ? { at: f.at, count: f.count + 1 } : { at: Date.now(), count: 1 });
+  if (loginFails.size > 5000) loginFails.delete(loginFails.keys().next().value);
+}
+
 const checkPin = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pin || ""), c.parental_pin_hash) : String(pin || "") === DEFAULT_PIN);
 
 export function createApp() {
@@ -671,6 +721,7 @@ export function createApp() {
   app.post(
     "/api/auth/login",
     wrap(async (req, res) => {
+      assertLoginAllowed(req, "admin");
       const username = String(req.body?.username || "").trim();
       const password = String(req.body?.password || "");
       let admin = await db().admins.findOne("username", username);
@@ -680,6 +731,7 @@ export function createApp() {
         admin = await db().admins.findOne("username", username);
       }
       if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
+        loginFailed(req, "admin");
         console.warn(`[rtec] Login de admin recusado para "${username}": ${admin ? "senha incorreta" : "usuario nao existe"}`);
         throw new HttpError(401, "Usuario ou senha invalidos");
       }
@@ -955,8 +1007,12 @@ export function createApp() {
   app.post(
     "/api/player/login",
     wrap(async (req, res) => {
+      assertLoginAllowed(req, "player");
       const c = await findClientByLogin(req.body?.username, req.body?.password);
-      if (!c) throw new HttpError(401, "Usuario ou senha invalidos");
+      if (!c) {
+        loginFailed(req, "player");
+        throw new HttpError(401, "Usuario ou senha invalidos");
+      }
       if (!c.active) throw new HttpError(403, BLOCKED, "blocked");
       await refreshListStatus(c, { force: true });
       await touch("clients", c, "last_access_at");
@@ -1431,8 +1487,8 @@ export function createApp() {
         }
         if (!parsed.pathname.endsWith("/api/player/proxy")) return link; // link direto: nao expira
         const { u, c, e, s } = Object.fromEntries(parsed.searchParams);
-        if (c !== req.client.id || !u || !verifySignature(c, e, u, s, { allowExpired: true })) return "";
-        return proxyUrl(req.client.id, u);
+        const url = c === req.client.id ? proxyTarget(u, c, e, s, { allowExpired: true }) : "";
+        return url ? proxyUrl(req.client.id, url) : "";
       });
       res.json({ urls: out });
     }),
@@ -1511,11 +1567,9 @@ export function createApp() {
   app.get(
     "/api/player/proxy",
     wrap(async (req, res) => {
-      const url = String(req.query.u || "");
       const clientId = String(req.query.c || "");
-      if (!/^https?:\/\//i.test(url) || !verifySignature(clientId, req.query.e, url, req.query.s || "")) {
-        throw new HttpError(403, "Link invalido ou expirado");
-      }
+      const url = proxyTarget(String(req.query.u || ""), clientId, req.query.e, req.query.s);
+      if (!url) throw new HttpError(403, "Link invalido ou expirado");
       const client = await getClient(clientId);
       if (!isClientValid(client)) throw new HttpError(403, "Acesso expirado ou bloqueado");
       req.client = client;

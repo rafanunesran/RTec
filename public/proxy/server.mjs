@@ -24,8 +24,32 @@ function valid(c, e, u, s) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-function link(c, u) {
+// O link do fornecedor viaja cifrado (AES-256-GCM, mesmo formato de server/seal.js no painel).
+const URL_KEY = crypto.createHash("sha256").update(`rtec-url-v1|${SECRET}`).digest();
+
+function seal(url) {
+  const iv = crypto.createHmac("sha256", URL_KEY).update(url).digest().subarray(0, 12);
+  const c = crypto.createCipheriv("aes-256-gcm", URL_KEY, iv);
+  const ct = Buffer.concat([c.update(url, "utf8"), c.final()]);
+  return `x${Buffer.concat([iv, ct, c.getAuthTag()]).toString("base64url")}`;
+}
+
+function open(token) {
+  if (/^https?:\/\//i.test(token)) return token; // link antigo, sem cifra
+  if (!/^x[\w-]{40,}$/.test(token)) return "";
+  try {
+    const raw = Buffer.from(token.slice(1), "base64url");
+    const d = crypto.createDecipheriv("aes-256-gcm", URL_KEY, raw.subarray(0, 12));
+    d.setAuthTag(raw.subarray(raw.length - 16));
+    return Buffer.concat([d.update(raw.subarray(12, raw.length - 16)), d.final()]).toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function link(c, url) {
   const e = Math.ceil((Date.now() / 1000 + TTL_SECONDS) / 3600) * 3600;
+  const u = seal(url);
   return `/api/player/proxy?${new URLSearchParams({ u, c, e: String(e), s: sign(c, e, u) })}`;
 }
 
@@ -56,8 +80,10 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (url.pathname !== "/api/player/proxy") return send(res, 404, "not found");
-  const { u, c, e, s } = Object.fromEntries(url.searchParams);
-  if (!/^https?:\/\//i.test(u || "") || !valid(c, e, u, s)) return send(res, 403, "Link invalido ou expirado");
+  const { c, e, s } = Object.fromEntries(url.searchParams);
+  const token = url.searchParams.get("u") || "";
+  const u = valid(c, e, token, s) ? open(token) : "";
+  if (!/^https?:\/\//i.test(u)) return send(res, 403, "Link invalido ou expirado");
 
   const controller = new AbortController();
   res.on("close", () => controller.abort());

@@ -5,11 +5,18 @@ import http from "node:http";
 process.env.ADMIN_PASSWORD = "secret123";
 process.env.RTEC_NO_ONLINE_INFO = "1"; // ficha dos titulos: sem buscar na internet durante os testes
 process.env.PROXY_CHUNK_MB = "1"; // testa a entrega de filmes em pedacos (como na Vercel)
+process.env.PROXY_SECRET = "teste-proxy";
 
 const { setStore } = await import("./store/index.js");
 const { createMemoryStore } = await import("./store/memory.js");
 const { createFirestoreStore } = await import("./store/firestore.js");
 const { createApp, ensureAdminAccount } = await import("./app.js");
+const { openUrl } = await import("./seal.js");
+/** Link do proxy com a URL do fornecedor aberta (ela vai cifrada no parametro u). */
+const plain = (link) => {
+  const q = new URL(link, "http://x").searchParams;
+  return q.has("u") ? openUrl("teste-proxy", q.get("u")) : link;
+};
 // Com FIRESTORE_EMULATOR_HOST (npm run test:firestore) os mesmos testes rodam no Firestore de verdade.
 setStore(process.env.FIRESTORE_EMULATOR_HOST ? createFirestoreStore() : createMemoryStore());
 
@@ -236,11 +243,14 @@ test("reprodutor: login do cliente, canais e proxy assinado", async () => {
   const playlist = await call("GET", ch.src);
   assert.equal(playlist.status, 200);
   const lines = playlist.body.split("\n");
-  assert.match(lines[1], /URI="\/api\/player\/proxy\?u=http%3A%2F%2F127\.0\.0\.1%3A\d+%2Flive%2Fkey\.bin&c=\w+&e=\d+&s=/);
+  const keyUri = /URI="([^"]+)"/.exec(lines[1])[1];
+  assert.match(keyUri, /^\/api\/player\/proxy\?u=x[\w-]+&c=\w+&e=\d+&s=/);
+  assert.doesNotMatch(lines.join("\n") + ch.src, /127\.0\.0\.1|live/, "o link do fornecedor nao aparece para o aparelho");
+  assert.match(plain(keyUri), /^http:\/\/127\.0\.0\.1:\d+\/live\/key\.bin$/);
   const segment = await call("GET", lines[3]);
   assert.equal(segment.body, "TSDATA");
 
-  const tampered = ch.src.replace("index.m3u8", "outro.m3u8");
+  const tampered = ch.src.replace(/u=x(.)/, (_m, a) => `u=x${a === "A" ? "B" : "A"}`);
   assert.equal((await call("GET", tampered)).status, 403);
 
   // Link assinado funciona sem cookie (servidor de video separado), mas expira e respeita bloqueio
@@ -468,7 +478,7 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
   assert.equal(eps[0].parent_series, "70");
   const acc = (await call("GET", "/api/player/xtream/items?section=movie&limit=10&q=TESTE")).body;
   assert.equal(acc.items[0].name, "Filme Teste", "busca ignora maiusculas/acentos");
-  assert.match(decodeURIComponent(eps[1].src), /\/series\/TiaX\/Sen%401\/902\.mkv/);
+  assert.match(plain(eps[1].src), /\/series\/TiaX\/Sen%401\/902\.mkv/);
 
   const epg = (await call("GET", "/api/player/epg?ids=xt:1")).body;
   assert.equal(epg["xt:1"][0].title, "Jogo ao vivo");
@@ -498,7 +508,7 @@ test("trocar a lista nao perde historico e favoritos: religa cada titulo pelo no
   assert.equal(items[2].series_id, "70");
   assert.equal(items[3].parent_series, "70");
   assert.deepEqual([items[3].season, items[3].episode, items[3].group], [1, 2, "Serie Teste"]);
-  assert.match(decodeURIComponent(items[3].src), /902\.mkv/);
+  assert.match(plain(items[3].src), /902\.mkv/);
   assert.equal(items[4], null, "titulo que nao existe mais fica como estava no aparelho");
 });
 
@@ -534,7 +544,7 @@ test("varias listas no mesmo cliente: um catalogo so, sem repetir titulos, com a
   assert.deepEqual(live.map((c) => c.name), ["ESPN", "Canal +18", "Globo"], "ESPN nao se repete");
   assert.equal(live[0].epg_id, "xt:1", "item da principal fica com o mesmo id de sempre");
   assert.equal(live[0].more.length, 1, "ESPN da outra lista vira reserva");
-  assert.match(decodeURIComponent(live[0].more[0].src), /\/live\/Extra\/E1\/101\.ts/);
+  assert.match(plain(live[0].more[0].src), /\/live\/Extra\/E1\/101\.ts/);
   assert.match(live[2].epg_id, /^xt:[0-9a-f]{6}~102$/);
   const esportes = (await call("GET", "/api/player/xtream/items?section=live&category=10")).body;
   assert.deepEqual(esportes.map((c) => c.name), ["ESPN"]);
@@ -544,7 +554,7 @@ test("varias listas no mesmo cliente: um catalogo so, sem repetir titulos, com a
   const movies = (await call("GET", "/api/player/xtream/items?section=movie&category=20&sort=az")).body;
   assert.deepEqual(movies.map((m) => m.name), ["Abelha Rainha", "Filme Novo", "Filme Teste", "Zebra (1999)"]);
   const teste = movies.find((m) => m.name === "Filme Teste");
-  assert.match(decodeURIComponent(teste.more[0].src), /\/movie\/Extra\/E1\/150\.mkv/);
+  assert.match(plain(teste.more[0].src), /\/movie\/Extra\/E1\/150\.mkv/);
   const novo = movies.find((m) => m.name === "Filme Novo");
   assert.match(novo.xt_id, /^[0-9a-f]{6}~151$/);
   const paged = (await call("GET", "/api/player/xtream/items?section=movie&limit=10")).body;
@@ -554,9 +564,9 @@ test("varias listas no mesmo cliente: um catalogo so, sem repetir titulos, com a
   assert.deepEqual(series.map((s) => s.series_id), ["70"]);
   const eps = (await call("GET", "/api/player/xtream/series/70?name=Serie%20Teste")).body;
   assert.deepEqual(eps.map((e) => [e.season, e.episode]), [[1, 1], [1, 2], [1, 3]], "episodio que falta vem da outra lista");
-  assert.match(decodeURIComponent(eps[0].more[0].src), /801\.mp4/);
+  assert.match(plain(eps[0].more[0].src), /801\.mp4/);
   assert.equal(eps[1].more, undefined);
-  assert.match(decodeURIComponent(eps[2].src), /803\.mp4/);
+  assert.match(plain(eps[2].src), /803\.mp4/);
   assert.equal(eps[2].parent_series, "70");
 
   const epg = (await call("GET", `/api/player/epg?ids=${encodeURIComponent(live[2].epg_id)}`)).body;
@@ -569,7 +579,7 @@ test("varias listas no mesmo cliente: um catalogo so, sem repetir titulos, com a
   assert.equal(sync.history[0].more.length, 1);
   const { items } = (await call("POST", "/api/player/relink", { items: [{ ...teste, id: "x", src: "http://antigo" }, { ...eps[2], id: "y" }] })).body;
   assert.equal(items[0].id, teste.id);
-  assert.match(decodeURIComponent(items[1].src), /803\.mp4/);
+  assert.match(plain(items[1].src), /803\.mp4/);
 
   // Lista extra vencida sai do catalogo; o cliente continua com a principal.
   cookie = "";
@@ -940,4 +950,15 @@ test("validade automatica pela lista do fornecedor", async () => {
   assert.equal(checked.body.valid, false);
   assert.ok((await call("GET", "/api/stats")).body.expired_clients >= 1);
   renova = "active";
+});
+
+// Por ultimo: depois deste teste o endereco local fica bloqueado para login de admin por 15 minutos.
+test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
+  cookie = "";
+  let tries = 0;
+  while ((await call("POST", "/api/auth/login", { username: "admin", password: `chute${tries}` })).status === 401) tries++;
+  assert.ok(tries <= 8, "bloqueia em no maximo 8 erros");
+  const blocked = await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  assert.equal(blocked.status, 429);
+  assert.match(blocked.body.error, /Aguarde/);
 });
