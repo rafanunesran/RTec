@@ -22,7 +22,8 @@ import {
 import type { Channel } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fraction, resumeAt, saveProgress, WATCHED_AT } from "@/lib/progress";
-import VideoPlayer, { type BoostState, type HlsVideo } from "@/components/VideoPlayer";
+import VideoPlayer, { type BoostState } from "@/components/VideoPlayer";
+import { readTracks, setAudioTrack, setTextTrack, type Track } from "@/lib/tracks";
 import { boostSaved, saveBoost } from "@/lib/boost";
 import { restorePortrait } from "@/lib/orientation";
 import { tvNavigationOn, tvScreenOn } from "@/lib/tvnav";
@@ -50,80 +51,6 @@ function exitFullscreen() {
 /** Celular/tablet: controles grandes no meio da tela e toque duplo nas laterais para voltar/avancar. */
 const touchScreen = () => !tvScreenOn() && typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
-type Track = { id: number; label: string; active: boolean };
-
-const LANGS: Record<string, string> = {
-  pt: "Português",
-  por: "Português",
-  "pt-br": "Português",
-  en: "Inglês",
-  eng: "Inglês",
-  es: "Espanhol",
-  spa: "Espanhol",
-  fr: "Francês",
-  fre: "Francês",
-  fra: "Francês",
-  it: "Italiano",
-  ita: "Italiano",
-  de: "Alemão",
-  ger: "Alemão",
-  deu: "Alemão",
-  ja: "Japonês",
-  jpn: "Japonês",
-};
-/** Nome da faixa: o do fornecedor, ou o idioma quando o nome e generico ("audio_1", "Track 2"). */
-const trackName = (name: string | undefined, lang: string | undefined, i: number) => {
-  const n = name?.trim();
-  const l = lang && (LANGS[lang.toLowerCase()] || lang);
-  if (n && !/^(audio|track|faixa|sub(title)?s?|legenda)[\s_-]*\d*$/i.test(n)) return n;
-  return l || n || `Faixa ${i + 1}`;
-};
-
-type NativeAudio = { length: number; [i: number]: { label: string; language: string; enabled: boolean } };
-
-/** Faixas de audio e legenda do video (hls.js ou o proprio navegador). */
-function readTracks(v: HTMLVideoElement): { audio: Track[]; text: Track[] } {
-  const hls = (v as HlsVideo).hls;
-  if (hls) {
-    return {
-      audio: hls.audioTracks.map((t, i) => ({ id: i, label: trackName(t.name, t.lang, i), active: i === hls.audioTrack })),
-      text: hls.subtitleTracks.map((t, i) => ({ id: i, label: trackName(t.name, t.lang, i), active: i === hls.subtitleTrack && hls.subtitleDisplay })),
-    };
-  }
-  const at = (v as HTMLVideoElement & { audioTracks?: NativeAudio }).audioTracks;
-  const audio: Track[] = [];
-  if (at) for (let i = 0; i < at.length; i++) audio.push({ id: i, label: trackName(at[i].label, at[i].language, i), active: at[i].enabled });
-  const text: Track[] = [];
-  for (let i = 0; i < v.textTracks.length; i++) {
-    const t = v.textTracks[i];
-    if (t.kind === "subtitles" || t.kind === "captions") text.push({ id: i, label: trackName(t.label, t.language, i), active: t.mode === "showing" });
-  }
-  return { audio, text };
-}
-
-function setAudioTrack(v: HTMLVideoElement, id: number) {
-  const hls = (v as HlsVideo).hls;
-  if (hls) {
-    hls.audioTrack = id;
-    return;
-  }
-  const at = (v as HTMLVideoElement & { audioTracks?: NativeAudio }).audioTracks;
-  if (at) for (let i = 0; i < at.length; i++) at[i].enabled = i === id;
-}
-
-/** id -1 desliga a legenda. */
-function setTextTrack(v: HTMLVideoElement, id: number) {
-  const hls = (v as HlsVideo).hls;
-  if (hls) {
-    hls.subtitleTrack = id;
-    hls.subtitleDisplay = id >= 0;
-    return;
-  }
-  for (let i = 0; i < v.textTracks.length; i++) {
-    const t = v.textTracks[i];
-    if (t.kind === "subtitles" || t.kind === "captions") t.mode = i === id ? "showing" : "disabled";
-  }
-}
 
 const clock = (s: number) => {
   const t = Math.max(0, Math.floor(s));
@@ -782,7 +709,7 @@ function TenIcon({ icon: Icon, className }: { icon: typeof RotateCw; className?:
 }
 
 /** Janela lateral dentro do player (fica visivel em tela cheia e prende o controle remoto). */
-function SidePanel({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function SidePanel({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   return (
     <div className="absolute inset-0 z-20 flex justify-end bg-black/50" onClick={onClose}>
       <div
@@ -804,7 +731,7 @@ function SidePanel({ title, onClose, children }: { title: string; onClose: () =>
 }
 
 /** Episodios da serie (por temporada) ou canais da lista, para trocar sem sair do player. */
-function ListPanel({
+export function ListPanel({
   title,
   items,
   currentId,
@@ -896,7 +823,7 @@ function ListPanel({
   );
 }
 
-function TracksPanel({
+export function TracksPanel({
   tracks,
   onAudio,
   onText,

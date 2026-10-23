@@ -18,8 +18,8 @@ import SettingsDialog from "@/components/player/SettingsDialog";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
 import ListExpired from "@/components/player/ListExpired";
 import { tvScreenOn } from "@/lib/tvnav";
-import { castPlay, castTarget, onCastPlay, setCastNow, startCast, useCast, type CastPlay } from "@/lib/cast";
-import { CastBar, CastButton, CastDialog } from "@/components/player/Cast";
+import { castControl, castPlay, castTarget, knownDevices, onCastPlay, setCastNow, setCastTarget, startCast, useCast, type CastPlay } from "@/lib/cast";
+import { CastBar, CastButton, CastDialog, CastRemote, WhereDialog } from "@/components/player/Cast";
 import { MAIN_PROFILE, fetchProfiles, lastProfile, rememberProfile, scoped, setStorageProfile, type ProfilesResponse, type Viewer } from "@/lib/profiles";
 
 const FAVORITES = "__favoritos__";
@@ -791,11 +791,23 @@ function Watch({
       await castPlay(c, viewer.id, at, dur);
       addHistory(c);
       toast.success(`Tocando em ${name}`, { description: c.name });
+      if (!remoteOpen) {
+        pushNav();
+        setRemoteOpen(true);
+      }
     } catch {
       toast.error(`Não foi possível mandar para ${name}`);
     }
   };
-  const play = (c0: Channel, list?: Channel[] | null) => withPin(() => (castTarget() ? sendTo(c0) : startPlay(c0, list)), c0.group);
+  // Com outro aparelho da conta aberto (e sem estar conectado a ele), pergunta onde tocar. `ask` falso: troca de
+  // episodio/canal dentro do player, que continua onde esta.
+  const [where, setWhere] = useState<{ c: Channel; list?: Channel[] | null } | null>(null);
+  const play = (c0: Channel, list?: Channel[] | null, ask = true) =>
+    withPin(() => {
+      if (castTarget()) return sendTo(c0);
+      if (ask && !tv && knownDevices().length) return setWhere({ c: c0, list });
+      return startPlay(c0, list);
+    }, c0.group);
 
   // Recebendo de outro aparelho da conta: toca aqui (o PIN ja foi pedido la).
   const fromCast = useRef<(p: CastPlay) => void>();
@@ -823,13 +835,20 @@ function Watch({
   const cast = useCast();
   const [castOpen, setCastOpen] = useState(false);
   const [castFromPlayer, setCastFromPlayer] = useState(false);
+  const [remoteOpen, setRemoteOpen] = useState(false); // controle completo do que toca no outro aparelho
+  // O que toca no outro aparelho conta como "tocando" para anterior/proximo e a lista de EPs/canais do controle.
+  const playing = current ?? (cast.target && cast.state ? cast.state.item : null);
+  const closeRemote = useCallback(() => {
+    if (window.history.state?.rtecNav) window.history.back();
+    else setRemoteOpen(false);
+  }, []);
 
   // Episodio aberto pelo historico ou pela busca: carrega a serie para saber qual e o proximo.
   useEffect(() => {
-    if (!current || current.kind !== "series" || queue?.some((q) => q.id === current.id)) return;
+    if (!playing || playing.kind !== "series" || queue?.some((q) => q.id === playing.id)) return;
     if (!xt) {
       // Lista M3U: os episodios da mesma serie estao no proprio catalogo.
-      const name = episodeInfo(current.name).series;
+      const name = episodeInfo(playing.name).series;
       const eps = channels
         .filter((x) => x.kind === "series" && episodeInfo(x.name).series === name)
         .map((x) => ({ ...x, ...episodeInfo(x.name) }))
@@ -837,30 +856,30 @@ function Watch({
       if (eps.length) setQueue(eps);
       return;
     }
-    if (!current.parent_series) return;
+    if (!playing.parent_series) return;
     let alive = true;
     api
-      .get<Episode[]>(`/api/player/xtream/series/${encodeURIComponent(current.parent_series)}?name=${encodeURIComponent(current.group)}`)
+      .get<Episode[]>(`/api/player/xtream/series/${encodeURIComponent(playing.parent_series)}?name=${encodeURIComponent(playing.group)}`)
       .then((eps) => alive && setQueue(eps))
       .catch(() => {});
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current, queue, xt]);
+  }, [playing, queue, xt]);
 
   // Lista em que o titulo tocando esta: episodios da serie ou canais da mesma lista/categoria (anterior/proximo e "EPs").
   const playlist = useMemo(() => {
-    if (!current) return null;
-    if (current.kind === "series") return queue?.some((q) => q.id === current.id) ? queue.map((q) => ({ ...q, group: current.group })) : null;
-    if (current.kind !== "live") return null;
-    const list = visible.some((x) => x.id === current.id) ? visible : channels.filter((x) => x.kind === "live" && x.group === current.group);
-    return list.length > 1 && list.some((x) => x.id === current.id) ? list : null;
-  }, [current, queue, visible, channels]);
+    if (!playing) return null;
+    if (playing.kind === "series") return queue?.some((q) => q.id === playing.id) ? queue.map((q) => ({ ...q, group: playing.group })) : null;
+    if (playing.kind !== "live") return null;
+    const list = visible.some((x) => x.id === playing.id) ? visible : channels.filter((x) => x.kind === "live" && x.group === playing.group);
+    return list.length > 1 && list.some((x) => x.id === playing.id) ? list : null;
+  }, [playing, queue, visible, channels]);
   const neighbor = (step: number) => {
-    if (!current || !playlist) return null;
-    const i = playlist.findIndex((q) => q.id === current.id);
-    if (current.kind === "live") return playlist[(i + step + playlist.length) % playlist.length];
+    if (!playing || !playlist) return null;
+    const i = playlist.findIndex((q) => q.id === playing.id);
+    if (playing.kind === "live") return playlist[(i + step + playlist.length) % playlist.length];
     return playlist[i + step] ?? null;
   };
   const nextEpisode = neighbor(1);
@@ -912,11 +931,12 @@ function Watch({
   };
 
   // Botao voltar (celular, TV Box e navegador): fecha o player -> sai da serie -> volta ao Inicio -> sai do app.
-  const navRef = useRef({ page, series, current, movie });
-  navRef.current = { page, series, current, movie };
+  const navRef = useRef({ page, series, current, movie, remoteOpen });
+  navRef.current = { page, series, current, movie, remoteOpen };
   const goBackInApp = () => {
     const n = navRef.current;
-    if (n.current) setCurrent(null);
+    if (n.remoteOpen) setRemoteOpen(false);
+    else if (n.current) setCurrent(null);
     else if (n.movie) setMovie(prevTitles.current.movie.pop() ?? null);
     else if (n.series) setSeries(prevTitles.current.series.pop() ?? null);
     else if (n.page !== "home") setPage("home");
@@ -1433,10 +1453,10 @@ function Watch({
           next={nextEpisode}
           prev={prevEpisode}
           playlist={playlist}
-          onPick={(c) => play(c)}
+          onPick={(c) => play(c, undefined, false)}
           favorite={isFav(current)}
           onFavorite={() => toggleFavorite(current)}
-          onNext={(n) => play(n)}
+          onNext={(n) => play(n, undefined, false)}
           onClose={() => setCurrent(null)}
           onCast={
             tv
@@ -1469,7 +1489,51 @@ function Watch({
         />
       )}
 
-      {!tv && <CastBar onOpen={() => setCastOpen(true)} />}
+      {!tv && !remoteOpen && (
+        <CastBar
+          onOpen={() => {
+            if (!cast.state) return setCastOpen(true);
+            pushNav();
+            setRemoteOpen(true);
+          }}
+        />
+      )}
+      {remoteOpen && cast.state && (
+        <CastRemote
+          playlist={playlist}
+          prev={prevEpisode}
+          next={nextEpisode}
+          onPick={(c) => play(c)}
+          favorite={isFav(cast.state.item)}
+          onFavorite={() => toggleFavorite(cast.state!.item)}
+          onHere={(item, pos, dur) => {
+            // Traz para este aparelho do mesmo ponto: para la e desconecta.
+            void castControl("stop").catch(() => {});
+            setCastTarget(null);
+            if (pos > 0 && dur > 0) saveProgress(item, pos + 5, dur);
+            setRemoteOpen(false);
+            void startPlay(item, item.kind === "series" ? undefined : null);
+          }}
+          onClose={closeRemote}
+        />
+      )}
+      {where && (
+        <WhereDialog
+          title={where.c.name}
+          onClose={() => setWhere(null)}
+          onHere={() => {
+            const w = where;
+            setWhere(null);
+            void startPlay(w.c, w.list);
+          }}
+          onDevice={(d) => {
+            const w = where;
+            setWhere(null);
+            setCastTarget(d);
+            void sendTo(w.c);
+          }}
+        />
+      )}
       {!castFromPlayer && castDialog}
       <PinDialog
         open={!!pinFor}

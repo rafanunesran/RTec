@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { api, type Channel } from "@/lib/api";
 import { isTV } from "@/lib/tvnav";
+import { readTracks, setAudioTrack, setTextTrack, type Track } from "@/lib/tracks";
 
 // "Tocar em outro aparelho": com o app aberto na TV, escolhe o titulo no celular/PC e ele toca na TV.
 // Os aparelhos abertos da mesma conta conversam por um canal de mensagens (ntfy, via EventSource): nada passa pela
@@ -9,15 +10,30 @@ import { isTV } from "@/lib/tvnav";
 
 export type DeviceKind = "tv" | "phone" | "pc";
 export type CastDevice = { id: string; name: string; kind: DeviceKind; title?: string };
-export type CastAction = "toggle" | "stop" | "back" | "fwd" | "voldown" | "volup";
-export type CastState = { title: string; logo: string; paused: boolean; pos: number; dur: number; live: boolean; at: number } | null;
+export type CastAction = "toggle" | "stop" | "back" | "fwd" | "seek" | "voldown" | "volup" | "mute" | "audio" | "text";
+export type CastTracks = { audio: Track[]; text: Track[] };
+/** O que esta tocando no outro aparelho (`at`: quando foi medido, para andar a barra de tempo sozinha). */
+export type CastState = {
+  item: Channel;
+  title: string;
+  logo: string;
+  paused: boolean;
+  pos: number;
+  dur: number;
+  live: boolean;
+  volume: number;
+  muted: boolean;
+  tracks: CastTracks;
+  at: number;
+} | null;
 export type CastPlay = { item: Channel; at: number; dur: number; profile: string; name: string };
 
 type Msg = { from: string; to?: string; ts: number } & (
-  | { type: "hello" }
+  | { type: "hello"; name?: string; kind?: DeviceKind }
+  | { type: "bye" }
   | { type: "here"; name: string; kind: DeviceKind; title?: string; state?: CastState }
   | ({ type: "play" } & CastPlay)
-  | { type: "ctl"; a: CastAction }
+  | { type: "ctl"; a: CastAction; v?: number }
   | { type: "state"; state: CastState }
 );
 
@@ -93,10 +109,10 @@ async function open(key: CryptoKey, text: string): Promise<Msg | null> {
 
 type Body = Msg extends infer M ? (M extends Msg ? Omit<M, "from" | "ts"> : never) : never;
 
-async function send(body: Body) {
+async function send(body: Body, keepalive = false) {
   const c = await channel();
   // text/plain: o navegador nao precisa pedir permissao antes (CORS simples).
-  const res = await fetch(`${c.relay}/${c.topic}`, { method: "POST", body: await seal(c.key, { ...body, from: deviceId, ts: Date.now() } as Msg) });
+  const res = await fetch(`${c.relay}/${c.topic}`, { method: "POST", keepalive, body: await seal(c.key, { ...body, from: deviceId, ts: Date.now() } as Msg) });
   if (!res.ok) throw new Error(`cast ${res.status}`);
 }
 
@@ -145,57 +161,90 @@ function rememberedTarget(): CastDevice | null {
 }
 
 let resuming = false;
-/** Ao abrir ou voltar ao app: se o ultimo aparelho conectado ainda esta aberto, religa sozinho (e pega o que esta passando). */
+/**
+ * Ao abrir ou voltar ao app: avisa os outros aparelhos que este esta aberto, descobre quem mais esta e, se o
+ * ultimo aparelho conectado ainda esta aberto, religa sozinho (e pega o que esta passando).
+ */
 async function resume() {
-  const last = target ?? rememberedTarget();
-  if (!last || resuming) return;
+  if (resuming) return;
   resuming = true;
   try {
-    found = new Map();
-    await send({ type: "hello", to: last.id });
-    await new Promise((r) => setTimeout(r, 2500));
-    const d = found.get(last.id);
-    const st = states.get(last.id) ?? null;
-    if (d && (!target || target.id === d.id)) setCastTarget(d, st);
+    const list = await findDevices();
+    const last = target ?? rememberedTarget();
+    const d = last && list.find((x) => x.id === last.id);
+    if (d && (!target || target.id === d.id)) setCastTarget(d, states.get(d.id) ?? null);
   } catch {
     /* sem rede: fica como estava */
   } finally {
-    found = null;
     resuming = false;
   }
 }
 
 // ---------- Quem esta aberto ----------
-let found: Map<string, CastDevice> | null = null;
+// Cada aparelho avisa quando abre o app (hello) e quando sai (bye); assim, ao dar play, ja se sabe se ha outro aberto.
+const online = new Map<string, CastDevice & { seen: number }>();
 const states = new Map<string, CastState>(); // o que cada aparelho disse que esta passando ao responder
+const order: Record<DeviceKind, number> = { tv: 0, pc: 1, phone: 2 };
+const sorted = (list: CastDevice[]) => list.sort((a, b) => order[a.kind] - order[b.kind] || a.name.localeCompare(b.name));
+
+/** Aparelhos da conta que estavam abertos da ultima vez que se ouviu deles (sem perguntar de novo). */
+export const knownDevices = (): CastDevice[] => sorted([...online.values()].map(({ seen: _seen, ...d }) => d));
 
 /** Pergunta quais aparelhos da conta estao com o app aberto (respondem em ~1 s). */
 export async function findDevices(wait = 2500): Promise<CastDevice[]> {
-  found = new Map();
-  await send({ type: "hello" });
+  const start = Date.now();
+  await send({ type: "hello", ...thisDevice() });
   await new Promise((r) => setTimeout(r, wait));
-  const list = [...found.values()];
-  found = null;
-  const order: Record<DeviceKind, number> = { tv: 0, pc: 1, phone: 2 };
-  return list.sort((a, b) => order[a.kind] - order[b.kind] || a.name.localeCompare(b.name));
+  for (const [id, d] of online) if (d.seen < start) online.delete(id); // nao respondeu: fechou o app
+  return knownDevices();
 }
 
 /** Manda o titulo tocar no aparelho escolhido (a partir de `at` segundos, para continuar de onde parou aqui). */
 export async function castPlay(item: Channel, profile: string, at = 0, dur = 0) {
   if (!target) return;
-  const slim = Object.fromEntries(KEEP.filter((k) => item[k] !== undefined).map((k) => [k, item[k]])) as unknown as Channel;
-  await send({ type: "play", to: target.id, item: slim, at, dur, profile, name: thisDevice().name });
-  targetState = { title: item.name, logo: item.logo, paused: false, pos: at, dur, live: item.kind === "live", at: Date.now() };
+  await send({ type: "play", to: target.id, item: slim(item), at, dur, profile, name: thisDevice().name });
+  const old = targetState;
+  targetState = {
+    item: slim(item),
+    title: item.name,
+    logo: item.logo,
+    paused: false,
+    pos: at,
+    dur,
+    live: item.kind === "live",
+    volume: old?.volume ?? 1,
+    muted: old?.muted ?? false,
+    tracks: { audio: [], text: [] },
+    at: Date.now(),
+  };
   changed();
 }
 
-export function castControl(a: CastAction) {
+const slim = (item: Channel) => Object.fromEntries(KEEP.filter((k) => item[k] !== undefined).map((k) => [k, item[k]])) as unknown as Channel;
+
+/** Posicao agora no outro aparelho (anda sozinha enquanto toca). */
+export const castPos = (s: NonNullable<CastState>) =>
+  Math.min(s.dur || Infinity, s.pos + (s.paused || s.live ? 0 : (Date.now() - s.at) / 1000));
+
+/** Comando para o aparelho conectado. A tela daqui ja mostra o efeito; a resposta dele confirma. */
+export function castControl(a: CastAction, v?: number) {
   if (!target) return Promise.resolve();
-  if (a === "stop") {
-    targetState = null;
-    changed();
+  const s = targetState;
+  if (a === "stop") targetState = null;
+  else if (s) {
+    const pos = castPos(s);
+    const at = Date.now();
+    const clamp = (x: number) => Math.max(0, s.dur ? Math.min(s.dur, x) : x);
+    if (a === "toggle") targetState = { ...s, pos, at, paused: !s.paused };
+    else if (a === "seek") targetState = { ...s, pos: clamp(v ?? 0), at };
+    else if (a === "back" || a === "fwd") targetState = { ...s, pos: clamp(pos + (a === "fwd" ? 10 : -10)), at };
+    else if (a === "mute") targetState = { ...s, muted: !s.muted };
+    else if (a === "volup" || a === "voldown") targetState = { ...s, muted: false, volume: Math.min(1, Math.max(0, s.volume + (a === "volup" ? 0.1 : -0.1))) };
+    else if (a === "audio") targetState = { ...s, tracks: { ...s.tracks, audio: s.tracks.audio.map((t) => ({ ...t, active: t.id === v })) } };
+    else if (a === "text") targetState = { ...s, tracks: { ...s.tracks, text: s.tracks.text.map((t) => ({ ...t, active: t.id === v })) } };
   }
-  return send({ type: "ctl", to: target.id, a });
+  changed();
+  return send({ type: "ctl", to: target.id, a, v });
 }
 
 // ---------- Este aparelho recebendo ----------
@@ -226,12 +275,16 @@ function stateNow(): CastState {
   if (!nowPlaying) return null;
   const v = video();
   return {
+    item: slim(nowPlaying),
     title: nowPlaying.name,
     logo: nowPlaying.logo,
     paused: v ? v.paused : false,
     pos: v ? v.currentTime : 0,
     dur: v && Number.isFinite(v.duration) ? v.duration : 0,
     live: nowPlaying.kind === "live",
+    volume: v ? v.volume : 1,
+    muted: v ? v.muted : false,
+    tracks: v ? readTracks(v) : { audio: [], text: [] },
     at: Date.now(),
   };
 }
@@ -240,7 +293,9 @@ function stateNow(): CastState {
 function report(force = false) {
   if (!controller) return;
   const s = stateNow();
-  const sig = s ? `${s.title}|${s.paused}` : "";
+  const sig = s
+    ? JSON.stringify([s.item.id, s.paused, s.dur > 0, s.muted, Math.round(s.volume * 10), s.tracks.audio.map((t) => t.active), s.tracks.text.map((t) => t.active)])
+    : "";
   if (!force && sig === lastSent) return;
   lastSent = sig;
   void send({ type: "state", to: controller, state: s }).catch(() => {});
@@ -251,15 +306,19 @@ function reportSoon(force = false) {
   reportTimer = setTimeout(() => report(force), 1500);
 }
 
-function control(a: CastAction) {
+function control(a: CastAction, x = 0) {
   const v = video();
   if (a === "stop") stopHandler?.();
-  else if (v && a === "toggle") void (v.paused ? v.play().catch(() => {}) : v.pause());
-  else if (v && (a === "back" || a === "fwd")) v.currentTime = Math.max(0, v.currentTime + (a === "fwd" ? 30 : -30));
-  else if (v && (a === "volup" || a === "voldown")) {
+  else if (!v) return;
+  else if (a === "toggle") void (v.paused ? v.play().catch(() => {}) : v.pause());
+  else if (a === "back" || a === "fwd") v.currentTime = Math.max(0, v.currentTime + (a === "fwd" ? 10 : -10));
+  else if (a === "seek") v.currentTime = Math.max(0, x);
+  else if (a === "mute") v.muted = !v.muted;
+  else if (a === "volup" || a === "voldown") {
     v.muted = false;
     v.volume = Math.min(1, Math.max(0, v.volume + (a === "volup" ? 0.1 : -0.1)));
-  }
+  } else if (a === "audio") setAudioTrack(v, x);
+  else if (a === "text") setTextTrack(v, x);
   reportSoon(true);
 }
 
@@ -268,12 +327,16 @@ async function receive(key: CryptoKey, text: string) {
   if (!m || m.from === deviceId || (m.to && m.to !== deviceId)) return;
   switch (m.type) {
     case "hello": {
+      if (m.name && m.kind) online.set(m.from, { id: m.from, name: m.name, kind: m.kind, seen: Date.now() });
       const me = thisDevice();
       void send({ type: "here", to: m.from, ...me, title: nowPlaying?.name, state: stateNow() }).catch(() => {});
       break;
     }
+    case "bye":
+      online.delete(m.from);
+      break;
     case "here":
-      found?.set(m.from, { id: m.from, name: m.name, kind: m.kind, title: m.title });
+      online.set(m.from, { id: m.from, name: m.name, kind: m.kind, title: m.title, seen: Date.now() });
       states.set(m.from, m.state ?? null);
       break;
     case "play":
@@ -283,7 +346,7 @@ async function receive(key: CryptoKey, text: string) {
       break;
     case "ctl":
       controller = m.from;
-      control(m.a);
+      control(m.a, m.v);
       break;
     case "state":
       if (target?.id === m.from) {
@@ -341,6 +404,7 @@ export function startCast(username: string) {
     };
   };
   const disconnect = () => {
+    if (es) void send({ type: "bye" }, true).catch(() => {}); // os outros tiram este aparelho da lista
     es?.close();
     es = null;
   };
