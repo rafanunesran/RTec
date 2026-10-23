@@ -48,3 +48,23 @@ export function titleKey(c: Channel): string {
 
 /** Canal ao vivo tambem pode ser achado pelo tvg-id da lista (quando nao e o id interno do Xtream). */
 export const epgKey = (c: Channel) => (c.kind === "live" && c.epg_id && !c.epg_id.startsWith("xt:") ? `epg:${c.epg_id.toLowerCase()}` : "");
+
+/** Serie de um episodio ("series:nome"), ou "" se nao for episodio. */
+export function seriesKeyOf(c: Channel): string {
+  if (c.kind !== "series" || isSeriesCard(c)) return "";
+  const ep = episodeOf(c);
+  const n = ep ? normTitle(ep.series) : "";
+  return n ? `series:${n}` : "";
+}
+
+/** Lista do mais recente para o mais antigo: deixa so o ultimo episodio tocado de cada serie. */
+export function lastEpisodePerSeries(list: Channel[]): Channel[] {
+  const seen = new Set<string>();
+  return list.filter((c) => {
+    const k = seriesKeyOf(c);
+    if (!k) return true;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}

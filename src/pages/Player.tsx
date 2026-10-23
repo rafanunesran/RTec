@@ -10,7 +10,7 @@ import PlayerOverlay from "@/components/player/PlayerOverlay";
 import { MovieDetails, Recommendations, TitleHeader, useTitleInfo } from "@/components/player/TitleDetails";
 import { WATCHED_AT, adoptProgress, fraction, getProgress, resumeAt, saveProgress, useProgressVersion } from "@/lib/progress";
 import { applyRelink, relinkM3u, relinkXtream } from "@/lib/relink";
-import { episodeInfo } from "@/lib/titlekey";
+import { episodeInfo, lastEpisodePerSeries, seriesKeyOf } from "@/lib/titlekey";
 import { listChanged, onRemoteList, startSync } from "@/lib/sync";
 import { refreshChannels } from "@/lib/links";
 import PinDialog from "@/components/player/PinDialog";
@@ -446,6 +446,8 @@ function Watch({
   const [movie, setMovie] = useState<Channel | null>(null); // tela de detalhes do filme
   const [favorites, setFavorites] = useState<Channel[]>(() => load(scoped("rtec:favs"), []));
   const [history, setHistory] = useState<Channel[]>(() => load(scoped("rtec:history"), []));
+  // Historico guardado antes desta regra pode ter varios EPs da mesma serie: mostra so o mais recente.
+  const shownHistory = useMemo(() => lastEpisodePerSeries(history), [history]);
   // Favoritos, historico e progresso acompanham o perfil na conta: o que fizer aqui aparece nos outros aparelhos.
   useEffect(() => {
     const off = onRemoteList((key, items) => {
@@ -682,7 +684,7 @@ function Watch({
   const unfiltered = useMemo(() => {
     let list: Channel[];
     if (group === FAVORITES) list = favorites.filter((c) => c.kind === section);
-    else if (group === HISTORY) list = history.filter((c) => c.kind === section);
+    else if (group === HISTORY) list = shownHistory.filter((c) => c.kind === section);
     else if (pagedAll) return pageState?.items ?? [];
     else if (xt) {
       list = Array.isArray(xtState) ? xtState : [];
@@ -693,7 +695,7 @@ function Watch({
       );
     }
     return list;
-  }, [group, favorites, history, section, pagedAll, pageState, xt, xtState, groups, isLocked, channels, playlistId]);
+  }, [group, favorites, shownHistory, section, pagedAll, pageState, xt, xtState, groups, isLocked, channels, playlistId]);
 
   const visible = useMemo(() => {
     if (pagedAll) return unfiltered;
@@ -771,7 +773,9 @@ function Watch({
 
   const addHistory = (c: Channel) =>
     setHistory((old) => {
-      const next = [c, ...old.filter((h) => h.id !== c.id)].slice(0, HISTORY_MAX);
+      // Episodio: sai do historico o EP anterior da mesma serie, fica so o ultimo tocado.
+      const sk = seriesKeyOf(c);
+      const next = [c, ...old.filter((h) => h.id !== c.id && (!sk || seriesKeyOf(h) !== sk))].slice(0, HISTORY_MAX);
       saveList("history", next);
       return next;
     });
@@ -1085,7 +1089,7 @@ function Watch({
   const menuOptions: MenuOption[] = [
     { key: "", name: "Todos", icon: <LayoutGrid /> },
     { key: FAVORITES, name: "Favoritos", icon: <Heart />, count: favorites.filter((c) => c.kind === section).length },
-    { key: HISTORY, name: "Histórico", icon: <History />, count: history.filter((c) => c.kind === section).length },
+    { key: HISTORY, name: "Histórico", icon: <History />, count: shownHistory.filter((c) => c.kind === section).length },
     ...groups.filter((g) => !viewer.kids || !isLocked(g.name)).map((g) => ({ key: g.key, name: g.name, locked: isLocked(g.name) })),
   ];
 
@@ -1203,7 +1207,7 @@ function Watch({
       <main className={cn("mx-auto w-full flex-1", tv ? "px-10 pb-10 pt-8" : "max-w-[1600px] px-4 pb-8 pt-4 lg:px-6", cast.target && !tv && "pb-24")}>
             {page === "home" ? (
               <HomePage
-                history={history}
+                history={shownHistory}
                 loading={catalog === null}
                 onOpen={openItem}
                 onExplore={() => {
