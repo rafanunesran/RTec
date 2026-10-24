@@ -109,3 +109,10 @@ html.tv-screen { font-size: max(16px, 1.25vw); }
 .vol-range::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 9999px; background: #fff; }
 .tv-nav .seek-range:focus { outline: none; }
 .tv-nav .seek-range:focus::-webkit-slider-thumb { width: 22px; height: 22px; margin-top: 1px; box-shadow: 0 0 0 5px hsl(var(--brand-2)); }
+
+/* ---- Protecao de tela (depois de 5 min parado) ---- */
+@keyframes saver-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes saver-zoom { from { transform: scale(1); } to { transform: scale(1.08); } }
+.saver-in { animation: saver-in 1.6s ease-out both; }
+.saver-zoom { animation: saver-zoom 16s linear both; transform-origin: 60% 40%; will-change: transform; }
+@media (prefers-reduced-motion: reduce) { .saver-zoom { animation: none; } }

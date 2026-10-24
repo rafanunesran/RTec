@@ -17,6 +17,7 @@ import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
 import ListExpired from "@/components/player/ListExpired";
+import Screensaver, { saverItem, type SaverItem } from "@/components/player/Screensaver";
 import { tvScreenOn } from "@/lib/tvnav";
 import { castControl, castPlay, castTarget, knownDevices, onCastPlay, setCastNow, setCastTarget, startCast, useCast, type CastPlay } from "@/lib/cast";
 import { CastBar, CastButton, CastDialog, CastRemote, WhereDialog } from "@/components/player/Cast";
@@ -1084,6 +1085,56 @@ function Watch({
     saveList("history", next);
   };
 
+  // Protecao de tela: nunca mostra adulto nem categoria bloqueada, mesmo com o PIN ja digitado.
+  const saverHidden = useCallback((g: string) => ADULT.test(g) || settings.locked_groups.includes(g), [settings]);
+  const saverResume = useMemo(
+    () =>
+      shownHistory
+        .filter((c) => c.kind !== "live" && fraction(c) > 0 && fraction(c) < WATCHED_AT && !saverHidden(c.group) && !ADULT.test(c.name))
+        .slice(0, 12)
+        .map((c) => saverItem(c, "resume")),
+    [shownHistory, saverHidden, current], // current: ao fechar o video, o progresso mudou
+  );
+  const loadSaverRecs = useCallback(async (): Promise<SaverItem[]> => {
+    const ok = (c: Channel) => !saverHidden(c.group) && !ADULT.test(c.name);
+    let found: Channel[] = [];
+    if (xt) {
+      const skipOf = (k: "movie" | "series") => (catalog?.sections?.[k] ?? []).filter((g) => saverHidden(g.name)).map((g) => g.id).join(",");
+      // Semelhantes ao que a pessoa esta assistindo; completa com os mais bem avaliados do catalogo.
+      const seeds = saverResume.filter((s) => s.id).slice(0, 3);
+      const recs = await Promise.all(
+        seeds.map((s) => {
+          const q = new URLSearchParams({ kind: s.kind, id: s.id!, name: s.name, skip: skipOf(s.kind), ...(s.year ? { year: String(s.year) } : {}) });
+          return api.get<Channel[]>(`/api/player/recommend?${q}`).catch(() => [] as Channel[]);
+        }),
+      );
+      found = recs.flatMap((r) => r.slice(0, 8));
+      if (found.length < 12) {
+        const top = await Promise.all(
+          (["movie", "series"] as const).map((k) =>
+            api
+              .get<{ items: Channel[] }>(`/api/player/xtream/items?${new URLSearchParams({ section: k, limit: "40", offset: "0", sort: "rating", skip: skipOf(k), r: "7" })}`)
+              .then((r) => r.items)
+              .catch(() => [] as Channel[]),
+          ),
+        );
+        found = found.concat(top.flat());
+      }
+    } else {
+      found = channels.filter((c) => c.kind === "movie" || c.kind === "series");
+    }
+    const seen = new Set(saverResume.map((s) => fold(s.name)));
+    const items: SaverItem[] = [];
+    for (const c of found.filter(ok).sort(() => Math.random() - 0.5)) {
+      const it = saverItem(c, "rec");
+      if (seen.has(fold(it.name))) continue;
+      seen.add(fold(it.name));
+      items.push(it);
+      if (items.length >= 30) break;
+    }
+    return items;
+  }, [xt, catalog, channels, saverHidden, saverResume]);
+
   const groupLabel =
     group === FAVORITES ? "Favoritos" : group === HISTORY ? "Histórico" : group ? (groups.find((g) => g.key === group)?.name ?? group) : "Todos";
   const menuOptions: MenuOption[] = [
@@ -1450,6 +1501,8 @@ function Watch({
           onClose={() => window.history.back()}
         />
       )}
+
+      <Screensaver enabled={!current} resume={saverResume} loadRecs={loadSaverRecs} />
 
       {current && (
         <PlayerOverlay
