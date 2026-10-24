@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  http (sem cifra) so para o video dos fornecedores: eles usam enderecos e IPs variados, quase sempre em http.
+  O site do RTec, o servidor de video (Oracle/sslip.io) e os servicos de apoio so abrem por https.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">vercel.app</domain>
+        <domain includeSubdomains="true">sslip.io</domain>
+        <domain includeSubdomains="true">ntfy.sh</domain>
+        <domain includeSubdomains="true">themoviedb.org</domain>
+        <domain includeSubdomains="true">tmdb.org</domain>
+        <domain includeSubdomains="true">wikipedia.org</domain>
+        <domain includeSubdomains="true">is.gd</domain>
+    </domain-config>
+</network-security-config>

@@ -37,7 +37,7 @@ As colecoes (`admins`, `clients`, `config`) sao criadas sozinhas no primeiro ace
 2. A Vercel detecta tudo pelo `vercel.json` (Vite + funcao em `api/index.js`). Nao mude os comandos.
 3. Em **Environment Variables**, adicione:
    - `FIREBASE_SERVICE_ACCOUNT`: o conteudo inteiro do `.json` baixado no passo 1.4;
-   - `ADMIN_PASSWORD`: a senha do seu primeiro acesso ao painel;
+   - `ADMIN_PASSWORD`: a senha do seu primeiro acesso ao painel (obrigatoria: nao existe senha padrao);
    - `PUBLIC_URL`: o endereco do site (ex: `https://rtec.vercel.app`). Pode adicionar depois do primeiro deploy e fazer **Redeploy**.
 4. Clique em **Deploy**. O painel fica em `https://SEU-SITE/admin` e o reprodutor em `https://SEU-SITE/`.
 
@@ -90,11 +90,20 @@ O servidor de video so aceita links assinados pelo painel, com validade de 12 h.
 
 - O Firestore fica fechado para o navegador (`firestore.rules`); so o servidor le e grava.
 - Links que passam pelo servidor de video levam o link do fornecedor **cifrado** (o aparelho nao ve usuario/senha).
-- `DATA_KEY` (variavel na Vercel, texto longo aleatorio): cifra no banco os links, usuarios e senhas das listas.
+- `DATA_KEY` (variavel na Vercel, texto longo aleatorio): cifra no banco os links, usuarios e senhas das listas
+  e a senha de acesso de cada cliente.
   Ao fazer Redeploy com ela, o que ja estava salvo e cifrado sozinho. Guarde o valor: sem ele as listas nao abrem mais.
 - Login do painel e do reprodutor: depois de 8 senhas erradas seguidas o mesmo endereco espera 15 minutos.
 - Modo direto (app Android, TV): o aparelho precisa do link do fornecedor para tocar sem passar pela Vercel,
   entao esse link continua chegando ao aparelho do cliente.
+
+## http so onde e indispensavel
+
+- O site, a API e os cookies de sessao so funcionam por https (HSTS e cabecalhos de seguranca no `vercel.json`).
+- Os apps (Android, Samsung, LG, TVs antigas) so podem ser gerados com `APP_URL` em https.
+- O unico http liberado e o video dos fornecedores, que quase sempre e http: no navegador ele passa pelo servidor
+  (https), e nos apps toca direto. No Android, `network_security_config.xml` proibe http para o site e servicos de apoio.
+- O servidor de video da Oracle so atende pelo Caddy (https); o Node escuta apenas em `127.0.0.1`.
 
 ## App para TV Samsung (Tizen)
 
@@ -157,7 +166,7 @@ Sem `FIREBASE_SERVICE_ACCOUNT`, o servidor local usa um banco em memoria (os dad
 
 **Esqueceu a senha ou o `ADMIN_PASSWORD` nao funcionou?** `ADMIN_PASSWORD` so vale quando o admin e criado pela primeira vez. Para redefinir, adicione na Vercel a variavel `ADMIN_RESET_PASSWORD` com a nova senha, faca **Redeploy**, entre no painel, troque a senha em Configuracoes e apague a variavel.
 
-Login inicial do painel: `admin` / `admin123` (ou `ADMIN_USER`/`ADMIN_PASSWORD`). **Troque a senha** em Configuracoes.
+Login inicial do painel: `ADMIN_USER` (padrao `admin`) com a senha de `ADMIN_PASSWORD`. Rodando no computador sem `ADMIN_PASSWORD`, o servidor sorteia uma senha e mostra no terminal.
 
 Testes: `npm test` (banco em memoria) e `npm test:firestore` (mesmos testes no emulador oficial do Firestore; precisa de Java).
 

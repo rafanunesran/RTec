@@ -64,12 +64,16 @@ const mapSource = (p, fn) => {
   return out;
 };
 
-/** Campos com link/usuario/senha do fornecedor: lista avulsa (playlists) e listas do cliente (source, extra_sources). */
+/**
+ * Campos com link/usuario/senha do fornecedor: lista avulsa (playlists) e listas do cliente (source, extra_sources).
+ * A senha de acesso do cliente (clients.password) tambem vai cifrada: o painel precisa mostra-la na mensagem.
+ */
 const transforms = {
   playlists: (doc, fn) => mapSource(doc, fn),
   clients: (doc, fn) => {
     if (!doc || typeof doc !== "object") return doc;
     const out = { ...doc };
+    if (typeof out.password === "string") out.password = fn(out.password);
     if ("source" in out) out.source = mapSource(out.source, fn);
     if (Array.isArray(out.extra_sources)) out.extra_sources = out.extra_sources.map((p) => mapSource(p, fn));
     return out;

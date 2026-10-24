@@ -11,6 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${APP_URL:?Defina APP_URL, ex: APP_URL=https://rtec.vercel.app}"
+case "$APP_URL" in https://*) ;; *) echo "APP_URL precisa comecar com https:// (o app nao abre o site por http)." >&2; exit 1 ;; esac
 : "${ANDROID_HOME:?Defina ANDROID_HOME (pasta do Android SDK)}"
 : "${RTEC_KEYSTORE:?Defina RTEC_KEYSTORE (arquivo .jks de assinatura)}"
 : "${RTEC_KEYSTORE_PASSWORD:?Defina RTEC_KEYSTORE_PASSWORD}"

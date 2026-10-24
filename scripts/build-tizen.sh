@@ -11,6 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${APP_URL:?Defina APP_URL, ex: APP_URL=https://rtec.vercel.app}"
+case "$APP_URL" in https://*) ;; *) echo "APP_URL precisa comecar com https:// (o app nao abre o site por http)." >&2; exit 1 ;; esac
 APP_URL="${APP_URL%/}"
 
 PACKAGE_ID="${TIZEN_PACKAGE_ID:-RTecTvApp1}"

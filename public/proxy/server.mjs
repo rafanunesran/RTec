@@ -8,6 +8,8 @@ import { Readable } from "node:stream";
 
 const SECRET = process.env.PROXY_SECRET;
 const PORT = Number(process.env.PORT || 8080);
+// So o Caddy (https, na mesma maquina) fala com este servidor: a porta em http nao fica aberta para a internet.
+const HOST = process.env.HOST || "127.0.0.1";
 const UA = "VLC/3.0.20 LibVLC/3.0.20";
 const TTL_SECONDS = 12 * 3600;
 if (!SECRET) {
@@ -113,4 +115,4 @@ const server = http.createServer(async (req, res) => {
   Readable.fromWeb(upstream.body).on("error", () => res.end()).pipe(res);
 });
 
-server.listen(PORT, () => console.log(`[proxy] RTec video rodando na porta ${PORT}`));
+server.listen(PORT, HOST, () => console.log(`[proxy] RTec video rodando na porta ${PORT}`));

@@ -83,7 +83,8 @@ const env = (name) => (process.env[name] || "").trim();
 
 /**
  * Garante a conta do administrador:
- * - sem nenhum admin: cria com ADMIN_USER / ADMIN_PASSWORD (padrao admin / admin123);
+ * - sem nenhum admin: cria com ADMIN_USER / ADMIN_PASSWORD. Nao ha senha padrao (o codigo e publico): sem
+ *   ADMIN_PASSWORD o servidor publicado nao cria o admin; no computador (dev) sorteia uma e mostra no terminal;
  * - com ADMIN_RESET_PASSWORD: redefine a senha do ADMIN_USER uma vez para cada valor novo
  *   (serve para recuperar o acesso pela Vercel sem mexer no banco).
  */
@@ -105,17 +106,22 @@ export async function ensureAdminAccount(db) {
   }
   const admins = await db.admins.list();
   if (admins.length > 0) return;
-  const password = env("ADMIN_PASSWORD") || "admin123";
+  const published = !!process.env.VERCEL || process.env.NODE_ENV === "production";
+  if (!env("ADMIN_PASSWORD") && published) {
+    console.warn("[rtec] Nenhum admin: defina ADMIN_PASSWORD nas variaveis de ambiente e faca Redeploy.");
+    return;
+  }
+  const password = env("ADMIN_PASSWORD") || randomPassword();
   await unique(() => db.admins.create({ username, password_hash: bcrypt.hashSync(password, 10) })).catch(() => {});
-  console.log(`[rtec] Admin inicial criado: ${username} / ${env("ADMIN_PASSWORD") ? "(senha de ADMIN_PASSWORD)" : password}`);
+  console.log(`[rtec] Admin inicial criado: ${username} / ${env("ADMIN_PASSWORD") ? "(senha de ADMIN_PASSWORD)" : `${password} (so neste computador)`}`);
 }
 
 /** Com DATA_KEY configurada, cifra os links/senhas do fornecedor que ainda estavam abertos no banco. */
 async function sealStoredSources(db) {
   if (!hasDataKey()) return;
-  const fingerprint = crypto.createHash("sha256").update(`seal|${process.env.DATA_KEY.trim()}`).digest("hex").slice(0, 16);
+  const fingerprint = crypto.createHash("sha256").update(`seal2|${process.env.DATA_KEY.trim()}`).digest("hex").slice(0, 16);
   if ((await db.config.get("data_seal"))?.fingerprint === fingerprint) return;
-  for (const [name, fields] of [["clients", ["source", "extra_sources"]], ["playlists", ["url", "xtream_server", "xtream_username", "xtream_password", "epg_url"]]]) {
+  for (const [name, fields] of [["clients", ["password", "source", "extra_sources"]], ["playlists", ["url", "xtream_server", "xtream_username", "xtream_password", "epg_url"]]]) {
     // O banco cru (sem abrir), para achar o que ainda esta sem cifra.
     const raw = await Object.getPrototypeOf(db[name]).list();
     for (const doc of raw) {
@@ -335,9 +341,12 @@ function clientProfile(c) {
   return { name: c.name, username: c.username, expires_at: c.expires_at };
 }
 
+// Publicado (Vercel), o cookie de sessao so viaja por https.
+const secureCookie = (req) => req.secure || !!process.env.VERCEL;
+
 function signClientSession(res, req, c) {
   const token = jwt.sign({ cid: c.id, pw: passwordFingerprint(c) }, JWT_SECRET, { expiresIn: "30d" });
-  res.cookie(CLIENT_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 30 * 24 * 3600 * 1000 });
+  res.cookie(CLIENT_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: secureCookie(req), maxAge: 30 * 24 * 3600 * 1000 });
 }
 
 function requireAdmin(req, _res, next) {
@@ -405,9 +414,16 @@ function clientLinks(req) {
   return { server: base };
 }
 
+/** Compara senhas sem vazar pelo tempo de resposta quantos caracteres bateram. */
+function sameText(a, b) {
+  const x = crypto.createHash("sha256").update(String(a ?? "")).digest();
+  const y = crypto.createHash("sha256").update(String(b ?? "")).digest();
+  return crypto.timingSafeEqual(x, y);
+}
+
 async function findClientByLogin(username, password) {
   const c = await getStore().clients.findOne("username", String(username || ""));
-  if (!c || c.password !== String(password || "")) return null;
+  if (!c || !sameText(c.password, String(password || ""))) return null;
   return c;
 }
 
@@ -711,6 +727,14 @@ const checkPin = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pi
 export function createApp() {
   const app = express();
   app.set("trust proxy", true);
+  // Cabecalhos de seguranca tambem nas respostas da API (o resto do site recebe os mesmos pelo vercel.json).
+  app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("X-Frame-Options", "DENY");
+    if (req.secure) res.setHeader("Strict-Transport-Security", "max-age=63072000; includeSubDomains");
+    next();
+  });
   app.use(express.json({ limit: "4mb" }));
   app.use(cookieParser());
   app.use(wrap(async (_req, _res, next) => (await init(), next())));
@@ -729,6 +753,9 @@ export function createApp() {
         // Admin apagado no Firestore com o servidor ja rodando: recria na hora.
         await ensureAdminAccount(db());
         admin = await db().admins.findOne("username", username);
+        if (!admin && (await db().admins.list()).length === 0) {
+          throw new HttpError(503, "Painel sem administrador: defina ADMIN_PASSWORD nas variaveis da Vercel e faca Redeploy.");
+        }
       }
       if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
         loginFailed(req, "admin");
@@ -736,7 +763,7 @@ export function createApp() {
         throw new HttpError(401, "Usuario ou senha invalidos");
       }
       const token = jwt.sign({ id: admin.id, username: admin.username }, JWT_SECRET, { expiresIn: "7d" });
-      res.cookie(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 7 * 24 * 3600 * 1000 });
+      res.cookie(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: secureCookie(req), maxAge: 7 * 24 * 3600 * 1000 });
       res.json({ id: admin.id, username: admin.username });
     }),
   );
@@ -1434,7 +1461,8 @@ export function createApp() {
   app.get("/api/player/cast", requireClient, (req, res) => {
     const mac = (label) => crypto.createHmac("sha256", JWT_SECRET).update(`${label}:${req.client.id}`).digest();
     res.json({
-      relay: (env("CAST_RELAY_URL") || "https://ntfy.sh").replace(/\/+$/, ""),
+      // So https: canal em http deixaria o nome do canal aberto na rede.
+      relay: (/^https:\/\//i.test(env("CAST_RELAY_URL")) ? env("CAST_RELAY_URL") : "https://ntfy.sh").replace(/\/+$/, ""),
       topic: `rtec_${mac("cast-topic").toString("hex").slice(0, 32)}`,
       key: mac("cast-key").toString("base64url"),
     });

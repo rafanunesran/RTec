@@ -25,12 +25,14 @@ test("banco: com DATA_KEY os dados do fornecedor ficam cifrados e o servidor le 
   assert.ok(needsSeal("clients", await raw.clients.get(a.id)));
 
   process.env.DATA_KEY = "chave-de-teste";
-  const b = await clients.create({ username: "b", source, extra_sources: [{ ...source, xtream_username: "maria" }] });
+  const b = await clients.create({ username: "b", password: "senha-do-cliente", source, extra_sources: [{ ...source, xtream_username: "maria" }] });
   const stored = await raw.clients.get(b.id);
   assert.match(stored.source.xtream_password, /^enc1:/);
   assert.match(stored.extra_sources[0].xtream_username, /^enc1:/);
   assert.equal(stored.source.kind, "xtream");
   assert.equal(stored.username, "b");
+  assert.match(stored.password, /^enc1:/);
+  assert.equal((await clients.findOne("username", "b")).password, "senha-do-cliente");
   assert.ok(!needsSeal("clients", stored));
   assert.equal((await clients.get(b.id)).source.xtream_password, "p@ss");
   assert.equal((await clients.findOne("username", "b")).extra_sources[0].xtream_username, "maria");

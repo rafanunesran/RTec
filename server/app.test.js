@@ -364,6 +364,28 @@ test("recuperacao do admin: ADMIN_RESET_PASSWORD redefine a senha uma vez por va
   assert.equal((await db.admins.list()).length, 1);
 });
 
+test("sem senha padrao: publicado sem ADMIN_PASSWORD nao cria admin", async () => {
+  const db = createMemoryStore();
+  delete process.env.ADMIN_PASSWORD;
+  process.env.VERCEL = "1";
+  try {
+    await ensureAdminAccount(db);
+    assert.equal((await db.admins.list()).length, 0);
+  } finally {
+    delete process.env.VERCEL;
+    process.env.ADMIN_PASSWORD = "secret123";
+  }
+  await ensureAdminAccount(db);
+  assert.equal((await db.admins.list()).length, 1);
+});
+
+test("cabecalhos de seguranca na API", async () => {
+  const r = await fetch(`${base}/api/auth/me`, { headers: { "x-forwarded-proto": "https" } });
+  assert.equal(r.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(r.headers.get("x-frame-options"), "DENY");
+  assert.match(r.headers.get("strict-transport-security") || "", /max-age=/);
+});
+
 test("lista propria do cliente: colar no cadastro, testar e assistir", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
