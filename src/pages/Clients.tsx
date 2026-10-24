@@ -65,10 +65,13 @@ const expiry = (c: Client) => (c.expires_at ? formatDate(c.expires_at) : c.list_
 /** Link curto do APK (is.gd -> /apk -> /download/rtec-tv.apk), facil de digitar no navegador da TV. */
 const APK_SHORT_URL = "https://is.gd/rtecapk";
 
+/** Link curto do site (is.gd -> r-tec-pink.vercel.app), para digitar no navegador da TV (LG, Samsung). */
+const SITE_SHORT_URL = "is.gd/rtectv";
+
 /** Texto pronto para mandar ao cliente: site, usuario, senha e o link curto do app. */
 function clientMessage(c: Client) {
   const site = c.links.server;
-  return `Seu acesso IPTV\nAssista em: ${site}\nUsuario: ${c.username}\nSenha: ${c.password}\n\nAndroid, TV Box e Fire TV: baixe o app em ${APK_SHORT_URL}\n(na TV, digite no navegador: is.gd/rtecapk)\nComo instalar (passo a passo com imagens): ${site}/instalar\niPhone: abra o link no Safari e use "Adicionar a Tela de Inicio".`;
+  return `Seu acesso IPTV\nAssista em: ${site}\nUsuario: ${c.username}\nSenha: ${c.password}\n\nNa Smart TV (LG, Samsung): digite no navegador ${SITE_SHORT_URL}\nAndroid, TV Box e Fire TV: baixe o app em ${APK_SHORT_URL}\n(na TV, digite no navegador: is.gd/rtecapk)\nComo instalar (passo a passo com imagens): ${site}/instalar\niPhone: abra o link no Safari e use "Adicionar a Tela de Inicio".`;
 }
 
 export default function Clients() {
