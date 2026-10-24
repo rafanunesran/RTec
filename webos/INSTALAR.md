@@ -71,6 +71,51 @@ ares-install --device lgtv rtec-tv-lg.ipk
 ares-launch --device lgtv app.rtec.tv
 ```
 
+### 3c. Instalar pelo tablet ou celular Android (Termux)
+
+Sem PC: o ares-cli roda no app **Termux**. Instale o Termux pelo **F-Droid** (https://f-droid.org/packages/com.termux/);
+a versão da Play Store é antiga e dá erro. O tablet precisa estar no mesmo Wi-Fi da TV.
+Abra o Termux e cole um comando de cada vez, esperando terminar (se perguntar algo, aperte Enter):
+
+```
+pkg update -y
+```
+
+```
+pkg install -y nodejs
+```
+
+```
+npm install -g @webos-tools/cli
+```
+
+```
+curl -LO https://r-tec-pink.vercel.app/download/rtec-tv-lg.ipk
+```
+
+Troque `192.168.1.50` pelo IP que aparece no app Developer Mode da TV:
+
+```
+ares-setup-device -a lgtv -i "host=192.168.1.50" -i "port=9922" -i "username=prisoner"
+```
+
+```
+ares-novacom -d lgtv --getkey
+```
+
+Digite a Passphrase que aparece na TV (6 letras/números, maiúsculas como estão na tela).
+
+```
+ares-install -d lgtv rtec-tv-lg.ipk
+```
+
+```
+ares-launch -d lgtv app.rtec.tv
+```
+
+Se der erro de conexão: confira se o **Key Server** está ligado na TV e se o IP está certo.
+Para reinstalar depois, só os dois últimos comandos (o Termux guarda a TV cadastrada).
+
 ## Controle remoto
 
 - Setas e OK navegam; **Voltar** volta dentro do site (na tela inicial vai para a escolha de perfil).
