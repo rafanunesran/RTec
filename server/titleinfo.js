@@ -49,7 +49,7 @@ async function fromTmdb(kind, title, year, tmdbId) {
     if (!found.length) return null;
     id = String(found[0].id);
   }
-  const d = await tmdbFetch(`/${type}/${id}`, { append_to_response: "credits,videos", include_video_language: "pt,en" });
+  const d = await tmdbFetch(`/${type}/${id}`, { append_to_response: `credits,videos,${type === "tv" ? "content_ratings" : "release_dates"}`, include_video_language: "pt,en" });
   const video = (d.videos?.results || []).find((v) => v.site === "YouTube" && /trailer|teaser/i.test(v.type));
   const date = d.release_date || d.first_air_date || "";
   return {
@@ -72,9 +72,20 @@ async function fromTmdb(kind, title, year, tmdbId) {
     backdrop: d.backdrop_path ? `${IMG}/w1280${d.backdrop_path}` : "",
     trailer: video ? `https://www.youtube.com/watch?v=${video.key}` : "",
     seasons: Number(d.number_of_seasons) || 0,
+    age: certification(d, type),
     source: "TMDB",
     link: `https://www.themoviedb.org/${type}/${id}`,
   };
+}
+
+/** Classificacao indicativa: a do Brasil (L, 10, 12...) ou, se nao tiver, a dos EUA (PG-13...). */
+function certification(d, type) {
+  const of = (cc) => {
+    if (type === "tv") return (d.content_ratings?.results || []).find((r) => r.iso_3166_1 === cc)?.rating || "";
+    const dates = (d.release_dates?.results || []).find((r) => r.iso_3166_1 === cc)?.release_dates || [];
+    return dates.map((x) => x.certification).find(Boolean) || "";
+  };
+  return String(of("BR") || of("US")).trim();
 }
 
 async function fromWikipedia(kind, title, year) {

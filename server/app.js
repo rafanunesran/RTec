@@ -1213,7 +1213,9 @@ export function createApp() {
     }
     if (!info.name) info.name = name;
     if (!info.year) info.year = year || 0;
-    if ((info.plot || "").length < 40 || !info.cast?.length || !info.genres?.length) {
+    // Com o TMDB tambem busca o que falta para a protecao de tela (imagem de fundo e classificacao).
+    const tmdbHelps = !!process.env.TMDB_API_KEY && (!info.backdrop || !info.age);
+    if ((info.plot || "").length < 40 || !info.cast?.length || !info.genres?.length || tmdbHelps) {
       info = mergeInfo(info, await lookupOnline(kind, name || info.name, info.year, info.tmdb_id));
     }
     delete info.tmdb_id;

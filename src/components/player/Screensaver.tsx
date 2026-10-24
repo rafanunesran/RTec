@@ -8,7 +8,7 @@ const SLIDE_MS = 12000;
 /** Item da protecao de tela: de onde veio ("continuar" ou "indicacao") e como buscar a ficha. */
 export type SaverItem = { from: "resume" | "rec"; kind: "movie" | "series"; id?: string; name: string; year?: number; logo: string };
 
-type Slide = { key: number; item: SaverItem; image: string; blur: boolean; year: number; rating: number; name: string };
+type Slide = { key: number; item: SaverItem; image: string; blur: boolean; year: number; rating: number; age: string; name: string };
 
 /** Canal/filme/episodio do catalogo -> titulo para a protecao de tela (episodio vira a serie dele). */
 export function saverItem(c: Channel, from: SaverItem["from"]): SaverItem {
@@ -26,6 +26,28 @@ function titleInfo(it: SaverItem) {
     infoCache.set(key, api.get<TitleInfo>(`/api/player/info?${q}`).catch(() => null));
   }
   return infoCache.get(key)!;
+}
+
+/** "16+", "16 anos", "Livre" -> "16", "L"; o resto (PG-13, TV-MA...) fica como veio. */
+function ageLabel(age?: string) {
+  const a = String(age || "").trim().replace(/\s*(\+|anos)$/i, "");
+  if (/^(l|livre|al|er)$/i.test(a)) return "L";
+  return /^0+$/.test(a) ? "" : a.slice(0, 8);
+}
+
+// Cores da classificacao indicativa brasileira.
+const AGE_COLOR: Record<string, string> = { L: "#0c9447", "10": "#0f7dc2", "12": "#f8c411", "14": "#e67824", "16": "#db2827", "18": "#1d1815" };
+
+function AgeBadge({ age }: { age: string }) {
+  const bg = AGE_COLOR[age];
+  return (
+    <span
+      className="inline-flex min-w-[1.9em] items-center justify-center rounded-[0.3em] px-[0.35em] py-[0.05em] text-[0.85em] font-extrabold leading-tight"
+      style={bg ? { background: bg, color: age === "12" ? "#000" : "#fff", boxShadow: age === "18" ? "inset 0 0 0 1.5px #fff6" : undefined } : { boxShadow: "inset 0 0 0 2px #ffffffb3" }}
+    >
+      {age}
+    </span>
+  );
 }
 
 function preload(src: string) {
@@ -144,7 +166,7 @@ function Saver({ resume, loadRecs, onExit }: { resume: SaverItem[]; loadRecs: ()
           const image = info?.backdrop || info?.poster || item.logo;
           if (image && (await preload(image))) {
             misses = 0;
-            return { key: ++key, item, image, blur: !info?.backdrop, name: info?.name || item.name, year: info?.year || item.year || 0, rating: info?.rating || 0 };
+            return { key: ++key, item, image, blur: !info?.backdrop, name: info?.name || item.name, year: info?.year || item.year || 0, rating: info?.rating || 0, age: ageLabel(info?.age) };
           }
           misses++;
         }
@@ -192,15 +214,19 @@ function Saver({ resume, loadRecs, onExit }: { resume: SaverItem[]; loadRecs: ()
               {s.item.from === "resume" ? "Continuar assistindo" : "Indicação para você"}
             </div>
             <div className="line-clamp-2 text-[clamp(1.75rem,4.2vw,5rem)] font-extrabold leading-[1.05] tracking-tight drop-shadow-lg">{s.name}</div>
-            {(!!s.year || !!s.rating) && (
+            {(!!s.year || !!s.rating || !!s.age) && (
               <div className="mt-[0.5em] flex items-center gap-[0.8em] text-[clamp(1rem,1.7vw,2rem)] font-semibold text-white/85">
-                {!!s.year && <span>{s.year}</span>}
-                {!!s.year && !!s.rating && <span className="text-white/40">•</span>}
-                {!!s.rating && (
-                  <span>
-                    <span className="text-amber-400">★</span> {s.rating.toFixed(1)}
-                  </span>
-                )}
+                {[
+                  s.year ? <span key="y">{s.year}</span> : null,
+                  s.rating ? (
+                    <span key="r">
+                      <span className="text-amber-400">★</span> {s.rating.toFixed(1)}
+                    </span>
+                  ) : null,
+                  s.age ? <AgeBadge key="a" age={s.age} /> : null,
+                ]
+                  .filter(Boolean)
+                  .flatMap((el, i) => (i ? [<span key={`d${i}`} className="text-white/40">•</span>, el] : [el]))}
               </div>
             )}
           </div>
