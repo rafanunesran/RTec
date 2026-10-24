@@ -48,8 +48,8 @@ const KEY = {
   stop: [413],
   forward: [417, 228],
   rewind: [412, 227],
-  channelUp: [427],
-  channelDown: [428],
+  channelUp: [427, 33], // Tizen, LG webOS (CH+)
+  channelDown: [428, 34], // Tizen, LG webOS (CH-)
   reload: [403], // botao vermelho (A)
 };
 const NAMES: Record<string, keyof typeof KEY> = {

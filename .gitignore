@@ -19,3 +19,4 @@ android/local.properties
 dist-tizen
 *.p12
 dist-orsay
+dist-webos

@@ -1,0 +1,15 @@
+{
+  "id": "@APP_ID@",
+  "version": "@VERSION@",
+  "vendor": "RTec",
+  "type": "web",
+  "main": "index.html",
+  "title": "RTec TV",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "bgColor": "#0a0a0c",
+  "iconColor": "#0a0a0c",
+  "resolution": "1920x1080",
+  "disableBackHistoryAPI": true,
+  "requiredACG": []
+}

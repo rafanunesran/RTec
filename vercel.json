@@ -68,6 +68,23 @@
           "value": "no-cache"
         }
       ]
+    },
+    {
+      "source": "/download/(.*)\\.ipk",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/octet-stream"
+        },
+        {
+          "key": "Content-Disposition",
+          "value": "attachment; filename=\"rtec-tv-lg.ipk\""
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
     }
   ]
 }
