@@ -5,7 +5,17 @@
  */
 import { isNativeApp } from "./pwa";
 
-const TV_UA = /Tizen|SMART-TV|SmartTV|Web0S|webOS|NetCast|BRAVIA|HbbTV|VIDAA|Android TV|GoogleTV|Chromecast|CrKey|AFT[A-Z]/i;
+const TV_UA =
+  /Tizen|SMART-TV|SmartTV|Web0S|webOS|NetCast|LG Browser|DMOST|LGE;|BRAVIA|HbbTV|VIDAA|Hisense|NETTV|Philips|Viera|Panasonic|AQUOS|TSBNetTV|Opera TV|OMI\/|Espial|Roku|Android TV|GoogleTV|Chromecast|CrKey|AFT[A-Z]/i;
+
+/**
+ * Navegador de TV que se apresenta como computador (o da LG, por exemplo, pode mandar so
+ * "X11; Linux x86_64"): Linux de mesa sem tela de toque. Nesses, a primeira seta do controle liga a versao TV.
+ */
+const maybeTV = () => /Linux/i.test(navigator.userAgent) && !/Android|CrOS/i.test(navigator.userAgent) && navigator.maxTouchPoints === 0;
+
+/** Teclas que so existem em controle remoto: Voltar (Samsung/LG), cores, midia, CH+/CH-, ponteiro da LG. */
+const REMOTE_ONLY = [10009, 461, 403, 404, 405, 406, 412, 413, 415, 417, 10252, 427, 428, 1536, 1537];
 
 /** TV Box Android (e o app RTec nela): Android sem tela de toque. Celular e tablet sempre tem toque. */
 const androidBox = () => /Android/i.test(navigator.userAgent) && navigator.maxTouchPoints === 0;
@@ -16,12 +26,12 @@ let tvScreen = false;
 /** O site esta rodando numa TV (ou com ?tv=1 para testar no computador). */
 export function isTV() {
   if (TV_UA.test(navigator.userAgent) || androidBox()) return true;
+  const q = new URLSearchParams(location.search).get("tv");
   try {
-    const q = new URLSearchParams(location.search).get("tv");
     if (q !== null) localStorage.setItem("rtec:tv", q === "0" ? "0" : "1");
-    return localStorage.getItem("rtec:tv") === "1";
+    return q === "1" || localStorage.getItem("rtec:tv") === "1";
   } catch {
-    return false;
+    return q === "1";
   }
 }
 
@@ -372,7 +382,10 @@ function onKey(e: KeyboardEvent) {
 export function setupTvNavigation() {
   tvScreen = isTV();
   tvMode = tvScreen || isNativeApp();
-  if (!tvMode) return;
+  if (!tvMode) {
+    watchRemote();
+    return;
+  }
   document.documentElement.classList.add("tv-nav");
   // Tela grande vista de longe: tudo maior e layout de TV (ver index.css e Player).
   if (tvScreen) document.documentElement.classList.add("tv-screen");
@@ -383,6 +396,30 @@ export function setupTvNavigation() {
     /* fora do Tizen */
   }
   window.addEventListener("keydown", onKey);
+}
+
+/**
+ * Site aberto no navegador de uma TV que nao foi reconhecida: na primeira tecla do controle
+ * (ou seta, num aparelho que parece TV) liga a versao TV e recarrega a pagina ja com ela.
+ * Quem desligou com ?tv=0 nao e trocado.
+ */
+function watchRemote() {
+  try {
+    if (localStorage.getItem("rtec:tv") === "0") return;
+  } catch {
+    /* sem armazenamento: segue pela URL */
+  }
+  if (new URLSearchParams(location.search).get("tv") === "0") return;
+  const sniff = (e: KeyboardEvent) => {
+    const arrow = e.keyCode >= 37 && e.keyCode <= 40;
+    if (!REMOTE_ONLY.includes(e.keyCode) && !(arrow && maybeTV() && !isText(document.activeElement))) return;
+    window.removeEventListener("keydown", sniff, true);
+    e.preventDefault();
+    const url = new URL(location.href);
+    url.searchParams.set("tv", "1");
+    location.replace(url.href);
+  };
+  window.addEventListener("keydown", sniff, true);
 }
 
 export const tvNavigationOn = () => tvMode;
