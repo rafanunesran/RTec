@@ -68,9 +68,37 @@ const SECTION_ACTIONS = {
   series: { categories: "get_series_categories", items: "get_series" },
 };
 
-export async function categories(creds, section) {
+const RADIO_GROUP = /\br[aá]dios?\b/i;
+
+async function rawCategories(creds, section) {
   const list = await call(creds, { action: SECTION_ACTIONS[section].categories });
   return (Array.isArray(list) ? list : []).map((c) => ({ id: String(c.category_id), name: String(c.category_name || "").trim() }));
+}
+
+/**
+ * Radios no Xtream vem junto com os canais ao vivo (get_live_streams), marcadas com stream_type
+ * "radio_streams"; a categoria delas muitas vezes nem aparece em get_live_categories. Tambem conta
+ * como radio tudo o que esta numa categoria chamada "Radios".
+ */
+const isRadio = (it, radioCats) => /radio/i.test(String(it.stream_type || "")) || radioCats.has(String(it.category_id ?? ""));
+
+export async function categories(creds, section) {
+  if (section !== "live" && section !== "radio") return rawCategories(creds, section);
+  const live = await rawCategories(creds, "live");
+  const named = live.filter((c) => RADIO_GROUP.test(c.name));
+  if (section === "live") return live.filter((c) => !RADIO_GROUP.test(c.name));
+  // Categorias das radios marcadas pelo fornecedor (precisa da lista de canais inteira, que fica em cache).
+  const all = await call(creds, { action: "get_live_streams" });
+  const radioCats = new Set(named.map((c) => c.id));
+  const out = [...named];
+  const names = new Map(live.map((c) => [c.id, c.name]));
+  let unnamed = 0;
+  for (const it of Array.isArray(all) ? all : []) {
+    const id = String(it.category_id ?? "");
+    if (!isRadio(it, radioCats) || out.some((c) => c.id === id)) continue;
+    out.push({ id, name: names.get(id) || (unnamed++ ? `Rádios ${unnamed}` : "Rádios") });
+  }
+  return out;
 }
 
 /** Ano de lancamento: campo year, data de lancamento ou "(2019)" no nome. */
@@ -104,11 +132,18 @@ const ext = (v, fallback) => (/^[a-z0-9]{2,5}$/i.test(String(v || "")) ? String(
 
 /** Itens de uma categoria (ou todos os canais ao vivo, sem categoria) ja com o link do video. */
 export async function items(creds, section, categoryId) {
-  const params = { action: SECTION_ACTIONS[section].items };
+  const channels = section === "live" || section === "radio";
+  const params = { action: SECTION_ACTIONS[channels ? "live" : section].items };
   if (categoryId) params.category_id = categoryId;
-  const list = await call(creds, params);
-  const base = `${creds.server}/${section === "live" ? "live" : section === "movie" ? "movie" : "series"}/${encodeURIComponent(creds.username)}/${encodeURIComponent(creds.password)}`;
-  return (Array.isArray(list) ? list : []).map((it) => {
+  let list = await call(creds, params);
+  list = Array.isArray(list) ? list : [];
+  if (channels) {
+    // Ao vivo e radios saem da mesma lista do fornecedor: cada secao fica so com o que e dela.
+    const radioCats = new Set((await rawCategories(creds, "live")).filter((c) => RADIO_GROUP.test(c.name)).map((c) => c.id));
+    list = list.filter((it) => isRadio(it, radioCats) === (section === "radio"));
+  }
+  const base = `${creds.server}/${channels ? "live" : section === "movie" ? "movie" : "series"}/${encodeURIComponent(creds.username)}/${encodeURIComponent(creds.password)}`;
+  return list.map((it) => {
     if (section === "series") {
       return { kind: "series", series_id: String(it.series_id), name: it.name || it.title || "", logo: it.cover || "", category_id: String(it.category_id ?? ""), ...sortInfo(it), ...metaInfo(it) };
     }
@@ -125,7 +160,7 @@ export async function items(creds, section, categoryId) {
       };
     }
     return {
-      kind: "live",
+      kind: section,
       stream_id: String(it.stream_id),
       name: it.name || "",
       logo: it.stream_icon || "",

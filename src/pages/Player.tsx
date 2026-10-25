@@ -30,6 +30,8 @@ const HISTORY_MAX = 60;
 const ADULT = /(adult|xxx|\+18|18\+|adulto|er[oó]tic|hot\b|sexy|porn)/i;
 
 type Section = Channel["kind"];
+/** TV ao vivo e radios: lista de canais (sem ponto onde parou, sem filtros de filme). */
+const liveLike = (k: string) => k === "live" || k === "radio";
 type Page = "home" | "all" | "section";
 
 /** Minusculas e sem acentos (busca). */
@@ -107,9 +109,10 @@ function localFacets(list: Channel[]): Facets {
 const metaLine = (c: Channel) => [c.year || "", c.rating ? `★ ${c.rating.toFixed(1)}` : ""].filter(Boolean).join(" · ") || undefined;
 
 const sections: { key: Section; label: string; icon: typeof Tv }[] = [
-  { key: "live", label: "TV ao vivo", icon: Radio },
+  { key: "live", label: "TV ao vivo", icon: Tv },
   { key: "movie", label: "Filmes", icon: Film },
   { key: "series", label: "Séries", icon: Clapperboard },
+  { key: "radio", label: "Rádios", icon: Radio },
 ];
 
 function load<T>(key: string, fallback: T): T {
@@ -593,8 +596,8 @@ function Watch({
   }, [xt, catalog, channels]);
 
   const counts = useMemo(() => {
-    const out: Record<Section, number> = { live: 0, movie: 0, series: 0 };
-    if (xt) for (const s of sections) out[s.key] = catalog?.sections?.[s.key].length ?? 0;
+    const out: Record<Section, number> = { live: 0, radio: 0, movie: 0, series: 0 };
+    if (xt) for (const s of sections) out[s.key] = catalog?.sections?.[s.key]?.length ?? 0;
     else for (const c of channels) if (!playlistId || c.playlist_id === playlistId) out[c.kind]++;
     return out;
   }, [xt, catalog, channels, playlistId]);
@@ -620,7 +623,7 @@ function Watch({
   const special = group === FAVORITES || group === HISTORY;
   // Xtream: "Todos" de filmes e series vem do servidor em paginas; o resto, por categoria
   // (ao vivo: todos os canais de uma vez, filtrados aqui).
-  const pagedAll = xt && section !== "live" && !group;
+  const pagedAll = xt && !liveLike(section) && !group;
   const sort = sorts[section] ?? "";
   const setSort = (v: string) =>
     setSorts((old) => {
@@ -628,7 +631,7 @@ function Watch({
       save("rtec:sort", next);
       return next;
     });
-  const filters = section === "live" ? NO_FILTERS : { ...NO_FILTERS, ...filtersBy[section] };
+  const filters = liveLike(section) ? NO_FILTERS : { ...NO_FILTERS, ...filtersBy[section] };
   const setFilters = (f: Filters) =>
     setFiltersBy((old) => {
       const next = { ...old, [section]: f };
@@ -636,7 +639,7 @@ function Watch({
       return next;
     });
   const fq = encodeURIComponent(filterQuery(filters));
-  const xtKey = xt && !special && !pagedAll ? `${section}:${section === "live" ? "" : group}:${sort}:${fq}` : "";
+  const xtKey = xt && !special && !pagedAll ? `${section}:${liveLike(section) ? "" : group}:${sort}:${fq}` : "";
   const skipIds = useMemo(() => groups.filter((g) => isLocked(g.name)).map((g) => g.key).join(","), [groups, isLocked]);
   const pageKey = pagedAll ? `${section}|${searchTerm}|${skipIds}|${sort}|${fq}` : "";
 
@@ -689,7 +692,7 @@ function Watch({
     else if (pagedAll) return pageState?.items ?? [];
     else if (xt) {
       list = Array.isArray(xtState) ? xtState : [];
-      if (section === "live") list = list.filter((c) => (group ? c.group === groups.find((g) => g.key === group)?.name : !isLocked(c.group)));
+      if (liveLike(section)) list = list.filter((c) => (group ? c.group === groups.find((g) => g.key === group)?.name : !isLocked(c.group)));
     } else {
       list = channels.filter(
         (c) => c.kind === section && (!playlistId || c.playlist_id === playlistId) && (group ? c.group === group : !isLocked(c.group)),
@@ -877,14 +880,14 @@ function Watch({
   const playlist = useMemo(() => {
     if (!playing) return null;
     if (playing.kind === "series") return queue?.some((q) => q.id === playing.id) ? queue.map((q) => ({ ...q, group: playing.group })) : null;
-    if (playing.kind !== "live") return null;
-    const list = visible.some((x) => x.id === playing.id) ? visible : channels.filter((x) => x.kind === "live" && x.group === playing.group);
+    if (!liveLike(playing.kind)) return null;
+    const list = visible.some((x) => x.id === playing.id) ? visible : channels.filter((x) => x.kind === playing.kind && x.group === playing.group);
     return list.length > 1 && list.some((x) => x.id === playing.id) ? list : null;
   }, [playing, queue, visible, channels]);
   const neighbor = (step: number) => {
     if (!playing || !playlist) return null;
     const i = playlist.findIndex((q) => q.id === playing.id);
-    if (playing.kind === "live") return playlist[(i + step + playlist.length) % playlist.length];
+    if (liveLike(playing.kind)) return playlist[(i + step + playlist.length) % playlist.length];
     return playlist[i + step] ?? null;
   };
   const nextEpisode = neighbor(1);
@@ -899,7 +902,7 @@ function Watch({
   const allKey = page === "all" && catalog ? `${xt ? "xt" : "m3u"}|${allTerm}` : "";
   useEffect(() => {
     if (!allKey) return;
-    const kinds: Section[] = ["live", "movie", "series"];
+    const kinds: Section[] = ["live", "movie", "series", "radio"];
     if (!xt) {
       const q = fold(allTerm);
       const data = {} as Record<Section, { total: number; items: Channel[] }>;
@@ -918,14 +921,15 @@ function Watch({
       setAllRes({ key: allKey, loading: false, data });
       return;
     }
-    setAllRes((r) => (r ? { ...r, key: allKey, loading: true } : { key: allKey, loading: true, data: { live: { total: 0, items: [] }, movie: { total: 0, items: [] }, series: { total: 0, items: [] } } }));
+    setAllRes((r) => (r ? { ...r, key: allKey, loading: true } : { key: allKey, loading: true, data: { live: { total: 0, items: [] }, movie: { total: 0, items: [] }, series: { total: 0, items: [] }, radio: { total: 0, items: [] } } }));
     Promise.all(
       kinds.map((k) => {
+        if (!catalog?.sections?.[k]?.length) return Promise.resolve({ total: 0, items: [] });
         const skip = (catalog?.sections?.[k] ?? []).filter((g) => isLocked(g.name)).map((g) => g.id).join(",");
         const params = new URLSearchParams({ section: k, limit: String(ALL_LIMIT), offset: "0", q: allTerm, skip });
         return api.get<{ total: number; items: Channel[] }>(`/api/player/xtream/items?${params}`).catch(() => ({ total: 0, items: [] }));
       }),
-    ).then(([live, movie, series]) => setAllRes((r) => (r?.key === allKey ? { key: allKey, loading: false, data: { live, movie, series } } : r)));
+    ).then(([live, movie, series, radio]) => setAllRes((r) => (r?.key === allKey ? { key: allKey, loading: false, data: { live, movie, series, radio } } : r)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allKey]);
 
@@ -1090,7 +1094,7 @@ function Watch({
   const saverResume = useMemo(
     () =>
       shownHistory
-        .filter((c) => c.kind !== "live" && fraction(c) > 0 && fraction(c) < WATCHED_AT && !saverHidden(c.group) && !ADULT.test(c.name))
+        .filter((c) => !liveLike(c.kind) && fraction(c) > 0 && fraction(c) < WATCHED_AT && !saverHidden(c.group) && !ADULT.test(c.name))
         .slice(0, 12)
         .map((c) => saverItem(c, "resume")),
     [shownHistory, saverHidden, current], // current: ao fechar o video, o progresso mudou
@@ -1156,7 +1160,7 @@ function Watch({
           ? () => {
               // Passa o que esta tocando aqui para o outro aparelho, do mesmo ponto, e fecha o player daqui.
               const v = document.querySelector("video");
-              const live = current.kind === "live";
+              const live = liveLike(current.kind);
               void sendTo(current, live || !v ? 0 : v.currentTime, live || !v || !Number.isFinite(v.duration) ? 0 : v.duration);
               if (window.history.state?.rtecPlayer) window.history.back();
               else setCurrent(null);
@@ -1288,8 +1292,9 @@ function Watch({
                 isFavorite={isFavorite}
                 onFavorite={toggleFavorite}
               />
-            ) : tv && section === "live" ? (
+            ) : tv && liveLike(section) ? (
               <TvLive
+                radio={section === "radio"}
                 options={menuOptions}
                 group={group}
                 onGroup={(o) => (o.locked ? withPin(() => setGroup(o.key), o.name) : setGroup(o.key))}
@@ -1317,7 +1322,7 @@ function Watch({
             <Input
               className="pl-9"
               aria-label="Buscar"
-              placeholder={group ? `Buscar em ${groupLabel}...` : section === "live" ? "Buscar canal..." : section === "movie" ? "Buscar filme..." : "Buscar série..."}
+              placeholder={group ? `Buscar em ${groupLabel}...` : section === "live" ? "Buscar canal..." : section === "radio" ? "Buscar rádio..." : section === "movie" ? "Buscar filme..." : "Buscar série..."}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -1339,9 +1344,9 @@ function Watch({
             {!series && (
               <div className="flex gap-2">
                 <div className="min-w-0 flex-1">
-                  <SortSelect value={sort} onChange={setSort} vod={section !== "live"} />
+                  <SortSelect value={sort} onChange={setSort} vod={!liveLike(section)} />
                 </div>
-                {section !== "live" && (
+                {!liveLike(section) && (
                   <Button variant={filterCount(filters) ? "secondary" : "outline"} className="h-10 shrink-0" onClick={() => setFiltersOpen(true)} aria-label="Filtros">
                     <SlidersHorizontal /> Filtros
                     {!!filterCount(filters) && <span className="grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1 text-[11px] font-bold text-primary-foreground">{filterCount(filters)}</span>}
@@ -1452,7 +1457,7 @@ function Watch({
                   )}
                 </div>
               )
-            ) : section === "live" ? (
+            ) : liveLike(section) ? (
               <ul className="grid gap-1 md:grid-cols-2 xl:grid-cols-3">
                 {visible.slice(0, cap).map((c) => (
                   <ChannelRow
@@ -1744,7 +1749,7 @@ function ChannelLogo({ channel: c }: { channel: Channel }) {
       {c.logo ? (
         <img src={c.logo} alt="" loading="lazy" className="h-full w-full object-contain p-1" onError={(e) => (e.currentTarget.style.display = "none")} />
       ) : (
-        <Tv className="h-4 w-4 text-muted-foreground" />
+        c.kind === "radio" ? <Radio className="h-4 w-4 text-muted-foreground" /> : <Tv className="h-4 w-4 text-muted-foreground" />
       )}
     </div>
   );
@@ -1977,7 +1982,7 @@ function EpisodeList({
   );
 }
 
-const KIND_LABEL: Record<Section, string> = { live: "TV ao vivo", movie: "Filme", series: "Série" };
+const KIND_LABEL: Record<Section, string> = { live: "TV ao vivo", radio: "Rádio", movie: "Filme", series: "Série" };
 
 /** Pagina inicial: historico do que o cliente assistiu por ultimo. */
 function HomePage({
@@ -2001,7 +2006,7 @@ function HomePage({
   onFavorite: (c: Channel) => void;
   epg: Record<string, Programme[]>;
 }) {
-  const resume = history.filter((c) => c.kind !== "live" && fraction(c) > 0 && fraction(c) < WATCHED_AT);
+  const resume = history.filter((c) => !liveLike(c.kind) && fraction(c) > 0 && fraction(c) < WATCHED_AT);
   if (!loading && !history.length) {
     return (
       <EmptyState
@@ -2040,7 +2045,7 @@ function HomePage({
               favorite={isFavorite(c.id)}
               onPlay={() => onOpen(c)}
               onFavorite={() => onFavorite(c)}
-              progress={c.kind === "live" ? 0 : fraction(c)}
+              progress={liveLike(c.kind) ? 0 : fraction(c)}
               now={c.epg_id ? epg[c.epg_id]?.[0]?.title : undefined}
               badge={<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-bold uppercase">{KIND_LABEL[c.kind]}</span>}
             />
@@ -2075,6 +2080,7 @@ function AllPage({
     { key: "live", label: "TV ao vivo" },
     { key: "movie", label: "Filmes" },
     { key: "series", label: "Séries" },
+    { key: "radio", label: "Rádios" },
   ];
   const nothing = result && !result.loading && kinds.every((k) => !result.data[k.key].total);
   return (
@@ -2106,7 +2112,7 @@ function AllPage({
                   Ver tudo <ChevronRight />
                 </Button>
               </div>
-              {key === "live" ? (
+              {liveLike(key) ? (
                 <ul className="grid gap-1 md:grid-cols-2 xl:grid-cols-3">
                   {r.items.slice(0, 9).map((c) => (
                     <ChannelRow key={c.id} channel={c} active={currentId === c.id} favorite={isFavorite(c.id)} onPlay={() => onOpen(c)} onFavorite={() => onFavorite(c)} />
@@ -2298,6 +2304,7 @@ function TvSidebar({ items, viewer, onProfile, onSettings }: { items: TvMenuItem
 
 /** TV ao vivo na TV: categorias | canais | o que esta passando no canal selecionado (padrao Duplecast). */
 function TvLive({
+  radio = false,
   options,
   group,
   onGroup,
@@ -2315,6 +2322,7 @@ function TvLive({
   onFavorite,
   onPlay,
 }: {
+  radio?: boolean;
   options: MenuOption[];
   group: string;
   onGroup: (o: MenuOption) => void;
@@ -2360,7 +2368,7 @@ function TvLive({
       <div className="min-w-0 space-y-3">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input className="pl-9" aria-label="Buscar canal" placeholder="Buscar canal..." value={query} onChange={(e) => onQuery(e.target.value)} />
+          <Input className="pl-9" aria-label={radio ? "Buscar rádio" : "Buscar canal"} placeholder={radio ? "Buscar rádio..." : "Buscar canal..."} value={query} onChange={(e) => onQuery(e.target.value)} />
         </div>
         {loading ? (
           <div className="space-y-2">
@@ -2397,7 +2405,7 @@ function TvLive({
         {shown ? (
           <>
             <div className="flex aspect-video items-center justify-center overflow-hidden rounded-xl bg-glow ring-1 ring-border">
-              {shown.logo ? <img src={shown.logo} alt="" className="max-h-[70%] max-w-[70%] object-contain" onError={(e) => (e.currentTarget.style.display = "none")} /> : <Tv className="h-10 w-10 text-muted-foreground" />}
+              {shown.logo ? <img src={shown.logo} alt="" className="max-h-[70%] max-w-[70%] object-contain" onError={(e) => (e.currentTarget.style.display = "none")} /> : radio ? <Radio className="h-10 w-10 text-muted-foreground" /> : <Tv className="h-10 w-10 text-muted-foreground" />}
             </div>
             <div>
               <div className="text-lg font-bold leading-tight">{shown.name}</div>
@@ -2422,9 +2430,9 @@ function TvLive({
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">Sem guia de programação para este canal.</p>
+              <p className="text-sm text-muted-foreground">{radio ? "Rádio ao vivo." : "Sem guia de programação para este canal."}</p>
             )}
-            <p className="text-xs text-muted-foreground">OK para assistir · Voltar para sair</p>
+            <p className="text-xs text-muted-foreground">{radio ? "OK para ouvir" : "OK para assistir"} · Voltar para sair</p>
           </>
         ) : (
           <p className="text-sm text-muted-foreground">Escolha um canal.</p>

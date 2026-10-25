@@ -113,6 +113,9 @@ html.tv-screen { font-size: max(16px, 1.25vw); }
 /* ---- Protecao de tela (depois de 5 min parado) ---- */
 @keyframes saver-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes saver-zoom { from { transform: scale(1); } to { transform: scale(1.08); } }
+/* Barras de som da tela de radio */
+.radio-bar { transform-origin: bottom; animation: radio-bar 1s ease-in-out infinite; }
+@keyframes radio-bar { 0%, 100% { transform: scaleY(0.3); } 50% { transform: scaleY(1); } }
 .saver-in { animation: saver-in 1.6s ease-out both; }
 .saver-zoom { animation: saver-zoom 16s linear both; transform-origin: 60% 40%; will-change: transform; }
 @media (prefers-reduced-motion: reduce) { .saver-zoom { animation: none; } }

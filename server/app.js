@@ -316,10 +316,12 @@ function proxyTarget(u, c, e, s, opts) {
   return /^https?:\/\//i.test(url) ? url : "";
 }
 
-function streamType(url) {
+function streamType(url, kind = "") {
   const pathname = url.split(/[?#]/)[0].toLowerCase();
   if (pathname.endsWith(".m3u8")) return "hls";
-  if (/\.(mp4|mkv|webm|mov|m4v|mp3|aac)$/.test(pathname)) return "file";
+  if (/\.(mp4|mkv|webm|mov|m4v|mp3|aac|ogg|oga|opus|m4a)$/.test(pathname)) return "file";
+  // Radio sem extensao (Icecast/Shoutcast, ex: http://host:8000/stream): o proprio navegador toca o audio.
+  if (kind === "radio" && !pathname.endsWith(".ts")) return "file";
   return "mpegts";
 }
 
@@ -474,7 +476,7 @@ async function previewSource(p) {
   try {
     const text = await loadPlaylistText(p);
     const all = parseEntries(text, Infinity);
-    const kinds = { live: 0, movie: 0, series: 0 };
+    const kinds = { live: 0, radio: 0, movie: 0, series: 0 };
     all.forEach((e) => kinds[e.kind]++);
     const groups = [...new Set(all.map((e) => e.group).filter(Boolean))];
     return { ok: true, source: sourceUrl(p), channel_count: countChannels(text), kinds, groups, entries: all.slice(0, 100) };
@@ -484,6 +486,7 @@ async function previewSource(p) {
 }
 
 const MAX_M3U_ITEMS = 20000;
+const RADIO_WAIT_MS = 8000;
 
 /** Logos https vao direto; http passam pelo servidor (imagens sao pequenas). */
 const logoUrl = (clientId, url) => (!/^https?:\/\//i.test(url || "") ? "" : /^https:/i.test(url) ? url : proxyUrl(clientId, url));
@@ -540,9 +543,9 @@ function playLinks(c, item, p, app) {
   const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
   return {
     src: link(item.url),
-    type: streamType(item.url),
+    type: streamType(item.url, item.kind),
     alt: item.alt_url ? link(item.alt_url) : "",
-    alt_type: item.alt_url ? streamType(item.alt_url) : "",
+    alt_type: item.alt_url ? streamType(item.alt_url, item.kind) : "",
     // Ultimo recurso: se o link direto (app) falhar, tenta pelo servidor de video.
     fallback: !viaProxy(mode, item.url, app) ? proxyUrl(c.id, item.url) : "",
   };
@@ -1103,9 +1106,9 @@ export function createApp() {
             group: e.group || p.name,
             logo: logoUrl(c.id, e.logo),
             src: link(main),
-            type: streamType(main),
+            type: streamType(main, e.kind),
             alt: alt ? link(alt) : "",
-            alt_type: alt ? streamType(alt) : "",
+            alt_type: alt ? streamType(alt, e.kind) : "",
             kind: e.kind,
             epg_id: e.tvg_id,
             playlist_id: p.id,
@@ -1139,11 +1142,13 @@ export function createApp() {
       const main = listSig(xtream.xtreamCredentials(cat.sources[0]));
       const sig = cat.merged ? hashId(main, ...cat.sources.slice(1).map((p) => p.key)) : main;
       try {
+        // Radios: precisam da lista inteira de canais; se o fornecedor demorar, o catalogo abre sem elas.
+        const radio = Promise.race([cat.categories("radio"), new Promise((ok) => setTimeout(() => ok([]), RADIO_WAIT_MS))]).catch(() => []);
         const [live, movie, series] = await Promise.all(["live", "movie", "series"].map((s) => cat.categories(s)));
-        res.json({ mode: "xtream", sections: { live, movie, series }, sig });
+        res.json({ mode: "xtream", sections: { live, radio: await radio, movie, series }, sig });
       } catch (err) {
         console.warn(`[rtec] Xtream do cliente "${c.username}" falhou: ${err.message}`);
-        res.json({ mode: "xtream", sections: { live: [], movie: [], series: [] }, errors: [err.message], sig });
+        res.json({ mode: "xtream", sections: { live: [], radio: [], movie: [], series: [] }, errors: [err.message], sig });
       }
     }),
   );
@@ -1155,18 +1160,19 @@ export function createApp() {
       const c = req.client;
       const cat = requireXtream(c);
       const section = String(req.query.section || "");
-      if (!["live", "movie", "series"].includes(section)) throw new HttpError(400, "Secao invalida");
+      if (!["live", "radio", "movie", "series"].includes(section)) throw new HttpError(400, "Secao invalida");
+      const channels = section === "live" || section === "radio";
       const category = String(req.query.category || "");
       // Filmes e series sem categoria ("Todos"): o catalogo inteiro e grande demais para uma resposta,
       // entao vai em paginas (limit/offset), com busca (q) e sem as categorias bloqueadas (skip).
       const limit = Math.min(500, Math.max(0, Number(req.query.limit) || 0));
-      if (!category && section !== "live" && !limit) throw new HttpError(400, "Escolha uma categoria");
+      if (!category && !channels && !limit) throw new HttpError(400, "Escolha uma categoria");
       const [cats, raw] = await Promise.all([cat.categories(section), cat.items(section, category)]);
       const names = new Map(cats.map((x) => [x.id, x.name]));
       const toChannel = (it) => xtreamChannel(c, it, names.get(it.category_id) || names.get(category) || "", directXtream(req), cat.sources);
       res.setHeader("Cache-Control", "no-store");
-      let list = section === "live" ? raw : raw.map((it) => ({ ...it, genres: genreList(it, names.get(it.category_id)) }));
-      const filters = section === "live" ? null : readFilters(req.query);
+      let list = channels ? raw : raw.map((it) => ({ ...it, genres: genreList(it, names.get(it.category_id)) }));
+      const filters = channels ? null : readFilters(req.query);
       if (filters) list = list.filter((it) => passesFilters(filters, it));
       const sorted = sortItems(list, String(req.query.sort || ""));
       if (!limit) return res.json(sorted.map(toChannel));
@@ -1579,7 +1585,7 @@ export function createApp() {
           const hit = (await episodes.get(sid)).find((e) => e.season === ep.season && e.episode === ep.episode);
           return hit ? { ...xtreamChannel(c, hit, found.name, direct, cat.sources), parent_series: sid } : null;
         }
-        if (it.kind !== "live" && it.kind !== "movie") return null;
+        if (it.kind !== "live" && it.kind !== "radio" && it.kind !== "movie") return null;
         const s = await section(it.kind);
         const xtId = it.epg_id?.startsWith("xt:") ? it.epg_id.slice(3) : it.xt_id;
         const same = xtId && s.byId.get(xtId);

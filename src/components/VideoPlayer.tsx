@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { AlertTriangle, Loader2, RotateCw, Tv, VolumeX } from "lucide-react";
+import { AlertTriangle, Loader2, Radio, RotateCw, Tv, VolumeX } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { Channel } from "@/lib/api";
 import { watchFullscreenOrientation } from "@/lib/orientation";
 import { tvScreenOn } from "@/lib/tvnav";
@@ -40,7 +41,8 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
     const { default: mpegts } = await import("mpegts.js");
     if (!mpegts.getFeatureList().mseLivePlayback) throw new Unsupported();
     const player = mpegts.createPlayer(
-      { type: "mpegts", isLive: true, url: src, cors: true, withCredentials: false },
+      // Link absoluto: o mpegts.js baixa dentro de um worker, que nao entende "/api/..."
+      { type: "mpegts", isLive: true, url: new URL(src, location.href).href, cors: true, withCredentials: false },
       {
         enableWorker: true,
         enableStashBuffer: true, // junta um pouco de video antes de tocar: comeca mais rapido e trava menos
@@ -206,6 +208,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !channel) return;
+    const live = channel.kind === "live" || channel.kind === "radio";
     let stop: Stop | undefined;
     let cancelled = false;
     const resume = carry.current;
@@ -224,7 +227,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     const seekTo = resume ? resume.at : cb.current.startAt;
     /** Recria o <video> e continua do mesmo caminho e do mesmo ponto. */
     const remount = (cors: boolean) => {
-      carry.current = { ...active, step, at: channel!.kind === "live" ? 0 : video.currentTime };
+      carry.current = { ...active, step, at: live ? 0 : video.currentTime };
       setEl((e) => ({ n: e.n + 1, cors }));
     };
     // Reforco pedido num video de outro dominio: pede o mesmo link com CORS. Nao passa pelo servidor de
@@ -265,7 +268,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       stop = undefined;
       clearTimers();
       // Se nao comecar a tocar em alguns segundos, passa para o proximo caminho (plano B).
-      watchdog = setTimeout(() => !cancelled && fail("O canal não começou a tocar (sem imagem depois de 15 s)."), channel!.kind === "live" ? 15000 : 25000);
+      watchdog = setTimeout(() => !cancelled && fail(channel!.kind === "radio" ? "A rádio não começou a tocar (sem som depois de 15 s)." : "O canal não começou a tocar (sem imagem depois de 15 s)."), live ? 15000 : 25000);
       try {
         const s = await attach(video, src, type, fail);
         if (cancelled) return s();
@@ -282,7 +285,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       if (cancelled) return;
       clearTimers();
       // Ao vivo que ja estava tocando e caiu (ex: limite de tempo do servidor): reconecta sozinho.
-      if (channel!.kind === "live" && playedAt) {
+      if (live && playedAt) {
         if (Date.now() - playedAt > 20000) reconnects = 0;
         if (reconnects < 5) {
           reconnects++;
@@ -325,25 +328,25 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     const onWaiting = () => {
       setState((s) => (s === "error" ? s : "loading"));
       // Ao vivo travado no "carregando" depois de ja ter tocado: reconecta.
-      if (channel!.kind === "live" && playedAt) {
+      if (live && playedAt) {
         clearTimeout(stallTimer);
         stallTimer = setTimeout(() => !cancelled && video.paused === false && fail("O sinal travou."), 12000);
       }
     };
     const onCanPlay = () => video.paused && tryPlay();
-    const onEnded = () => (channel!.kind === "live" ? fail("A transmissao foi encerrada.") : cb.current.onEnded?.());
+    const onEnded = () => (live ? fail("A transmissao foi encerrada.") : cb.current.onEnded?.());
     const onMeta = () => {
       const at = seekTo;
-      if (channel!.kind !== "live" && at > 0 && Number.isFinite(video.duration) && at < video.duration - 10) video.currentTime = at;
+      if (!live && at > 0 && Number.isFinite(video.duration) && at < video.duration - 10) video.currentTime = at;
     };
     const onTime = () => {
-      if (channel!.kind === "live" || !Number.isFinite(video.duration)) return;
+      if (live || !Number.isFinite(video.duration)) return;
       const now = Date.now();
       if (now - lastSaved < 5000) return;
       lastSaved = now;
       cb.current.onProgress?.(video.currentTime, video.duration);
     };
-    const onPause = () => channel!.kind !== "live" && Number.isFinite(video.duration) && cb.current.onProgress?.(video.currentTime, video.duration);
+    const onPause = () => !live && Number.isFinite(video.duration) && cb.current.onProgress?.(video.currentTime, video.duration);
     video.addEventListener("playing", onPlaying);
     video.addEventListener("waiting", onWaiting);
     video.addEventListener("ended", onEnded);
@@ -371,6 +374,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
   return (
     <div className={className ?? "relative aspect-video w-full overflow-hidden bg-black lg:rounded-2xl lg:ring-1 lg:ring-border"}>
       <video key={el.n} ref={videoRef} crossOrigin={el.cors ? "anonymous" : undefined} className="h-full w-full" controls={!children && !tvScreenOn()} playsInline autoPlay />
+      {channel?.kind === "radio" && <RadioScreen channel={channel} playing={state === "playing"} />}
       {children}
       {!channel && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-glow text-muted-foreground">
@@ -416,6 +420,34 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
           <VolumeX className="h-4 w-4" /> Toque para ativar o som
         </button>
       )}
+    </div>
+  );
+}
+
+/** Radio: so tem som, entao no lugar da tela preta mostra o logo, o nome e barras de som. */
+function RadioScreen({ channel, playing }: { channel: Channel; playing: boolean }) {
+  return (
+    <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-5 bg-[radial-gradient(circle_at_50%_40%,rgba(255,255,255,0.12),transparent_60%)] p-6 text-center text-white">
+      <div className="grid h-32 w-32 place-items-center overflow-hidden rounded-3xl bg-white/10 ring-1 ring-white/20 sm:h-44 sm:w-44">
+        {channel.logo ? (
+          <img src={channel.logo} alt="" className="h-full w-full object-contain p-3" onError={(e) => (e.currentTarget.style.display = "none")} />
+        ) : (
+          <Radio className="h-14 w-14 text-white/70" />
+        )}
+      </div>
+      <div className="max-w-[90%]">
+        <div className="truncate text-xl font-bold sm:text-2xl">{channel.name}</div>
+        <div className="mt-1 text-sm text-white/60">Rádio ao vivo</div>
+      </div>
+      <div className="flex h-8 items-end gap-1" aria-hidden>
+        {[0.9, 0.5, 1, 0.7, 0.4, 0.8, 0.6].map((h, i) => (
+          <span
+            key={i}
+            className={cn("w-1.5 rounded-full bg-primary", playing && "radio-bar")}
+            style={{ height: `${h * 100}%`, animationDelay: `${i * 0.13}s`, opacity: playing ? 1 : 0.4 }}
+          />
+        ))}
+      </div>
     </div>
   );
 }

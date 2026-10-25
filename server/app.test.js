@@ -56,6 +56,8 @@ function xtreamApi(req, res) {
         [
           { stream_id: 1, name: "ESPN", stream_icon: `http://127.0.0.1:${port}/logo.png`, category_id: "10" },
           { stream_id: 2, name: "Canal +18", stream_icon: "", category_id: "11" },
+          // Radio: vem junto com os canais, numa categoria que get_live_categories nao lista.
+          { stream_id: 3, name: "Radio Jovem FM", stream_icon: "", category_id: "40", stream_type: "radio_streams" },
         ].filter((x) => !q.get("category_id") || x.category_id === q.get("category_id")),
       );
     case "get_vod_streams":
@@ -394,7 +396,7 @@ test("lista propria do cliente: colar no cadastro, testar e assistir", async () 
 
   const preview = await call("POST", "/api/source/preview", src);
   assert.equal(preview.body.ok, true);
-  assert.deepEqual(preview.body.kinds, { live: 1, movie: 1, series: 1 });
+  assert.deepEqual(preview.body.kinds, { live: 1, radio: 0, movie: 1, series: 1 });
   assert.equal((await call("POST", "/api/source/preview", { kind: "m3u_url", url: "ftp://x" })).status, 400);
   assert.equal((await call("POST", "/api/clients", { username: "edu", password: "pw", source: { kind: "xtream", xtream_server: "http://a" } })).status, 400);
 
@@ -478,6 +480,13 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
   assert.match(live[0].src, /^\/api\/player\/proxy\?/, "link http passa pelo servidor no modo automatico");
   assert.match(live[0].logo, /^\/api\/player\/proxy\?/);
   assert.equal(live[0].epg_id, "xt:1");
+
+  // Radios: secao propria, fora da TV ao vivo
+  assert.deepEqual(catalog.sections.radio, [{ id: "40", name: "Rádios" }]);
+  const radios = (await call("GET", "/api/player/xtream/items?section=radio")).body;
+  assert.deepEqual(radios.map((r) => [r.name, r.kind, r.group]), [["Radio Jovem FM", "radio", "Rádios"]]);
+  assert.equal(radios[0].epg_id, "");
+  assert.match(plain(radios[0].src), /\/live\/TiaX\/Sen%401\/3\.ts$/);
 
   const movies = (await call("GET", "/api/player/xtream/items?section=movie&category=20")).body;
   assert.equal(movies[0].logo, "https://img.example/f.jpg", "logo https vai direto");
@@ -614,6 +623,23 @@ test("varias listas no mesmo cliente: um catalogo so, sem repetir titulos, com a
   assert.equal(upd.body.list_status.state, "active");
   assert.deepEqual(Object.values(upd.body.list_status.sources).sort(), ["active", "active", "expired"]);
   renova = "active";
+});
+
+test("radios em lista M3U: grupo Radios, radio=\"true\" e audio direto", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const content =
+    "#EXTM3U\n" +
+    '#EXTINF:-1 group-title="Noticias",Canal TV\nhttps://a.example/live/u/p/1.ts\n' +
+    '#EXTINF:-1 group-title="RÁDIOS | Sertanejo",Radio A\nhttps://a.example/live/u/p/2.ts\n' +
+    '#EXTINF:-1 radio="true" group-title="Musica",Radio B\nhttps://icecast.example:8000/stream\n' +
+    '#EXTINF:-1 group-title="Variados",Radio C\nhttps://b.example/radio.mp3\n';
+  assert.equal((await call("POST", "/api/clients", { username: "radios_m3u", password: "x1", source: { kind: "manual", content } })).status, 201);
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "radios_m3u", password: "x1" });
+  const data = (await call("GET", "/api/player/channels")).body;
+  assert.deepEqual(data.channels.map((c) => [c.name, c.kind]), [["Canal TV", "live"], ["Radio A", "radio"], ["Radio B", "radio"], ["Radio C", "radio"]]);
+  assert.deepEqual(data.channels.slice(1).map((c) => c.type), ["hls", "file", "file"], "radio sem extensao toca no proprio navegador");
 });
 
 test("varias listas M3U: titulos repetidos aparecem uma vez, com reserva", async () => {

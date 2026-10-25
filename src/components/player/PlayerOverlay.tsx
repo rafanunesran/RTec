@@ -142,7 +142,7 @@ export default function PlayerOverlay({
   );
 
   const video = () => rootRef.current?.querySelector("video") ?? null;
-  const isVod = channel.kind !== "live";
+  const isVod = channel.kind !== "live" && channel.kind !== "radio";
   const canSeek = isVod && st.dur > 0;
 
   const togglePlay = () => {

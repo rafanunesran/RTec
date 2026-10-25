@@ -76,7 +76,7 @@ export type Stats = {
 
 export type Preview = {
   ok: boolean;
-  kinds?: { live: number; movie: number; series: number };
+  kinds?: { live: number; radio?: number; movie: number; series: number };
   xtream?: {
     status: string;
     expires_at: string | null;
@@ -97,7 +97,7 @@ export type Channel = {
   logo: string;
   src: string;
   type: "hls" | "mpegts" | "file";
-  kind: "live" | "movie" | "series";
+  kind: "live" | "radio" | "movie" | "series";
   epg_id: string;
   playlist_id: string;
   series_id?: string;
@@ -125,7 +125,7 @@ export type PlayLink = Pick<Channel, "src" | "type" | "alt" | "alt_type" | "fall
 
 export type Catalog = {
   mode: "xtream" | "m3u";
-  sections?: Record<"live" | "movie" | "series", { id: string; name: string }[]>;
+  sections?: Record<"live" | "radio" | "movie" | "series", { id: string; name: string }[]>;
   errors?: string[];
   /** Xtream: identifica a lista (servidor e usuario); muda quando o link e trocado. */
   sig?: string;

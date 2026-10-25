@@ -122,7 +122,7 @@ export default function SourceEditor({ value, onChange }: { value: Source; onCha
           ) : result.ok ? (
             <span className="flex items-center gap-2 text-sm text-success">
               <CheckCircle2 className="h-4 w-4" />
-              {result.kinds?.live ?? 0} canais · {result.kinds?.movie ?? 0} filmes · {result.kinds?.series ?? 0} episódios · {result.groups?.length ?? 0} grupos
+              {result.kinds?.live ?? 0} canais · {result.kinds?.movie ?? 0} filmes · {result.kinds?.series ?? 0} episódios{result.kinds?.radio ? ` · ${result.kinds.radio} rádios` : ""} · {result.groups?.length ?? 0} grupos
             </span>
           ) : (
             <span className="flex items-center gap-2 text-sm text-destructive">

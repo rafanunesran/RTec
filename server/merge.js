@@ -43,7 +43,7 @@ function m3uProvider(p, key) {
     const hit = m3uCache.get(key);
     if (hit && Date.now() - hit.at < TTL_MS) return hit.data;
     const data = loadPlaylistText(p).then((text) => {
-      const out = { live: [], movie: [], series: [], cats: { live: new Map(), movie: new Map(), series: new Map() }, episodes: new Map() };
+      const out = { live: [], radio: [], movie: [], series: [], cats: { live: new Map(), radio: new Map(), movie: new Map(), series: new Map() }, episodes: new Map() };
       for (const e of parseEntries(text, Infinity)) {
         if (!/^https?:\/\//i.test(e.url)) continue;
         const group = e.group || "Outros";
@@ -71,7 +71,7 @@ function m3uProvider(p, key) {
           ...(hls ? { alt_url: hls } : {}),
           category_id,
           added: 0,
-          ...(e.kind === "live" ? { tvg_id: e.tvg_id } : { year: yearInName(e.name), rating: 0, genre: "" }),
+          ...(e.kind === "live" ? { tvg_id: e.tvg_id } : e.kind === "radio" ? {} : { year: yearInName(e.name), rating: 0, genre: "" }),
         });
       }
       return out;

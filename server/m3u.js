@@ -82,16 +82,23 @@ export function parseEntries(text, limit = 50) {
         break;
       }
     }
-    out.push({ name, group, logo, url, tvg_id: tvgId, kind: contentKind(url, group, name) });
+    out.push({ name, group, logo, url, tvg_id: tvgId, kind: contentKind(url, group, name, /\bradio="?(true|1)"?/i.test(line)) });
   }
   return out;
 }
 
-/** Classifica a entrada em TV ao vivo, filme ou serie (padrao de URL do Xtream, extensao e nome). */
-export function contentKind(url, group = "", name = "") {
+/** Grupo/categoria de radios: "Radios", "Rádio FM", "RADIOS | Sertanejo"... */
+export const RADIO_GROUP = /\br[aá]dios?\b/i;
+
+/**
+ * Classifica a entrada em TV ao vivo, radio, filme ou serie (padrao de URL do Xtream, extensao e nome).
+ * Radio: radio="true" na linha, link /radio/, arquivo de audio (.mp3, .aac...) ou grupo "Radios".
+ */
+export function contentKind(url, group = "", name = "", radio = false) {
   const path = url.split("?")[0].toLowerCase();
   if (/\/series\//.test(path)) return "series";
   if (/\/movies?\//.test(path)) return "movie";
+  if (radio || /\/radio\//.test(path) || /\.(mp3|aac|ogg|oga|opus|m4a)$/.test(path) || RADIO_GROUP.test(group)) return "radio";
   if (/\/live\//.test(path)) return "live";
   if (/\.(mp4|mkv|avi|mov|m4v|webm)$/.test(path)) {
     return /\bs[eé]ries?\b/i.test(group) || /\bS\d{1,2}\s*E\d{1,3}\b/i.test(name) ? "series" : "movie";
