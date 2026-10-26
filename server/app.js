@@ -953,11 +953,16 @@ export function createApp() {
     "/api/servers",
     requireAdmin,
     wrap(async (_req, res) => {
-      const count = new Map();
-      for (const c of await db().clients.list()) {
-        for (const server of new Set(allSources(c).map(sourceServer).filter(Boolean))) count.set(server, (count.get(server) || 0) + 1);
+      const byServer = new Map();
+      for (const c of (await db().clients.list()).sort((a, b) => (a.name || a.username).localeCompare(b.name || b.username))) {
+        for (const server of new Set(allSources(c).map(sourceServer).filter(Boolean))) {
+          if (!byServer.has(server)) byServer.set(server, []);
+          byServer.get(server).push({ id: c.id, name: c.name || "", username: c.username });
+        }
       }
-      res.json([...count].map(([server, clients]) => ({ server, clients })).sort((a, b) => b.clients - a.clients));
+      res.json(
+        [...byServer].map(([server, list]) => ({ server, clients: list.length, client_list: list })).sort((a, b) => b.clients - a.clients),
+      );
     }),
   );
 
@@ -976,8 +981,12 @@ export function createApp() {
       to = to.origin.toLowerCase();
       if (!from) throw new HttpError(400, "Escolha o servidor antigo");
       if (from === to) throw new HttpError(400, "O servidor novo e igual ao antigo");
+      // Sem client_ids: todos os clientes desse servidor (e as listas do painel). Com client_ids: so os marcados.
+      const only = Array.isArray(req.body?.client_ids) ? new Set(req.body.client_ids.map(String)) : null;
+      if (only && !only.size) throw new HttpError(400, "Marque pelo menos um cliente");
       let clients = 0;
       for (const c of await db().clients.list()) {
+        if (only && !only.has(String(c.id))) continue;
         const source = moveSource(c.source, from, to);
         const extra = (c.extra_sources || []).map((p) => moveSource(p, from, to));
         if (source === c.source && extra.every((p, i) => p === c.extra_sources[i])) continue;
@@ -987,7 +996,7 @@ export function createApp() {
         clients++;
       }
       let playlists = 0;
-      for (const p of await db().playlists.list()) {
+      for (const p of only ? [] : await db().playlists.list()) {
         const moved = moveSource(p, from, to);
         if (moved === p) continue;
         await db().playlists.update(p.id, { url: moved.url, xtream_server: moved.xtream_server, epg_url: moved.epg_url });

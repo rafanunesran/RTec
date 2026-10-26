@@ -74,6 +74,8 @@ function clientMessage(c: Client) {
   return `Seu acesso IPTV\nAssista em: ${site}\nUsuario: ${c.username}\nSenha: ${c.password}\n\nNa Smart TV (LG, Samsung): digite no navegador ${SITE_SHORT_URL}\nAndroid, TV Box e Fire TV: baixe o app em ${APK_SHORT_URL}\n(na TV, digite no navegador: is.gd/rtecapk)\nComo instalar (passo a passo com imagens): ${site}/instalar\niPhone: abra o link no Safari e use "Adicionar a Tela de Inicio".`;
 }
 
+type ServerUse = { server: string; clients: number; client_list: { id: string; name: string; username: string }[] };
+
 export default function Clients() {
   const [clients, setClients] = useState<Client[]>([]);
   const [query, setQuery] = useState("");
@@ -85,8 +87,9 @@ export default function Clients() {
   const [quickOpen, setQuickOpen] = useState(false);
   const [quick, setQuick] = useState({ link: "", name: "" });
   const [moveOpen, setMoveOpen] = useState(false);
-  const [servers, setServers] = useState<{ server: string; clients: number }[] | null>(null);
+  const [servers, setServers] = useState<ServerUse[] | null>(null);
   const [move, setMove] = useState({ link: "", from: "" });
+  const [picked, setPicked] = useState<Set<string>>(new Set());
 
   const [loaded, setLoaded] = useState(false);
 
@@ -223,12 +226,13 @@ export default function Clients() {
   const openMove = () => {
     setMove({ link: "", from: "" });
     setServers(null);
+    setPicked(new Set());
     setMoveOpen(true);
     api
-      .get<{ server: string; clients: number }[]>("/api/servers")
+      .get<ServerUse[]>("/api/servers")
       .then((list) => {
         setServers(list);
-        if (list.length === 1) setMove((m) => ({ ...m, from: list[0].server }));
+        if (list.length === 1) pickServer(list[0]);
       })
       .catch((err) => toast.error((err as Error).message));
   };
@@ -242,14 +246,32 @@ export default function Clients() {
       return "";
     }
   }, [move.link]);
-  const moveCount = servers?.find((s) => s.server === move.from)?.clients ?? 0;
+  // Ao escolher o servidor antigo, todos os clientes dele vem marcados; desmarque os que nao devem mudar.
+  const pickServer = (s: ServerUse) => {
+    setMove((m) => ({ ...m, from: s.server }));
+    setPicked(new Set(s.client_list.map((c) => c.id)));
+  };
+  const fromList = servers?.find((s) => s.server === move.from)?.client_list ?? [];
+  const moveCount = fromList.filter((c) => picked.has(c.id)).length;
+  const togglePicked = (id: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
 
   const replaceServer = async (e: FormEvent) => {
     e.preventDefault();
     if (!window.confirm(`Trocar ${move.from} por ${newServer} em ${moveCount} cliente(s)?`)) return;
     setBusy(true);
     try {
-      const r = await api.post<{ clients: number }>("/api/servers/replace", { from: move.from, link: move.link });
+      // Todos marcados: troca tambem as listas do painel desse servidor.
+      const all = moveCount === fromList.length;
+      const r = await api.post<{ clients: number }>("/api/servers/replace", {
+        from: move.from,
+        link: move.link,
+        ...(all ? {} : { client_ids: fromList.filter((c) => picked.has(c.id)).map((c) => c.id) }),
+      });
       toast.success(`Servidor trocado em ${r.clients} cliente(s)`);
       setMoveOpen(false);
       await load();
@@ -411,7 +433,7 @@ export default function Clients() {
         open={moveOpen}
         onClose={() => setMoveOpen(false)}
         title="Trocar servidor"
-        description="Cole um link qualquer do servidor novo. Só o endereço do servidor muda em todos os clientes; o usuário e a senha de cada um continuam os mesmos."
+        description="Cole um link qualquer do servidor novo. Só o endereço do servidor muda nos clientes que você marcar; o usuário e a senha de cada um continuam os mesmos."
       >
         <form onSubmit={replaceServer} className="space-y-4">
           <Field label="Link modelo do servidor novo">
@@ -445,7 +467,7 @@ export default function Clients() {
               <div className="space-y-2">
                 {servers.map((s) => (
                   <label key={s.server} className="flex cursor-pointer items-center gap-3 rounded-lg border border-border p-3 text-sm has-[:checked]:border-primary">
-                    <input type="radio" name="from" checked={move.from === s.server} onChange={() => setMove({ ...move, from: s.server })} />
+                    <input type="radio" name="from" checked={move.from === s.server} onChange={() => pickServer(s)} />
                     <span className="min-w-0 flex-1 break-all font-mono text-xs">{s.server}</span>
                     <Badge>{s.clients} cliente(s)</Badge>
                   </label>
@@ -453,7 +475,29 @@ export default function Clients() {
               </div>
             )}
           </Field>
-          <Button variant="gradient" size="lg" className="w-full" disabled={busy || !newServer || !move.from || newServer === move.from}>
+          {fromList.length > 0 && (
+            <Field label={`Clientes que vão mudar (${moveCount} de ${fromList.length})`}>
+              <div className="mb-2 flex gap-3 text-xs">
+                <button type="button" className="text-primary hover:underline" onClick={() => setPicked(new Set(fromList.map((c) => c.id)))}>
+                  Marcar todos
+                </button>
+                <button type="button" className="text-primary hover:underline" onClick={() => setPicked(new Set())}>
+                  Desmarcar todos
+                </button>
+              </div>
+              <div className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
+                {fromList.map((c) => (
+                  <label key={c.id} className="flex cursor-pointer items-center gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-muted/50">
+                    <input type="checkbox" checked={picked.has(c.id)} onChange={() => togglePicked(c.id)} />
+                    <span className="min-w-0 flex-1 truncate">
+                      {c.name || c.username} {c.name && c.name !== c.username && <span className="text-muted-foreground">({c.username})</span>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </Field>
+          )}
+          <Button variant="gradient" size="lg" className="w-full" disabled={busy || !newServer || !move.from || newServer === move.from || moveCount === 0}>
             {busy ? <Loader2 className="animate-spin" /> : <ArrowLeftRight />} {move.from ? `Trocar em ${moveCount} cliente(s)` : "Trocar servidor"}
           </Button>
         </form>

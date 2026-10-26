@@ -1019,10 +1019,21 @@ test("trocar servidor: atualiza o endereco das listas de todos os clientes e man
   const c = (await call("POST", "/api/clients", { username: "srvC", password: "c1", source: { kind: "m3u_url", url: "http://outro.example/c.m3u" } })).body;
 
   const servers = (await call("GET", "/api/servers")).body;
-  assert.deepEqual(servers.find((s) => s.server === old), { server: old, clients: 2 });
+  const velho = servers.find((s) => s.server === old);
+  assert.equal(velho.clients, 2);
+  assert.deepEqual(velho.client_list.map((x) => x.username).sort(), ["srvA", "srvB"]);
   assert.equal(servers.find((s) => s.server === "http://outro.example").clients, 2);
 
   assert.equal((await call("POST", "/api/servers/replace", { from: old, link: "nao e link" })).status, 400);
+  assert.equal((await call("POST", "/api/servers/replace", { from: old, link: `${novo}/get.php`, client_ids: [] })).status, 400);
+  // So os clientes marcados mudam.
+  const e = (await call("POST", "/api/clients", { username: "srvE", password: "e1", source: { kind: "m3u_url", url: "http://127.0.0.8:1/e.m3u" } })).body;
+  const f = (await call("POST", "/api/clients", { username: "srvF", password: "f1", source: { kind: "m3u_url", url: "http://127.0.0.8:1/f.m3u" } })).body;
+  const some = await call("POST", "/api/servers/replace", { from: "http://127.0.0.8:1", link: "http://marcado.exemplo/get.php", client_ids: [e.id] });
+  assert.equal(some.body.clients, 1);
+  const ef = (await call("GET", "/api/clients")).body;
+  assert.equal(ef.find((x) => x.id === e.id).source.url, "http://marcado.exemplo/e.m3u");
+  assert.equal(ef.find((x) => x.id === f.id).source.url, "http://127.0.0.8:1/f.m3u", "cliente desmarcado continua no servidor antigo");
   assert.equal((await call("POST", "/api/servers/replace", { from: old, link: `${old}/get.php?username=x&password=y` })).status, 400);
   const done = await call("POST", "/api/servers/replace", { from: old, link: `${novo}/get.php?username=Modelo&password=M1&type=m3u_plus&output=ts` });
   assert.equal(done.status, 200);
