@@ -36,7 +36,7 @@ export default function Settings() {
           <IconTile icon={<KeyRound />} />
           <div>
             <h2 className="font-semibold">Alterar senha</h2>
-            <p className="text-xs text-muted-foreground">Use pelo menos 6 caracteres.</p>
+            <p className="text-xs text-muted-foreground">Use pelo menos 10 caracteres.</p>
           </div>
         </div>
         <form onSubmit={submit} className="space-y-4">
@@ -44,7 +44,7 @@ export default function Settings() {
             <Input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" required />
           </Field>
           <Field label="Nova senha">
-            <Input type="password" value={next} onChange={(e) => setNext(e.target.value)} minLength={6} autoComplete="new-password" required />
+            <Input type="password" value={next} onChange={(e) => setNext(e.target.value)} minLength={10} autoComplete="new-password" required />
           </Field>
           <Field label="Confirmar nova senha">
             <Input type="password" value={confirmNext} onChange={(e) => setConfirmNext(e.target.value)} autoComplete="new-password" required />

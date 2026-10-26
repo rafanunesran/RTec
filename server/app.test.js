@@ -1000,6 +1000,59 @@ test("validade automatica pela lista do fornecedor", async () => {
   renova = "active";
 });
 
+test("sessoes: cookie do cliente nao abre o painel; trocar a senha do admin derruba as outras sessoes", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const adminCookie = cookie;
+  await call("POST", "/api/clients", { username: "sess1", password: "pw" });
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "sess1", password: "pw" });
+  const playerToken = cookie.split("=")[1];
+
+  // O token do cliente (mesmo segredo) nao serve como cookie de administrador, nem o do admin como de cliente.
+  cookie = `rtec_session=${playerToken}`;
+  assert.equal((await call("GET", "/api/clients")).status, 401);
+  cookie = `rtec_player=${adminCookie.split("=")[1]}`;
+  assert.equal((await call("GET", "/api/player/me")).status, 401);
+
+  // Token antigo do reprodutor (sem "typ") continua valendo; token antigo do painel (sem "typ") nao.
+  const jwt = (await import("jsonwebtoken")).default;
+  const payload = JSON.parse(Buffer.from(playerToken.split(".")[1], "base64url"));
+  const { getStore } = await import("./store/index.js");
+  const secret = await getStore().getOrCreateSecret(() => "nao-usado");
+  cookie = `rtec_player=${jwt.sign({ cid: payload.cid, pw: payload.pw }, secret)}`;
+  assert.equal((await call("GET", "/api/player/me")).status, 200);
+  const admin = await getStore().admins.findOne("username", "admin");
+  cookie = `rtec_session=${jwt.sign({ id: admin.id, username: "admin" }, secret)}`;
+  assert.equal((await call("GET", "/api/clients")).status, 401);
+
+  // Duas sessoes do painel; a troca de senha numa derruba a outra.
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const other = cookie;
+  cookie = adminCookie;
+  assert.equal((await call("POST", "/api/auth/password", { current: "secret123", next: "curta" })).status, 400);
+  assert.equal((await call("POST", "/api/auth/password", { current: "secret123", next: "senha-nova-forte" })).status, 200);
+  assert.equal((await call("GET", "/api/clients")).status, 200, "a sessao que trocou a senha continua");
+  cookie = other;
+  assert.equal((await call("GET", "/api/clients")).status, 401);
+
+  const bcrypt = (await import("bcryptjs")).default;
+  await getStore().admins.update(admin.id, { password_hash: bcrypt.hashSync("secret123", 4) });
+});
+
+test("PIN parental: muitos erros seguidos travam o PIN por um tempo", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  await call("POST", "/api/clients", { username: "pin1", password: "pw" });
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "pin1", password: "pw" });
+  let tries = 0;
+  while ((await call("POST", "/api/player/pin/verify", { pin: String(1000 + tries) })).status === 403) tries++;
+  assert.ok(tries <= 8);
+  assert.equal((await call("POST", "/api/player/pin/verify", { pin: "0000" })).status, 429);
+});
+
 // Por ultimo: depois deste teste o endereco local fica bloqueado para login de admin por 15 minutos.
 test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
   cookie = "";

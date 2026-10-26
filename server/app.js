@@ -346,27 +346,61 @@ function clientProfile(c) {
 // Publicado (Vercel), o cookie de sessao so viaja por https.
 const secureCookie = (req) => req.secure || !!process.env.VERCEL;
 
+// Sessoes do painel e do reprodutor usam o mesmo segredo: o campo "typ" impede que o cookie de um cliente
+// sirva de cookie de administrador (e vice-versa).
+const JWT_OPTS = { algorithms: ["HS256"] };
+
 function signClientSession(res, req, c) {
-  const token = jwt.sign({ cid: c.id, pw: passwordFingerprint(c) }, JWT_SECRET, { expiresIn: "30d" });
+  const token = jwt.sign({ typ: "player", cid: c.id, pw: passwordFingerprint(c) }, JWT_SECRET, { expiresIn: "30d" });
   res.cookie(CLIENT_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: secureCookie(req), maxAge: 30 * 24 * 3600 * 1000 });
 }
 
-function requireAdmin(req, _res, next) {
-  try {
-    req.admin = jwt.verify(req.cookies[COOKIE], JWT_SECRET);
-    next();
-  } catch {
-    next(new HttpError(401, "Nao autenticado"));
-  }
+// Muda quando a senha do admin muda (inclusive por ADMIN_RESET_PASSWORD), derrubando as sessoes antigas do painel.
+const adminFingerprint = (a) => crypto.createHash("sha256").update(`admin|${a.password_hash}`).digest("hex").slice(0, 16);
+
+function signAdminSession(res, req, admin) {
+  const token = jwt.sign({ typ: "admin", id: admin.id, username: admin.username, pw: adminFingerprint(admin) }, JWT_SECRET, { expiresIn: "7d" });
+  res.cookie(COOKIE, token, { httpOnly: true, sameSite: "strict", secure: secureCookie(req), maxAge: 7 * 24 * 3600 * 1000 });
 }
 
-const requireClient = wrap(async (req, _res, next) => {
+// Cache curto do admin (o painel faz varias chamadas seguidas; economiza leituras do Firestore).
+const adminCache = new Map();
+async function getAdmin(id) {
+  const hit = adminCache.get(id);
+  if (hit && Date.now() - hit.at < CLIENT_TTL_MS) return hit.admin;
+  const admin = await getStore().admins.get(id);
+  adminCache.set(id, { at: Date.now(), admin });
+  return admin;
+}
+
+const requireAdmin = wrap(async (req, _res, next) => {
   let payload;
   try {
-    payload = jwt.verify(req.cookies[CLIENT_COOKIE], JWT_SECRET);
+    payload = jwt.verify(req.cookies[COOKIE], JWT_SECRET, JWT_OPTS);
   } catch {
     throw new HttpError(401, "Nao autenticado");
   }
+  if (payload.typ !== "admin" || !payload.id) throw new HttpError(401, "Nao autenticado");
+  const admin = await getAdmin(String(payload.id));
+  if (!admin || payload.pw !== adminFingerprint(admin)) throw new HttpError(401, "Sessao expirada, entre novamente");
+  req.admin = { id: admin.id, username: admin.username };
+  next();
+});
+
+/** Cookie do reprodutor: so vale token de cliente (nunca o do painel). */
+function clientPayload(req) {
+  try {
+    const payload = jwt.verify(req.cookies[CLIENT_COOKIE], JWT_SECRET, JWT_OPTS);
+    // Sessoes de antes do campo "typ" continuam valendo (tem cid e nao sao do painel).
+    if ((payload.typ ?? "player") === "player" && typeof payload.cid === "string" && payload.cid) return payload;
+  } catch {
+    /* sem sessao */
+  }
+  throw new HttpError(401, "Nao autenticado");
+}
+
+const requireClient = wrap(async (req, _res, next) => {
+  const payload = clientPayload(req);
   const c = await getClient(payload.cid);
   if (!c || payload.pw !== passwordFingerprint(c)) throw new HttpError(401, "Sessao expirada, entre novamente");
   assertClientAccess(c);
@@ -376,12 +410,7 @@ const requireClient = wrap(async (req, _res, next) => {
 
 /** Sessao do reprodutor sem barrar lista expirada (para conferir de novo na abertura do app). */
 const clientSession = wrap(async (req, _res, next) => {
-  let payload;
-  try {
-    payload = jwt.verify(req.cookies[CLIENT_COOKIE], JWT_SECRET);
-  } catch {
-    throw new HttpError(401, "Nao autenticado");
-  }
+  const payload = clientPayload(req);
   const c = await getClient(payload.cid);
   if (!c || payload.pw !== passwordFingerprint(c)) throw new HttpError(401, "Sessao expirada, entre novamente");
   req.client = c;
@@ -712,20 +741,28 @@ async function loadSync(docId) {
 const LOGIN_MAX_FAILS = 8;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const loginFails = new Map();
-function assertLoginAllowed(req, scope) {
-  const f = loginFails.get(`${scope}|${req.ip}`);
+function assertLoginAllowed(req, scope, who = req.ip) {
+  const f = loginFails.get(`${scope}|${who}`);
   if (f && Date.now() - f.at < LOGIN_WINDOW_MS && f.count >= LOGIN_MAX_FAILS) {
     throw new HttpError(429, "Muitas tentativas erradas. Aguarde 15 minutos e tente de novo.");
   }
 }
-function loginFailed(req, scope) {
-  const k = `${scope}|${req.ip}`;
+function loginFailed(req, scope, who = req.ip) {
+  const k = `${scope}|${who}`;
   const f = loginFails.get(k);
   loginFails.set(k, f && Date.now() - f.at < LOGIN_WINDOW_MS ? { at: f.at, count: f.count + 1 } : { at: Date.now(), count: 1 });
   if (loginFails.size > 5000) loginFails.delete(loginFails.keys().next().value);
 }
 
-const checkPin = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pin || ""), c.parental_pin_hash) : String(pin || "") === DEFAULT_PIN);
+const pinMatches = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pin || ""), c.parental_pin_hash) : String(pin || "") === DEFAULT_PIN);
+
+/** PIN parental: 8 erros seguidos na conta travam o PIN por 15 minutos (4 numeros se adivinham rapido). */
+function checkPin(req, pin) {
+  assertLoginAllowed(req, "pin", req.client.id);
+  if (pinMatches(req.client, pin)) return true;
+  loginFailed(req, "pin", req.client.id);
+  return false;
+}
 
 export function createApp() {
   const app = express();
@@ -765,8 +802,8 @@ export function createApp() {
         console.warn(`[rtec] Login de admin recusado para "${username}": ${admin ? "senha incorreta" : "usuario nao existe"}`);
         throw new HttpError(401, "Usuario ou senha invalidos");
       }
-      const token = jwt.sign({ id: admin.id, username: admin.username }, JWT_SECRET, { expiresIn: "7d" });
-      res.cookie(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: secureCookie(req), maxAge: 7 * 24 * 3600 * 1000 });
+      adminCache.delete(admin.id);
+      signAdminSession(res, req, admin);
       res.json({ id: admin.id, username: admin.username });
     }),
   );
@@ -787,8 +824,11 @@ export function createApp() {
       if (!admin || !bcrypt.compareSync(String(current || ""), admin.password_hash)) {
         throw new HttpError(400, "Senha atual incorreta");
       }
-      if (String(next || "").length < 6) throw new HttpError(400, "A nova senha precisa ter ao menos 6 caracteres");
-      await db().admins.update(admin.id, { password_hash: bcrypt.hashSync(String(next), 10) });
+      if (String(next || "").length < 10) throw new HttpError(400, "A nova senha precisa ter ao menos 10 caracteres");
+      const updated = await db().admins.update(admin.id, { password_hash: bcrypt.hashSync(String(next), 10) });
+      adminCache.delete(admin.id);
+      // As outras sessoes do painel caem; esta continua com um cookie novo.
+      signAdminSession(res, req, updated);
       res.json({ ok: true });
     }),
   );
@@ -1475,7 +1515,7 @@ export function createApp() {
   });
 
   app.post("/api/player/pin/verify", requireClient, (req, res) => {
-    if (!checkPin(req.client, req.body?.pin)) throw new HttpError(403, "PIN incorreto");
+    if (!checkPin(req, req.body?.pin)) throw new HttpError(403, "PIN incorreto");
     res.json({ ok: true });
   });
 
@@ -1484,7 +1524,7 @@ export function createApp() {
     requireClient,
     wrap(async (req, res) => {
       const { current, pin } = req.body || {};
-      if (!checkPin(req.client, current)) throw new HttpError(403, "PIN atual incorreto");
+      if (!checkPin(req, current)) throw new HttpError(403, "PIN atual incorreto");
       if (!/^\d{4,8}$/.test(String(pin || ""))) throw new HttpError(400, "O PIN deve ter de 4 a 8 numeros");
       await db().clients.update(req.client.id, { parental_pin_hash: bcrypt.hashSync(String(pin), 10) });
       forgetClient(req.client.id);
@@ -1497,7 +1537,7 @@ export function createApp() {
     requireClient,
     wrap(async (req, res) => {
       const { pin, groups } = req.body || {};
-      if (!checkPin(req.client, pin)) throw new HttpError(403, "PIN incorreto");
+      if (!checkPin(req, pin)) throw new HttpError(403, "PIN incorreto");
       if (!Array.isArray(groups)) throw new HttpError(400, "Lista de grupos invalida");
       const clean = [...new Set(groups.map((g) => String(g).slice(0, 200)))].slice(0, 500);
       await db().clients.update(req.client.id, { locked_groups: clean });

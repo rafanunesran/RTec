@@ -321,7 +321,7 @@
     app.style.display = "none";
     player.style.display = "block";
     perr.style.display = "none";
-    showOsd(c.name, (c.group || "") + (list.length > 1 && c.kind === "live" ? " &middot; CH+/CH- ou setas para trocar" : ""));
+    showOsd(c.name, esc(c.group || "") + (list.length > 1 && c.kind === "live" ? " &middot; CH+/CH- ou setas para trocar" : ""));
     attempt();
   }
 
@@ -408,7 +408,7 @@
     else if ((is("left", code) || is("right", code)) && c.kind !== "live") {
       try { video.currentTime = Math.max(0, video.currentTime + (is("right", code) ? 30 : -10)); } catch (err) {}
       showOsd(c.name, Math.floor(video.currentTime / 60) + " min");
-    } else showOsd(c.name, c.group || "");
+    } else showOsd(c.name, esc(c.group || ""));
     return cancel(e);
   }
 
