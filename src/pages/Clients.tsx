@@ -74,7 +74,15 @@ function clientMessage(c: Client) {
   return `Seu acesso IPTV\nAssista em: ${site}\nUsuario: ${c.username}\nSenha: ${c.password}\n\nNa Smart TV (LG, Samsung): digite no navegador ${SITE_SHORT_URL}\nAndroid, TV Box e Fire TV: baixe o app em ${APK_SHORT_URL}\n(na TV, digite no navegador: is.gd/rtecapk)\nComo instalar (passo a passo com imagens): ${site}/instalar\niPhone: abra o link no Safari e use "Adicionar a Tela de Inicio".`;
 }
 
-type ServerUse = { server: string; clients: number; client_list: { id: string; name: string; username: string }[] };
+/** Servidor (endereco) da lista principal do cliente: "http://srv:8080". */
+function clientServer(c: Client) {
+  const src = [c.source, ...(c.extra_sources ?? [])].find((p) => p && (p.kind === "xtream" || p.kind === "m3u_url"));
+  try {
+    return src ? new URL(src.kind === "xtream" ? src.xtream_server : src.url).origin.toLowerCase() : "";
+  } catch {
+    return "";
+  }
+}
 
 export default function Clients() {
   const [clients, setClients] = useState<Client[]>([]);
@@ -87,8 +95,8 @@ export default function Clients() {
   const [quickOpen, setQuickOpen] = useState(false);
   const [quick, setQuick] = useState({ link: "", name: "" });
   const [moveOpen, setMoveOpen] = useState(false);
-  const [servers, setServers] = useState<ServerUse[] | null>(null);
-  const [move, setMove] = useState({ link: "", from: "" });
+  const [moveLink, setMoveLink] = useState("");
+  const [moveQuery, setMoveQuery] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
 
   const [loaded, setLoaded] = useState(false);
@@ -224,54 +232,46 @@ export default function Clients() {
       <Badge variant="muted">Sem lista</Badge>
     );
   const openMove = () => {
-    setMove({ link: "", from: "" });
-    setServers(null);
+    setMoveLink("");
+    setMoveQuery("");
     setPicked(new Set());
     setMoveOpen(true);
-    api
-      .get<ServerUse[]>("/api/servers")
-      .then((list) => {
-        setServers(list);
-        if (list.length === 1) pickServer(list[0]);
-      })
-      .catch((err) => toast.error((err as Error).message));
   };
 
   // Servidor novo: so o endereco do link colado (usuario e senha do modelo sao ignorados).
   const newServer = useMemo(() => {
     try {
-      const u = new URL(move.link.trim());
+      const u = new URL(moveLink.trim());
       return /^https?:$/.test(u.protocol) ? u.origin.toLowerCase() : "";
     } catch {
       return "";
     }
-  }, [move.link]);
-  // Ao escolher o servidor antigo, todos os clientes dele vem marcados; desmarque os que nao devem mudar.
-  const pickServer = (s: ServerUse) => {
-    setMove((m) => ({ ...m, from: s.server }));
-    setPicked(new Set(s.client_list.map((c) => c.id)));
-  };
-  const fromList = servers?.find((s) => s.server === move.from)?.client_list ?? [];
-  const moveCount = fromList.filter((c) => picked.has(c.id)).length;
+  }, [moveLink]);
+  // Clientes com lista por link ou Xtream (lista colada nao tem servidor para trocar).
+  const movable = useMemo(() => clients.map((c) => ({ c, server: clientServer(c) })).filter((x) => x.server), [clients]);
+  const serverCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const x of movable) m.set(x.server, (m.get(x.server) ?? 0) + 1);
+    return [...m].sort((a, b) => b[1] - a[1]);
+  }, [movable]);
+  const moveShown = useMemo(() => {
+    const q = moveQuery.toLowerCase();
+    return movable.filter(({ c, server }) => !q || c.username.toLowerCase().includes(q) || c.name.toLowerCase().includes(q) || server.includes(q));
+  }, [movable, moveQuery]);
   const togglePicked = (id: string) =>
     setPicked((prev) => {
       const next = new Set(prev);
       if (!next.delete(id)) next.add(id);
       return next;
     });
+  const pickServer = (server: string) => setPicked((prev) => new Set([...prev, ...movable.filter((x) => x.server === server).map((x) => x.c.id)]));
 
   const replaceServer = async (e: FormEvent) => {
     e.preventDefault();
-    if (!window.confirm(`Trocar ${move.from} por ${newServer} em ${moveCount} cliente(s)?`)) return;
+    if (!window.confirm(`Passar ${picked.size} cliente(s) para o servidor ${newServer}?`)) return;
     setBusy(true);
     try {
-      // Todos marcados: troca tambem as listas do painel desse servidor.
-      const all = moveCount === fromList.length;
-      const r = await api.post<{ clients: number }>("/api/servers/replace", {
-        from: move.from,
-        link: move.link,
-        ...(all ? {} : { client_ids: fromList.filter((c) => picked.has(c.id)).map((c) => c.id) }),
-      });
+      const r = await api.post<{ clients: number }>("/api/servers/replace", { link: moveLink, client_ids: [...picked] });
       toast.success(`Servidor trocado em ${r.clients} cliente(s)`);
       setMoveOpen(false);
       await load();
@@ -433,7 +433,7 @@ export default function Clients() {
         open={moveOpen}
         onClose={() => setMoveOpen(false)}
         title="Trocar servidor"
-        description="Cole um link qualquer do servidor novo. Só o endereço do servidor muda nos clientes que você marcar; o usuário e a senha de cada um continuam os mesmos."
+        description="Cole um link qualquer do servidor novo e marque os clientes que vão para ele. Só o endereço do servidor muda; o usuário e a senha de cada um continuam os mesmos."
       >
         <form onSubmit={replaceServer} className="space-y-4">
           <Field label="Link modelo do servidor novo">
@@ -441,64 +441,62 @@ export default function Clients() {
               autoFocus
               rows={3}
               className="font-mono text-xs"
-              value={move.link}
-              onChange={(e) => setMove({ ...move, link: e.target.value })}
+              value={moveLink}
+              onChange={(e) => setMoveLink(e.target.value)}
               placeholder="http://servidor-novo:8080/get.php?username=USUARIO&password=SENHA&type=m3u_plus"
               required
             />
           </Field>
-          {move.link.trim() && (
+          {moveLink.trim() && (
             <p className="text-sm">
               {newServer ? (
                 <>
-                  Servidor novo: <span className="font-mono font-semibold">{newServer}</span>
+                  Servidor novo: <span className="break-all font-mono font-semibold">{newServer}</span>
                 </>
               ) : (
                 <span className="text-destructive">Link inválido. Cole um link que comece com http:// ou https://</span>
               )}
             </p>
           )}
-          <Field label="Servidor antigo">
-            {!servers ? (
-              <Skeleton className="h-10 w-full" />
-            ) : servers.length === 0 ? (
+          <Field label={`Clientes que vão para o servidor novo (${picked.size} marcado(s))`}>
+            {movable.length === 0 ? (
               <p className="text-sm text-muted-foreground">Nenhum cliente com lista por link ou Xtream.</p>
             ) : (
-              <div className="space-y-2">
-                {servers.map((s) => (
-                  <label key={s.server} className="flex cursor-pointer items-center gap-3 rounded-lg border border-border p-3 text-sm has-[:checked]:border-primary">
-                    <input type="radio" name="from" checked={move.from === s.server} onChange={() => pickServer(s)} />
-                    <span className="min-w-0 flex-1 break-all font-mono text-xs">{s.server}</span>
-                    <Badge>{s.clients} cliente(s)</Badge>
-                  </label>
-                ))}
-              </div>
+              <>
+                <Input className="mb-2" placeholder="Buscar por nome, usuário ou servidor" aria-label="Buscar cliente" value={moveQuery} onChange={(e) => setMoveQuery(e.target.value)} />
+                {serverCounts.length > 1 && (
+                  <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                    {serverCounts.map(([server, n]) => (
+                      <button key={server} type="button" className="break-all text-left text-primary hover:underline" onClick={() => pickServer(server)}>
+                        + todos de {server.replace(/^https?:\/\//, "")} ({n})
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {picked.size > 0 && (
+                  <button type="button" className="mb-2 text-xs text-primary hover:underline" onClick={() => setPicked(new Set())}>
+                    Desmarcar todos
+                  </button>
+                )}
+                <div className="max-h-72 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
+                  {moveShown.map(({ c, server }) => (
+                    <label key={c.id} className="flex cursor-pointer items-center gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-muted/50">
+                      <input type="checkbox" checked={picked.has(c.id)} onChange={() => togglePicked(c.id)} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">
+                          {c.name || c.username} {c.name && c.name !== c.username && <span className="text-muted-foreground">({c.username})</span>}
+                        </span>
+                        <span className="block truncate font-mono text-xs text-muted-foreground">{server}</span>
+                      </span>
+                    </label>
+                  ))}
+                  {moveShown.length === 0 && <p className="px-2 py-1.5 text-sm text-muted-foreground">Nenhum cliente encontrado.</p>}
+                </div>
+              </>
             )}
           </Field>
-          {fromList.length > 0 && (
-            <Field label={`Clientes que vão mudar (${moveCount} de ${fromList.length})`}>
-              <div className="mb-2 flex gap-3 text-xs">
-                <button type="button" className="text-primary hover:underline" onClick={() => setPicked(new Set(fromList.map((c) => c.id)))}>
-                  Marcar todos
-                </button>
-                <button type="button" className="text-primary hover:underline" onClick={() => setPicked(new Set())}>
-                  Desmarcar todos
-                </button>
-              </div>
-              <div className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
-                {fromList.map((c) => (
-                  <label key={c.id} className="flex cursor-pointer items-center gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-muted/50">
-                    <input type="checkbox" checked={picked.has(c.id)} onChange={() => togglePicked(c.id)} />
-                    <span className="min-w-0 flex-1 truncate">
-                      {c.name || c.username} {c.name && c.name !== c.username && <span className="text-muted-foreground">({c.username})</span>}
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </Field>
-          )}
-          <Button variant="gradient" size="lg" className="w-full" disabled={busy || !newServer || !move.from || newServer === move.from || moveCount === 0}>
-            {busy ? <Loader2 className="animate-spin" /> : <ArrowLeftRight />} {move.from ? `Trocar em ${moveCount} cliente(s)` : "Trocar servidor"}
+          <Button variant="gradient" size="lg" className="w-full" disabled={busy || !newServer || picked.size === 0}>
+            {busy ? <Loader2 className="animate-spin" /> : <ArrowLeftRight />} {picked.size ? `Trocar em ${picked.size} cliente(s)` : "Marque os clientes"}
           </Button>
         </form>
       </Dialog>

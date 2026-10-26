@@ -948,29 +948,11 @@ export function createApp() {
     }),
   );
 
-  // Troca de servidor do fornecedor: atualiza o endereco das listas de todos os clientes, mantendo usuario e senha.
-  app.get(
-    "/api/servers",
-    requireAdmin,
-    wrap(async (_req, res) => {
-      const byServer = new Map();
-      for (const c of (await db().clients.list()).sort((a, b) => (a.name || a.username).localeCompare(b.name || b.username))) {
-        for (const server of new Set(allSources(c).map(sourceServer).filter(Boolean))) {
-          if (!byServer.has(server)) byServer.set(server, []);
-          byServer.get(server).push({ id: c.id, name: c.name || "", username: c.username });
-        }
-      }
-      res.json(
-        [...byServer].map(([server, list]) => ({ server, clients: list.length, client_list: list })).sort((a, b) => b.clients - a.clients),
-      );
-    }),
-  );
-
+  // Troca de servidor do fornecedor: os clientes marcados passam para o servidor novo, mantendo usuario e senha.
   app.post(
     "/api/servers/replace",
     requireAdmin,
     wrap(async (req, res) => {
-      const from = String(req.body?.from || "").trim().toLowerCase();
       let to;
       try {
         to = new URL(String(req.body?.link || "").trim());
@@ -979,31 +961,23 @@ export function createApp() {
       }
       if (!to || !/^https?:$/.test(to.protocol)) throw new HttpError(400, "Cole um link do servidor novo (http://servidor/get.php?username=...&password=...)");
       to = to.origin.toLowerCase();
-      if (!from) throw new HttpError(400, "Escolha o servidor antigo");
-      if (from === to) throw new HttpError(400, "O servidor novo e igual ao antigo");
-      // Sem client_ids: todos os clientes desse servidor (e as listas do painel). Com client_ids: so os marcados.
-      const only = Array.isArray(req.body?.client_ids) ? new Set(req.body.client_ids.map(String)) : null;
-      if (only && !only.size) throw new HttpError(400, "Marque pelo menos um cliente");
+      const ids = new Set((Array.isArray(req.body?.client_ids) ? req.body.client_ids : []).map(String));
+      if (!ids.size) throw new HttpError(400, "Marque pelo menos um cliente");
       let clients = 0;
       for (const c of await db().clients.list()) {
-        if (only && !only.has(String(c.id))) continue;
+        if (!ids.has(String(c.id))) continue;
+        // Muda o servidor da lista principal (e das extras do mesmo servidor); extras de outro fornecedor ficam.
+        const from = allSources(c).map(sourceServer).find(Boolean);
+        if (!from || from === to) continue;
         const source = moveSource(c.source, from, to);
         const extra = (c.extra_sources || []).map((p) => moveSource(p, from, to));
-        if (source === c.source && extra.every((p, i) => p === c.extra_sources[i])) continue;
         await db().clients.update(c.id, { source, extra_sources: extra });
         forgetClient(c.id);
         listChecks.delete(c.id);
         clients++;
       }
-      let playlists = 0;
-      for (const p of only ? [] : await db().playlists.list()) {
-        const moved = moveSource(p, from, to);
-        if (moved === p) continue;
-        await db().playlists.update(p.id, { url: moved.url, xtream_server: moved.xtream_server, epg_url: moved.epg_url });
-        playlists++;
-      }
-      console.log(`[rtec] Servidor trocado: ${from} -> ${to} (${clients} cliente(s), ${playlists} lista(s))`);
-      res.json({ from, to, clients, playlists });
+      console.log(`[rtec] Servidor trocado para ${to} em ${clients} cliente(s)`);
+      res.json({ to, clients });
     }),
   );
 

@@ -1000,7 +1000,7 @@ test("validade automatica pela lista do fornecedor", async () => {
   renova = "active";
 });
 
-test("trocar servidor: atualiza o endereco das listas de todos os clientes e mantem usuario e senha", async () => {
+test("trocar servidor: os clientes marcados passam para o servidor novo e mantem usuario e senha", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
   const old = "http://127.0.0.9:1";
@@ -1013,31 +1013,16 @@ test("trocar servidor: atualiza o endereco das listas de todos os clientes e man
       extra_sources: [{ kind: "m3u_url", url: "http://outro.example/lista.m3u" }],
     })
   ).body;
-  const b = (await call("POST", "/api/clients", { username: "srvB", password: "b1", source: { kind: "m3u_url", url: `${old}/get.php?username=Bia&password=B%402&type=m3u_plus` } })).body;
-  // Servidor novo na porta padrao: a porta antiga (1) nao pode sobrar no link.
-  const d = (await call("POST", "/api/clients", { username: "srvD", password: "d1", source: { kind: "m3u_url", url: "http://127.0.0.9:8080/lista.m3u" } })).body;
-  const c = (await call("POST", "/api/clients", { username: "srvC", password: "c1", source: { kind: "m3u_url", url: "http://outro.example/c.m3u" } })).body;
+  const b = (await call("POST", "/api/clients", { username: "srvB", password: "b1", source: { kind: "m3u_url", url: "http://127.0.0.8:8080/get.php?username=Bia&password=B%402&type=m3u_plus" } })).body;
+  const c = (await call("POST", "/api/clients", { username: "srvC", password: "c1", source: { kind: "m3u_url", url: `${old}/c.m3u` } })).body;
 
-  const servers = (await call("GET", "/api/servers")).body;
-  const velho = servers.find((s) => s.server === old);
-  assert.equal(velho.clients, 2);
-  assert.deepEqual(velho.client_list.map((x) => x.username).sort(), ["srvA", "srvB"]);
-  assert.equal(servers.find((s) => s.server === "http://outro.example").clients, 2);
-
-  assert.equal((await call("POST", "/api/servers/replace", { from: old, link: "nao e link" })).status, 400);
-  assert.equal((await call("POST", "/api/servers/replace", { from: old, link: `${novo}/get.php`, client_ids: [] })).status, 400);
-  // So os clientes marcados mudam.
-  const e = (await call("POST", "/api/clients", { username: "srvE", password: "e1", source: { kind: "m3u_url", url: "http://127.0.0.8:1/e.m3u" } })).body;
-  const f = (await call("POST", "/api/clients", { username: "srvF", password: "f1", source: { kind: "m3u_url", url: "http://127.0.0.8:1/f.m3u" } })).body;
-  const some = await call("POST", "/api/servers/replace", { from: "http://127.0.0.8:1", link: "http://marcado.exemplo/get.php", client_ids: [e.id] });
-  assert.equal(some.body.clients, 1);
-  const ef = (await call("GET", "/api/clients")).body;
-  assert.equal(ef.find((x) => x.id === e.id).source.url, "http://marcado.exemplo/e.m3u");
-  assert.equal(ef.find((x) => x.id === f.id).source.url, "http://127.0.0.8:1/f.m3u", "cliente desmarcado continua no servidor antigo");
-  assert.equal((await call("POST", "/api/servers/replace", { from: old, link: `${old}/get.php?username=x&password=y` })).status, 400);
-  const done = await call("POST", "/api/servers/replace", { from: old, link: `${novo}/get.php?username=Modelo&password=M1&type=m3u_plus&output=ts` });
+  assert.equal((await call("POST", "/api/servers/replace", { link: "nao e link", client_ids: [a.id] })).status, 400);
+  assert.equal((await call("POST", "/api/servers/replace", { link: `${novo}/get.php` })).status, 400, "sem cliente marcado");
+  const done = await call("POST", "/api/servers/replace", { link: `${novo}/get.php?username=Modelo&password=M1&type=m3u_plus&output=ts`, client_ids: [a.id] });
   assert.equal(done.status, 200);
-  assert.equal(done.body.clients, 2);
+  assert.equal(done.body.clients, 1);
+  // Clientes de servidores diferentes no mesmo pedido; servidor novo na porta padrao (a porta antiga nao sobra).
+  await call("POST", "/api/servers/replace", { link: "http://novo.exemplo:80/get.php?username=x&password=y", client_ids: [b.id] });
 
   const all = (await call("GET", "/api/clients")).body;
   const get = (id) => all.find((x) => x.id === id);
@@ -1045,12 +1030,10 @@ test("trocar servidor: atualiza o endereco das listas de todos os clientes e man
   assert.equal(get(a.id).source.xtream_username, "TiaX", "usuario do fornecedor continua o mesmo");
   assert.equal(get(a.id).source.xtream_password, "Sen@1");
   assert.equal(get(a.id).source.epg_url, `${novo}/xmltv.php?username=TiaX&password=Sen@1`);
-  assert.equal(get(a.id).extra_sources[0].url, "http://outro.example/lista.m3u", "lista de outro servidor nao muda");
-  assert.equal(get(b.id).source.url, `${novo}/get.php?username=Bia&password=B%402&type=m3u_plus`);
-  assert.equal(get(c.id).source.url, "http://outro.example/c.m3u");
+  assert.equal(get(a.id).extra_sources[0].url, "http://outro.example/lista.m3u", "lista extra de outro fornecedor nao muda");
+  assert.equal(get(b.id).source.url, "http://novo.exemplo/get.php?username=Bia&password=B%402&type=m3u_plus");
+  assert.equal(get(c.id).source.url, `${old}/c.m3u`, "cliente nao marcado continua no servidor antigo");
   assert.equal(get(a.id).username, "srvA");
-  await call("POST", "/api/servers/replace", { from: "http://127.0.0.9:8080", link: "http://novo.exemplo:80/get.php?username=x&password=y" });
-  assert.equal((await call("GET", "/api/clients")).body.find((x) => x.id === d.id).source.url, "http://novo.exemplo/lista.m3u");
   assert.equal(get(a.id).password, "a1", "login do cliente no RTec continua o mesmo");
 
   // O cliente ja assiste pelo servidor novo.
