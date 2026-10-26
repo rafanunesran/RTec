@@ -266,6 +266,42 @@ export default function Clients() {
     });
   const pickServer = (server: string) => setPicked((prev) => new Set([...prev, ...movable.filter((x) => x.server === server).map((x) => x.c.id)]));
 
+  // Troca o servidor de um cliente so, escolhendo entre os servidores ja usados por outros clientes.
+  const changeServer = async (c: Client, server: string) => {
+    if (!server || server === clientServer(c)) return;
+    if (!window.confirm(`Passar ${c.username} para o servidor ${server}? Usuário e senha continuam os mesmos.`)) return;
+    try {
+      await api.post("/api/servers/replace", { link: server, client_ids: [c.id] });
+      toast.success(`${c.username} agora usa ${server.replace(/^https?:\/\//, "")}`);
+      await load();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  };
+
+  const serverPicker = (c: Client) => {
+    const current = clientServer(c);
+    if (!current) return null;
+    return (
+      <label className="relative mt-1 inline-flex max-w-full cursor-pointer items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-foreground" title="Trocar o servidor deste cliente">
+        <ArrowLeftRight className="h-3 w-3 shrink-0" />
+        <span className="truncate font-mono">{current.replace(/^https?:\/\//, "")}</span>
+        <select
+          aria-label={`Servidor de ${c.username}`}
+          className="absolute inset-0 cursor-pointer opacity-0"
+          value={current}
+          onChange={(e) => changeServer(c, e.target.value)}
+        >
+          {serverCounts.map(([server, n]) => (
+            <option key={server} value={server}>
+              {server.replace(/^https?:\/\//, "")} ({n} cliente{n > 1 ? "s" : ""})
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  };
+
   const replaceServer = async (e: FormEvent) => {
     e.preventDefault();
     if (!window.confirm(`Passar ${picked.size} cliente(s) para o servidor ${newServer}?`)) return;
@@ -361,7 +397,10 @@ export default function Clients() {
                       {c.name && <div className="text-xs text-muted-foreground">{c.name}</div>}
                     </td>
                     <td className="px-4 py-3 font-mono text-xs">{c.password}</td>
-                    <td className="px-4 py-3">{status(c)}</td>
+                    <td className="px-4 py-3">
+                      {status(c)}
+                      <div>{serverPicker(c)}</div>
+                    </td>
                     <td className="px-4 py-3 tabular-nums text-muted-foreground">{expiry(c)}</td>
                     <td className="px-4 py-3">{sourceBadge(c)}</td>
                     <td className="hidden px-4 py-3 text-muted-foreground lg:table-cell">{formatDate(c.last_access_at)}</td>
@@ -379,7 +418,10 @@ export default function Clients() {
                     <div className="truncate font-semibold">{c.username}</div>
                     {c.name && <div className="truncate text-xs text-muted-foreground">{c.name}</div>}
                   </div>
-                  {status(c)}
+                  <div className="flex min-w-0 max-w-[55%] flex-col items-end">
+                    {status(c)}
+                    {serverPicker(c)}
+                  </div>
                 </div>
                 <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
                   <div className="min-w-0">
