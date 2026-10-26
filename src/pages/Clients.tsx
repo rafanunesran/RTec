@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Link2, Loader2, MessageSquareText, Pencil, Plus, Search, ShieldCheck, Trash2, Users, Wand2, Zap } from "lucide-react";
+import { ArrowLeftRight, Link2, Loader2, MessageSquareText, Pencil, Plus, Search, ShieldCheck, Trash2, Users, Wand2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Client, type Source } from "@/lib/api";
 import { copy, formatDate } from "@/lib/utils";
@@ -84,6 +84,9 @@ export default function Clients() {
   const [busy, setBusy] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
   const [quick, setQuick] = useState({ link: "", name: "" });
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [servers, setServers] = useState<{ server: string; clients: number }[] | null>(null);
+  const [move, setMove] = useState({ link: "", from: "" });
 
   const [loaded, setLoaded] = useState(false);
 
@@ -217,6 +220,46 @@ export default function Clients() {
     ) : (
       <Badge variant="muted">Sem lista</Badge>
     );
+  const openMove = () => {
+    setMove({ link: "", from: "" });
+    setServers(null);
+    setMoveOpen(true);
+    api
+      .get<{ server: string; clients: number }[]>("/api/servers")
+      .then((list) => {
+        setServers(list);
+        if (list.length === 1) setMove((m) => ({ ...m, from: list[0].server }));
+      })
+      .catch((err) => toast.error((err as Error).message));
+  };
+
+  // Servidor novo: so o endereco do link colado (usuario e senha do modelo sao ignorados).
+  const newServer = useMemo(() => {
+    try {
+      const u = new URL(move.link.trim());
+      return /^https?:$/.test(u.protocol) ? u.origin.toLowerCase() : "";
+    } catch {
+      return "";
+    }
+  }, [move.link]);
+  const moveCount = servers?.find((s) => s.server === move.from)?.clients ?? 0;
+
+  const replaceServer = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!window.confirm(`Trocar ${move.from} por ${newServer} em ${moveCount} cliente(s)?`)) return;
+    setBusy(true);
+    try {
+      const r = await api.post<{ clients: number }>("/api/servers/replace", { from: move.from, link: move.link });
+      toast.success(`Servidor trocado em ${r.clients} cliente(s)`);
+      setMoveOpen(false);
+      await load();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const setExtra = (i: number, src: Source | null) =>
     setForm((f) => ({ ...f, extra: src ? f.extra.map((x, j) => (j === i ? src : x)) : f.extra.filter((_x, j) => j !== i) }));
 
@@ -227,6 +270,11 @@ export default function Clients() {
         description={clients.length ? `${clients.length} cliente(s) cadastrado(s)` : "Crie o login de cada cliente e cole a lista dele"}
         action={
           <>
+            {clients.length > 0 && (
+              <Button variant="outline" onClick={openMove}>
+                <ArrowLeftRight /> Trocar servidor
+              </Button>
+            )}
             <Button variant="outline" onClick={openNew}>
               <Plus /> Novo cliente
             </Button>
@@ -355,6 +403,58 @@ export default function Clients() {
           </Field>
           <Button variant="gradient" size="lg" className="w-full" disabled={busy || !quick.link.trim()}>
             {busy ? <Loader2 className="animate-spin" /> : <Zap />} Criar cliente
+          </Button>
+        </form>
+      </Dialog>
+
+      <Dialog
+        open={moveOpen}
+        onClose={() => setMoveOpen(false)}
+        title="Trocar servidor"
+        description="Cole um link qualquer do servidor novo. Só o endereço do servidor muda em todos os clientes; o usuário e a senha de cada um continuam os mesmos."
+      >
+        <form onSubmit={replaceServer} className="space-y-4">
+          <Field label="Link modelo do servidor novo">
+            <Textarea
+              autoFocus
+              rows={3}
+              className="font-mono text-xs"
+              value={move.link}
+              onChange={(e) => setMove({ ...move, link: e.target.value })}
+              placeholder="http://servidor-novo:8080/get.php?username=USUARIO&password=SENHA&type=m3u_plus"
+              required
+            />
+          </Field>
+          {move.link.trim() && (
+            <p className="text-sm">
+              {newServer ? (
+                <>
+                  Servidor novo: <span className="font-mono font-semibold">{newServer}</span>
+                </>
+              ) : (
+                <span className="text-destructive">Link inválido. Cole um link que comece com http:// ou https://</span>
+              )}
+            </p>
+          )}
+          <Field label="Servidor antigo">
+            {!servers ? (
+              <Skeleton className="h-10 w-full" />
+            ) : servers.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Nenhum cliente com lista por link ou Xtream.</p>
+            ) : (
+              <div className="space-y-2">
+                {servers.map((s) => (
+                  <label key={s.server} className="flex cursor-pointer items-center gap-3 rounded-lg border border-border p-3 text-sm has-[:checked]:border-primary">
+                    <input type="radio" name="from" checked={move.from === s.server} onChange={() => setMove({ ...move, from: s.server })} />
+                    <span className="min-w-0 flex-1 break-all font-mono text-xs">{s.server}</span>
+                    <Badge>{s.clients} cliente(s)</Badge>
+                  </label>
+                ))}
+              </div>
+            )}
+          </Field>
+          <Button variant="gradient" size="lg" className="w-full" disabled={busy || !newServer || !move.from || newServer === move.from}>
+            {busy ? <Loader2 className="animate-spin" /> : <ArrowLeftRight />} {move.from ? `Trocar em ${moveCount} cliente(s)` : "Trocar servidor"}
           </Button>
         </form>
       </Dialog>

@@ -249,6 +249,42 @@ function combineChecks(results) {
 
 const MAX_LISTS = 5;
 
+/** Servidor (endereco) de uma lista do fornecedor: "http://srv:8080". Lista colada nao tem servidor. */
+function sourceServer(p) {
+  const raw = p?.kind === "xtream" ? p.xtream_server : p?.kind === "m3u_url" ? p.url : "";
+  try {
+    return raw ? new URL(raw).origin.toLowerCase() : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Troca so o servidor de um link, mantendo caminho, usuario e senha: http://velho/get.php?... -> http://novo/get.php?... */
+function moveLink(link, from, to) {
+  if (!link) return link;
+  let u;
+  try {
+    u = new URL(link);
+  } catch {
+    return link;
+  }
+  if (u.origin.toLowerCase() !== from) return link;
+  const t = new URL(to);
+  u.protocol = t.protocol;
+  u.hostname = t.hostname;
+  u.port = t.port; // vazio = porta padrao (sem isso a porta antiga continuaria no link)
+  return u.toString();
+}
+
+/** Lista com o servidor trocado (ou a mesma, se ela for de outro servidor). */
+function moveSource(p, from, to) {
+  if (!p?.kind || sourceServer(p) !== from) return p;
+  const next = { ...p, epg_url: moveLink(p.epg_url, from, to) };
+  if (p.kind === "xtream") next.xtream_server = moveLink(p.xtream_server, from, to).replace(/\/+$/, "");
+  else next.url = moveLink(p.url, from, to);
+  return next;
+}
+
 /** Listas do cliente: a principal (source) e as extras (extra_sources), que completam o catalogo. */
 function allSources(c) {
   return [c.source, ...(c.extra_sources || [])].filter((p) => p?.kind);
@@ -909,6 +945,56 @@ export function createApp() {
       );
       await refreshListStatus(c, { force: true });
       res.status(201).json(clientResponse(req, c));
+    }),
+  );
+
+  // Troca de servidor do fornecedor: atualiza o endereco das listas de todos os clientes, mantendo usuario e senha.
+  app.get(
+    "/api/servers",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      const count = new Map();
+      for (const c of await db().clients.list()) {
+        for (const server of new Set(allSources(c).map(sourceServer).filter(Boolean))) count.set(server, (count.get(server) || 0) + 1);
+      }
+      res.json([...count].map(([server, clients]) => ({ server, clients })).sort((a, b) => b.clients - a.clients));
+    }),
+  );
+
+  app.post(
+    "/api/servers/replace",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const from = String(req.body?.from || "").trim().toLowerCase();
+      let to;
+      try {
+        to = new URL(String(req.body?.link || "").trim());
+      } catch {
+        to = null;
+      }
+      if (!to || !/^https?:$/.test(to.protocol)) throw new HttpError(400, "Cole um link do servidor novo (http://servidor/get.php?username=...&password=...)");
+      to = to.origin.toLowerCase();
+      if (!from) throw new HttpError(400, "Escolha o servidor antigo");
+      if (from === to) throw new HttpError(400, "O servidor novo e igual ao antigo");
+      let clients = 0;
+      for (const c of await db().clients.list()) {
+        const source = moveSource(c.source, from, to);
+        const extra = (c.extra_sources || []).map((p) => moveSource(p, from, to));
+        if (source === c.source && extra.every((p, i) => p === c.extra_sources[i])) continue;
+        await db().clients.update(c.id, { source, extra_sources: extra });
+        forgetClient(c.id);
+        listChecks.delete(c.id);
+        clients++;
+      }
+      let playlists = 0;
+      for (const p of await db().playlists.list()) {
+        const moved = moveSource(p, from, to);
+        if (moved === p) continue;
+        await db().playlists.update(p.id, { url: moved.url, xtream_server: moved.xtream_server, epg_url: moved.epg_url });
+        playlists++;
+      }
+      console.log(`[rtec] Servidor trocado: ${from} -> ${to} (${clients} cliente(s), ${playlists} lista(s))`);
+      res.json({ from, to, clients, playlists });
     }),
   );
 
