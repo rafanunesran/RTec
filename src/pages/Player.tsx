@@ -17,7 +17,7 @@ import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
 import ListExpired from "@/components/player/ListExpired";
-import GamesPage from "@/components/player/Games";
+import GamesPage, { GameAlerts } from "@/components/player/Games";
 import Screensaver, { saverItem, type SaverItem } from "@/components/player/Screensaver";
 import { tvScreenOn } from "@/lib/tvnav";
 import { castControl, castPlay, castTarget, knownDevices, onCastPlay, setCastNow, setCastTarget, startCast, useCast, type CastPlay } from "@/lib/cast";
@@ -1648,6 +1648,8 @@ function Watch({
         onLogout={logout}
         onManageProfiles={() => onSwitchProfile(true)}
       />
+      {/* Alertas dos Jogos do dia: avisa quando o jogo comeca, mesmo fora da aba (e por cima do video). */}
+      <GameAlerts onPlay={(c, list) => play(c, list)} isLocked={isLocked} />
     </div>
   );
 }

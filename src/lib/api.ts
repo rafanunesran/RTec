@@ -178,6 +178,9 @@ export type Game = {
   id: string;
   start: string;
   league: string;
+  league_id: string;
+  /** "Futebol", "Basquete", "Futebol americano". */
+  sport: string;
   home: GameTeam;
   away: GameTeam;
   state: "pre" | "in" | "post";
@@ -188,7 +191,8 @@ export type Game = {
   guessed: boolean;
   channels: (Channel & { broadcast: string })[];
 };
-export type GamesResponse = { updated_at: string; games: Game[] };
+export type GameLeague = { id: string; name: string; sport: string };
+export type GamesResponse = { updated_at: string; games: Game[]; leagues: GameLeague[] };
 
 /** Ficha de um filme/serie (fornecedor + internet). */
 export type TitleInfo = {

@@ -35,7 +35,11 @@ export const LEAGUES = [
   { id: "soccer/arg.1", name: "Argentino", tv: [] },
   { id: "soccer/fifa.friendly", name: "Amistosos", tv: [] },
   { id: "basketball/nba", name: "NBA", tv: [] },
+  { id: "football/nfl", name: "NFL", tv: ["ESPN", "Disney+"] },
 ];
+const SPORTS = { soccer: "Futebol", basketball: "Basquete", football: "Futebol americano" };
+/** Campeonatos para as preferencias do cliente (filtros). */
+export const leagueList = () => LEAGUES.map((l) => ({ id: l.id.split("/")[1], name: l.name, sport: SPORTS[l.id.split("/")[0]] || "Outros" }));
 
 // ---------- Datas no horario de Brasilia ----------
 const dayFmt = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
@@ -83,6 +87,8 @@ export function parseEvent(ev, league) {
     id: `${league.id.split("/")[1]}:${ev.id}`,
     start: new Date(start).toISOString(),
     league: league.name,
+    league_id: league.id.split("/")[1],
+    sport: SPORTS[league.id.split("/")[0]] || "Outros",
     home: team(home),
     away: team(away),
     state,

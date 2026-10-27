@@ -58,6 +58,8 @@ test("evento da ESPN: canais do Brasil, ou os provaveis do campeonato quando nao
   };
   const g = parseEvent(ev, league);
   assert.equal(g.id, "bra.1:9");
+  assert.equal(g.sport, "Futebol");
+  assert.equal(g.league_id, "bra.1");
   assert.equal(g.home.name, "Flamengo");
   assert.equal(g.away.score, "1");
   assert.equal(g.state, "in");

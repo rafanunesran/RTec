@@ -14,7 +14,7 @@ import { checkSource } from "./listcheck.js";
 import { episodeInfo, episodeOf, normTitle } from "./titlekey.js";
 import { createCatalog, sourceKey } from "./merge.js";
 import { hasDataKey, needsSeal, openUrl, sealUrl } from "./seal.js";
-import { getAgenda, matchGames } from "./games.js";
+import { getAgenda, leagueList, matchGames } from "./games.js";
 
 const COOKIE = "rtec_session";
 const CLIENT_COOKIE = "rtec_player";
@@ -1269,7 +1269,7 @@ export function createApp() {
         games = matchGames(agenda.games, channels.filter((ch) => ch.kind === "live" && !adult(ch.group)));
       }
       res.setHeader("Cache-Control", "no-store");
-      res.json({ updated_at: agenda.updated_at, games });
+      res.json({ updated_at: agenda.updated_at, games, leagues: leagueList() });
     }),
   );
 
