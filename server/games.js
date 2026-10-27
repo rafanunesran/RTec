@@ -91,17 +91,25 @@ export function parseEvent(ev, league) {
   };
 }
 
+// A ESPN recusa intervalo de datas e o parametro limit: busca dia por dia (hoje e os proximos).
 async function fetchLeague(league, from, to) {
-  const q = new URLSearchParams({ dates: `${ymd(from)}-${ymd(to)}`, lang: "pt", region: "br", limit: "300" });
-  const res = await fetch(`${espnBase()}/${league.id}/scoreboard?${q}`, { signal: AbortSignal.timeout(8000), headers: { Accept: "application/json", "User-Agent": UA } });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  return (data.events || []).map((ev) => parseEvent(ev, league)).filter(Boolean);
+  const days = [];
+  for (let t = from.getTime(); brDay(new Date(t)) <= brDay(to); t += 24 * 3600_000) days.push(ymd(new Date(t)));
+  const lists = await Promise.all(
+    days.map(async (day) => {
+      const q = new URLSearchParams({ dates: day, lang: "pt", region: "br" });
+      const res = await fetch(`${espnBase()}/${league.id}/scoreboard?${q}`, { signal: AbortSignal.timeout(8000), headers: { Accept: "application/json", "User-Agent": UA } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      return (data.events || []).map((ev) => parseEvent(ev, league)).filter(Boolean);
+    }),
+  );
+  return lists.flat();
 }
 
 /** Busca todos os campeonatos e devolve so os jogos de hoje em diante (ate DAYS_AHEAD dias), em ordem. */
 export async function buildAgenda(now = new Date(), fetcher = fetchLeague) {
-  const from = new Date(now.getTime() - 24 * 3600_000); // a ESPN agrupa por dia nos EUA: pega um dia antes
+  const from = new Date(now.getTime() - 2 * 3600_000); // a ESPN agrupa pelo dia nos EUA (1 a 2 h atras de Brasilia)
   const to = new Date(now.getTime() + DAYS_AHEAD * 24 * 3600_000);
   const today = brDay(now);
   const last = brDay(to);
@@ -109,9 +117,11 @@ export async function buildAgenda(now = new Date(), fetcher = fetchLeague) {
   const games = [];
   const seen = new Set();
   let failed = 0;
+  let reason = "";
   results.forEach((r, i) => {
     if (r.status === "rejected") {
       failed++;
+      reason ||= r.reason?.message || String(r.reason);
       console.warn(`[rtec] Jogos: ${LEAGUES[i].id} falhou: ${r.reason?.message || r.reason}`);
       return;
     }
@@ -123,7 +133,7 @@ export async function buildAgenda(now = new Date(), fetcher = fetchLeague) {
       games.push(g);
     }
   });
-  if (failed === LEAGUES.length) throw new Error("Nenhum campeonato respondeu");
+  if (failed === LEAGUES.length) throw new Error(`Nenhum campeonato respondeu (${reason})`);
   games.sort((a, b) => a.start.localeCompare(b.start) || a.league.localeCompare(b.league));
   return { updated_at: now.toISOString(), games };
 }

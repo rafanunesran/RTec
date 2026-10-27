@@ -1253,7 +1253,8 @@ export function createApp() {
         agenda = await getAgenda(getStore());
       } catch (err) {
         console.warn(`[rtec] Jogos: agenda indisponivel: ${err.message}`);
-        throw new HttpError(503, "Agenda de jogos indisponivel agora. Tente de novo em alguns minutos.");
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(503).json({ error: `Agenda de jogos indisponível agora (${err.message}). Tente de novo em alguns minutos.` });
       }
       const adult = (name) => ADULT_GROUP.test(name || "");
       let games;
