@@ -16,7 +16,7 @@ const FRESH_LIVE_MS = 5 * 60_000; // com jogo rolando: a cada 5 min (placar)
  */
 export const LEAGUES = [
   { id: "soccer/bra.1", name: "Brasileirão Série A", tv: ["Premiere", "Globo", "SporTV", "Record", "Prime Video", "CazéTV"] },
-  { id: "soccer/bra.2", name: "Brasileirão Série B", tv: ["ESPN", "Disney+", "Band"] },
+  { id: "soccer/bra.2", name: "Brasileirão Série B", tv: ["ESPN", "Disney+", "XSports", "SportyNet"] },
   { id: "soccer/bra.3", name: "Brasileirão Série C", tv: [] },
   { id: "soccer/bra.copa_do_brazil", name: "Copa do Brasil", tv: ["Globo", "SporTV", "Premiere", "Prime Video"] },
   { id: "soccer/bra.camp.paulista", name: "Paulistão", tv: [] },
@@ -26,8 +26,9 @@ export const LEAGUES = [
   { id: "soccer/uefa.champions", name: "Champions League", tv: ["TNT Sports", "Max", "SBT"] },
   { id: "soccer/uefa.europa", name: "Europa League", tv: [] },
   { id: "soccer/eng.1", name: "Premier League", tv: ["ESPN", "Disney+"] },
+  { id: "soccer/eng.league_cup", name: "Copa da Liga Inglesa", tv: ["ESPN", "Disney+"] },
   { id: "soccer/esp.1", name: "LaLiga", tv: ["ESPN", "Disney+"] },
-  { id: "soccer/ita.1", name: "Série A Italiana", tv: ["ESPN", "Disney+"] },
+  { id: "soccer/ita.1", name: "Série A Italiana", tv: ["ESPN", "Disney+", "CazéTV"] },
   { id: "soccer/ger.1", name: "Bundesliga", tv: [] },
   { id: "soccer/fra.1", name: "Ligue 1", tv: [] },
   { id: "soccer/por.1", name: "Liga Portugal", tv: [] },

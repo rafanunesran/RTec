@@ -181,9 +181,11 @@ function GameCard({ game: g, onPlay, currentId }: { game: Game; onPlay: (c: Chan
           ))}
         </div>
       )}
-      {(!!missing.length || !g.broadcasts.length) && (
+      {(!!missing.length || !g.broadcasts.length || g.guessed) && (
         <p className="mt-2 text-xs text-muted-foreground">
-          {g.broadcasts.length ? (
+          {g.guessed && !missing.length ? (
+            "Canais de costume do campeonato"
+          ) : g.broadcasts.length ? (
             <>
               {g.channels.length ? "Também passa em" : "Passa em"} {missing.join(", ")}
               {!g.channels.length && " · não está na sua lista"}
