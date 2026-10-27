@@ -262,7 +262,7 @@ function Team({ team, right, fav }: { team: GameTeam; right?: boolean; fav?: boo
       <div className="grid h-8 w-8 shrink-0 place-items-center">
         {team.logo ? <img src={team.logo} alt="" loading="lazy" className="h-8 w-8 object-contain" onError={(e) => (e.currentTarget.style.display = "none")} /> : <Trophy className="h-4 w-4 text-muted-foreground" />}
       </div>
-      <span className="line-clamp-2 min-w-0 break-words text-sm font-semibold leading-tight">
+      <span className="line-clamp-2 min-w-0 text-sm font-semibold leading-tight">
         {fav && <Star className={cn("inline h-3.5 w-3.5 fill-warning text-warning", right ? "ml-1" : "mr-1")} aria-label="Time favorito" />}
         {team.name}
       </span>
@@ -292,51 +292,57 @@ function GameCard({
   const soon = !started && Date.parse(g.start) - now < 60 * 60_000;
   const missing = g.broadcasts.filter((b) => !g.channels.some((c) => c.broadcast === b));
   return (
-    <li className={cn("flex overflow-hidden rounded-2xl border bg-card", live && "border-destructive/50", alert && !live && "border-primary/50")}>
-      {/* Horario em destaque, a esquerda */}
-      <div className={cn("flex w-[88px] shrink-0 flex-col items-center justify-center gap-1 border-r px-2 py-3 text-center", live ? "bg-destructive/10" : soon ? "bg-primary/10" : "bg-muted/40")}>
+    <li className={cn("rounded-2xl border bg-card p-3 sm:p-4", live && "border-destructive/50 bg-destructive/[0.06]", alert && !live && "border-primary/50")}>
+      {/* Linha de cima: horario (ou AO VIVO + tempo de jogo) em destaque, campeonato e alerta */}
+      <div className="flex items-center gap-3">
         {live ? (
-          <>
-            <span className="inline-flex items-center gap-1 rounded bg-destructive px-1.5 py-0.5 text-[11px] font-bold text-white">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" /> AO VIVO
+          <div className="flex shrink-0 items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md bg-destructive px-2 py-1 text-xs font-bold uppercase leading-none text-white">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-white" /> Ao vivo
             </span>
-            <span className="text-2xl font-extrabold tabular-nums leading-none">
-              {g.home.score || 0}-{g.away.score || 0}
-            </span>
-            {g.detail && <span className="text-[11px] font-semibold text-destructive">{g.detail}</span>}
-          </>
+            {g.detail && <span className="whitespace-nowrap text-sm font-bold tabular-nums text-destructive">{g.detail}</span>}
+          </div>
         ) : (
-          <>
-            <span className="text-2xl font-extrabold tabular-nums leading-none tracking-tight">{hour(new Date(g.start))}</span>
-            <span className={cn("text-[11px] font-semibold", soon ? "text-primary" : "text-muted-foreground")}>{started ? "começando" : countdown(g.start, now) || dayLabel(dayKey(new Date(g.start))).split(",")[0]}</span>
-          </>
+          <div className="flex shrink-0 items-baseline gap-2">
+            <span className="whitespace-nowrap text-2xl font-extrabold tabular-nums leading-none tracking-tight">{hour(new Date(g.start))}</span>
+            <span className={cn("whitespace-nowrap text-xs font-semibold", soon ? "text-primary" : "text-muted-foreground")}>
+              {started ? "começando" : countdown(g.start, now)}
+            </span>
+          </div>
+        )}
+        <span className="min-w-0 flex-1 truncate text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{g.league}</span>
+        {!started && (
+          <button
+            onClick={onAlert}
+            aria-pressed={alert}
+            aria-label={alert ? "Remover alerta" : "Avisar quando começar"}
+            title={alert ? "Remover alerta" : "Avisar quando começar"}
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold transition-colors",
+              alert ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {alert ? <BellRing className="h-3.5 w-3.5" /> : <Bell className="h-3.5 w-3.5" />}
+            {alert ? "Alerta ativo" : "Alertar"}
+          </button>
         )}
       </div>
 
-      <div className="min-w-0 flex-1 p-3">
-        <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-          <span className="truncate font-semibold uppercase tracking-wide">{g.league}</span>
-          {!started && (
-            <button
-              onClick={onAlert}
-              aria-pressed={alert}
-              aria-label={alert ? "Remover alerta" : "Avisar quando começar"}
-              title={alert ? "Remover alerta" : "Avisar quando começar"}
-              className={cn(
-                "ml-auto inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 font-semibold transition-colors",
-                alert ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {alert ? <BellRing className="h-3.5 w-3.5" /> : <Bell className="h-3.5 w-3.5" />}
-              {alert ? "Alerta ativo" : "Alertar"}
-            </button>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <Team team={g.home} fav={isFavTeam(prefs, g.home.name)} />
-          <span className="shrink-0 px-1 text-sm font-bold text-muted-foreground">x</span>
-          <Team team={g.away} right fav={isFavTeam(prefs, g.away.name)} />
-        </div>
+      {/* Times com o placar (ou "x") no meio */}
+      <div className="mt-3 flex items-center gap-2">
+        <Team team={g.home} fav={isFavTeam(prefs, g.home.name)} />
+        {live ? (
+          <span className="shrink-0 whitespace-nowrap px-2 text-2xl font-extrabold tabular-nums leading-none">
+            {g.home.score || 0}
+            <span className="mx-1.5 text-muted-foreground">–</span>
+            {g.away.score || 0}
+          </span>
+        ) : (
+          <span className="shrink-0 px-2 text-sm font-bold text-muted-foreground">x</span>
+        )}
+        <Team team={g.away} right fav={isFavTeam(prefs, g.away.name)} />
+      </div>
+      <div className="min-w-0">
         {!!g.channels.length && <ChannelButtons game={g} onPlay={onPlay} currentId={currentId} />}
         {(!!missing.length || !g.broadcasts.length || g.guessed) && (
           <p className="mt-2 text-xs text-muted-foreground">
@@ -358,10 +364,16 @@ function GameCard({
   );
 }
 
+const CHANNELS_SHOWN = 4;
+
 function ChannelButtons({ game: g, onPlay, currentId }: { game: Game; onPlay: (c: Channel, list: Channel[]) => void; currentId?: string }) {
+  // Muitos canais (Disney Plus 1 a 6...): mostra os primeiros e o resto num toque.
+  const [open, setOpen] = useState(false);
+  const extra = g.channels.length - CHANNELS_SHOWN;
+  const list = open || extra <= 1 ? g.channels : g.channels.slice(0, CHANNELS_SHOWN);
   return (
     <div className="mt-3 flex flex-wrap gap-1.5">
-      {g.channels.map((c) => (
+      {list.map((c) => (
         <button
           key={c.id}
           onClick={() => onPlay(c, g.channels)}
@@ -374,6 +386,11 @@ function ChannelButtons({ game: g, onPlay, currentId }: { game: Game; onPlay: (c
           <span className="truncate">{c.name}</span>
         </button>
       ))}
+      {extra > 1 && (
+        <button onClick={() => setOpen((v) => !v)} className="rounded-full bg-muted px-3 py-1.5 text-xs font-semibold text-muted-foreground transition-colors hover:text-foreground">
+          {open ? "Menos" : `+${extra} canais`}
+        </button>
+      )}
     </div>
   );
 }
