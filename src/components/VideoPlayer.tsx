@@ -18,11 +18,38 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
   if (type === "hls") {
     const { default: Hls } = await import("hls.js");
     if (Hls.isSupported()) {
-      const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+      // Rede de IPTV oscila: espera mais pelos pedacos, tenta de novo varias vezes e fica alguns segundos
+      // atras do "ao vivo" para ter folga. O modo de baixa latencia deixava o video sem reserva e travando.
+      const load = (ttfb: number, total: number) => ({
+        default: {
+          maxTimeToFirstByteMs: ttfb,
+          maxLoadTimeMs: total,
+          timeoutRetry: { maxNumRetry: 4, retryDelayMs: 0, maxRetryDelayMs: 0 },
+          errorRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+        },
+      });
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        liveSyncDurationCount: 4,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        backBufferLength: 30, // sem limite a memoria das TVs enche e o video comeca a engasgar
+        maxBufferHole: 0.5,
+        nudgeMaxRetry: 6,
+        fragLoadPolicy: load(10000, 30000),
+        playlistLoadPolicy: load(10000, 15000),
+        manifestLoadPolicy: load(10000, 15000),
+      });
+      let recovers: number[] = [];
       hls.on(Hls.Events.ERROR, (_e, data) => {
         if (!data.fatal) return;
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else onFail(describe(data.response?.code, data.details));
+        // Erro de decodificacao: tenta recuperar ali mesmo (ate 2 vezes por minuto) antes de reconectar.
+        recovers = recovers.filter((t) => Date.now() - t < 60000);
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && recovers.length < 2) {
+          recovers.push(Date.now());
+          hls.recoverMediaError();
+        } else onFail(describe(data.response?.code, data.details));
       });
       hls.loadSource(src);
       hls.attachMedia(video);
@@ -46,9 +73,12 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
       {
         enableWorker: true,
         enableStashBuffer: true, // junta um pouco de video antes de tocar: comeca mais rapido e trava menos
-        stashInitialSize: 384 * 1024,
+        stashInitialSize: 512 * 1024,
         lazyLoad: false,
         autoCleanupSourceBuffer: true,
+        // Guarda so 30 s ja vistos: o padrao (3 min) enche a memoria das TVs e o video engasga.
+        autoCleanupMaxBackwardDuration: 30,
+        autoCleanupMinBackwardDuration: 15,
         liveBufferLatencyChasing: false, // pular para o "ao vivo" toda hora deixa o video carregando sem parar
         liveSync: false,
       },
@@ -325,12 +355,33 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       setState("playing");
       void applyBoost();
     };
+    // Ao vivo parado com video ja baixado mais a frente (buraco no sinal ou decodificador engasgado):
+    // pula para o trecho seguinte em vez de ficar carregando.
+    const unstick = () => {
+      const b = video.buffered;
+      const t = video.currentTime;
+      for (let i = 0; i < b.length; i++) {
+        if (b.end(i) <= t + 0.3) continue;
+        const to = b.start(i) > t ? b.start(i) + 0.1 : b.end(i) - t > 3 ? t + 0.5 : 0;
+        if (to && to - t < 10) {
+          video.currentTime = to;
+          tryPlay();
+          return true;
+        }
+        return false;
+      }
+      return false;
+    };
     const onWaiting = () => {
       setState((s) => (s === "error" ? s : "loading"));
-      // Ao vivo travado no "carregando" depois de ja ter tocado: reconecta.
+      // Ao vivo travado no "carregando" depois de ja ter tocado: tenta destravar e, se nao voltar, reconecta.
       if (live && playedAt) {
         clearTimeout(stallTimer);
-        stallTimer = setTimeout(() => !cancelled && video.paused === false && fail("O sinal travou."), 12000);
+        stallTimer = setTimeout(() => {
+          if (cancelled || video.paused) return;
+          unstick();
+          stallTimer = setTimeout(() => !cancelled && video.paused === false && fail("O sinal travou."), 8000);
+        }, 2000);
       }
     };
     const onCanPlay = () => video.paused && tryPlay();
