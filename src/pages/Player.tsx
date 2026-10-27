@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, RotateCw, Search, Settings, Share, SquarePlus, Tv, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, RotateCw, Search, Settings, Share, SquarePlus, Trophy, Tv, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, isListExpired, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
@@ -17,6 +17,7 @@ import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
 import ListExpired from "@/components/player/ListExpired";
+import GamesPage from "@/components/player/Games";
 import Screensaver, { saverItem, type SaverItem } from "@/components/player/Screensaver";
 import { tvScreenOn } from "@/lib/tvnav";
 import { castControl, castPlay, castTarget, knownDevices, onCastPlay, setCastNow, setCastTarget, startCast, useCast, type CastPlay } from "@/lib/cast";
@@ -32,7 +33,7 @@ const ADULT = /(adult|xxx|\+18|18\+|adulto|er[oó]tic|hot\b|sexy|porn)/i;
 type Section = Channel["kind"];
 /** TV ao vivo e radios: lista de canais (sem ponto onde parou, sem filtros de filme). */
 const liveLike = (k: string) => k === "live" || k === "radio";
-type Page = "home" | "all" | "section";
+type Page = "home" | "all" | "section" | "games";
 
 /** Minusculas e sem acentos (busca). */
 const fold = (t: string) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -1036,6 +1037,13 @@ function Watch({
       pushNav();
       setMovie(c);
     }, c.group);
+  // A aba Jogos do dia fica logo depois de Series (ou Filmes / TV ao vivo, se a lista nao tiver series).
+  const gamesAfter: Section = counts.series > 0 ? "series" : counts.movie > 0 ? "movie" : "live";
+  const goGames = () => {
+    if (page === "games") return;
+    pushNav();
+    setPage("games");
+  };
   const openItem = (c: Channel) =>
     c.kind === "series" && (c.series_id || c.id.startsWith("serie:")) ? openSeriesFrom(c) : c.kind === "movie" ? openMovie(c) : play(c, null);
 
@@ -1178,7 +1186,10 @@ function Watch({
             { key: "all", label: "Buscar", icon: Search, active: page === "all", onClick: () => page !== "all" && (pushNav(), setPage("all")) },
             ...sections
               .filter((s) => counts[s.key] > 0 || s.key === "live")
-              .map((s) => ({ key: s.key, label: s.label, icon: s.icon, active: page === "section" && section === s.key, onClick: () => goSection(s.key) })),
+              .flatMap((s) => [
+                { key: s.key, label: s.label, icon: s.icon, active: page === "section" && section === s.key, onClick: () => goSection(s.key) },
+                ...(s.key === gamesAfter ? [{ key: "games", label: "Jogos do dia", icon: Trophy, active: page === "games", onClick: goGames }] : []),
+              ]),
           ]}
           viewer={viewer}
           onProfile={() => onSwitchProfile(false)}
@@ -1243,7 +1254,26 @@ function Watch({
                   <Icon className="h-4 w-4" /> {label}
                   {!xt && <span className={cn("rounded-full px-1.5 text-[11px] tabular-nums", page === "section" && section === key ? "bg-background/15" : "bg-muted")}>{counts[key]}</span>}
                 </button>
-              ))}
+              ))
+              // Jogos do dia: logo depois de Filmes e Series
+              .flatMap((el) =>
+                el.key === gamesAfter
+                  ? [
+                      el,
+                      <button
+                        key="games"
+                        onClick={goGames}
+                        aria-pressed={page === "games"}
+                        className={cn(
+                          "flex shrink-0 items-center gap-2 rounded-full px-4 py-1.5 text-sm font-semibold transition-all",
+                          page === "games" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                        )}
+                      >
+                        <Trophy className="h-4 w-4" /> Jogos do dia
+                      </button>,
+                    ]
+                  : [el],
+              )}
           </nav>
           {!xt && (data?.playlists.length ?? 0) > 1 && (
             <Select value={playlistId} onChange={(e) => setPlaylistId(e.target.value)} aria-label="Lista" className="h-9 w-[150px] shrink-0 text-xs sm:w-[190px]">
@@ -1278,6 +1308,8 @@ function Watch({
                 onFavorite={toggleFavorite}
                 epg={epg}
               />
+            ) : page === "games" ? (
+              <GamesPage onPlay={(c, list) => play(c, list)} isLocked={isLocked} currentId={current?.id} tv={tv} />
             ) : page === "all" ? (
               <AllPage
                 query={allQuery}

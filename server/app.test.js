@@ -139,6 +139,20 @@ function sourceHandler(req, res) {
         `#EXTINF:-1 group-title="Series Drama",Serie Y S01 E01\nhttp://127.0.0.1:${port}/series/u/p/20.mkv\n`,
     );
   }
+  // Placar simulado da ESPN (Jogos do dia): um jogo do Brasileirao hoje, os outros campeonatos fora do ar.
+  if (req.url.startsWith("/espn/")) {
+    if (!req.url.startsWith("/espn/soccer/bra.1/scoreboard")) return res.writeHead(404).end();
+    const start = new Date(Date.now() + 3600_000).toISOString();
+    const team = (homeAway, name) => ({ homeAway, score: "0", team: { displayName: name, logo: "https://a/x.png" } });
+    return res.writeHead(200, { "Content-Type": "application/json" }).end(
+      JSON.stringify({
+        events: [
+          { id: "1", date: start, status: { type: { state: "pre" } }, competitions: [{ competitors: [team("home", "Flamengo"), team("away", "Palmeiras")], geoBroadcasts: [{ media: { shortName: "ESPN" } }] }] },
+          { id: "2", date: start, status: { type: { state: "pre" } }, competitions: [{ competitors: [team("home", "Santos"), team("away", "Vasco")], broadcasts: [{ names: ["Record"] }] }] },
+        ],
+      }),
+    );
+  }
   if (req.url === "/pagina.html") return res.writeHead(200, { "Content-Type": "text/html" }).end("<html><body>login</body></html>");
   if (req.url === "/vazia.m3u") return res.end("");
   if (req.url === "/ua.m3u") return res.end(`#EXTM3U\n#EXTINF:-1,${req.headers["user-agent"]}\nhttp://example.com/ua.ts\n`);
@@ -513,6 +527,17 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
 
   const epg = (await call("GET", "/api/player/epg?ids=xt:1")).body;
   assert.equal(epg["xt:1"][0].title, "Jogo ao vivo");
+
+  // Jogos do dia: agenda montada no servidor e cruzada com os canais ao vivo do cliente
+  process.env.GAMES_API_URL = `http://127.0.0.1:${port}/espn`;
+  const games = (await call("GET", "/api/player/games")).body;
+  delete process.env.GAMES_API_URL;
+  assert.deepEqual(games.games.map((g) => `${g.home.name} x ${g.away.name}`), ["Flamengo x Palmeiras", "Santos x Vasco"]);
+  const [fla, santos] = games.games;
+  assert.deepEqual(fla.channels.map((ch) => [ch.name, ch.group, ch.broadcast]), [["ESPN", "Esportes", "ESPN"]]);
+  assert.match(fla.channels[0].src, /^\/api\/player\/proxy\?/, "canal pronto para tocar");
+  assert.deepEqual(santos.broadcasts, ["Record"]);
+  assert.deepEqual(santos.channels, [], "canal que o cliente nao tem");
 });
 
 test("trocar a lista nao perde historico e favoritos: religa cada titulo pelo nome", async () => {

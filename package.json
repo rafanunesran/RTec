@@ -9,7 +9,7 @@
     "dev:web": "vite",
     "build": "vite build",
     "start": "NODE_ENV=production node server/index.js",
-    "test": "node --test server/app.test.js server/seal.test.js",
+    "test": "node --test server/app.test.js server/seal.test.js server/games.test.js",
     "test:firestore": "npx -y firebase-tools@14 emulators:exec --only firestore --project demo-rtec \"node --test server/app.test.js\"",
     "app:android": "bash scripts/build-android.sh",
     "app:tizen": "bash scripts/build-tizen.sh",

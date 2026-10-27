@@ -172,6 +172,24 @@ export const api = {
   del: <T>(url: string) => request<T>("DELETE", url),
 };
 
+/** Jogos do dia: agenda montada no servidor, ja com os canais da lista do cliente que passam cada jogo. */
+export type GameTeam = { name: string; logo: string; score: string };
+export type Game = {
+  id: string;
+  start: string;
+  league: string;
+  home: GameTeam;
+  away: GameTeam;
+  state: "pre" | "in" | "post";
+  detail: string;
+  /** Onde passa no Brasil (canais e streaming). */
+  broadcasts: string[];
+  /** A fonte nao informou o canal: sao os canais de costume do campeonato. */
+  guessed: boolean;
+  channels: (Channel & { broadcast: string })[];
+};
+export type GamesResponse = { updated_at: string; games: Game[] };
+
 /** Ficha de um filme/serie (fornecedor + internet). */
 export type TitleInfo = {
   name: string;

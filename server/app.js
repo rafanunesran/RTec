@@ -14,10 +14,13 @@ import { checkSource } from "./listcheck.js";
 import { episodeInfo, episodeOf, normTitle } from "./titlekey.js";
 import { createCatalog, sourceKey } from "./merge.js";
 import { hasDataKey, needsSeal, openUrl, sealUrl } from "./seal.js";
+import { getAgenda, matchGames } from "./games.js";
 
 const COOKIE = "rtec_session";
 const CLIENT_COOKIE = "rtec_player";
 const DEFAULT_PIN = "0000";
+// Categorias adultas (mesma regra do reprodutor): ficam fora dos Jogos do dia.
+const ADULT_GROUP = /(adult|xxx|\+18|18\+|adulto|er[oó]tic|hot\b|sexy|porn)/i;
 const MAX_MANUAL_BYTES = 900 * 1024; // um documento do Firestore aceita ate 1 MB
 
 // "direct": o navegador busca o video na fonte (nao gasta banda do servidor).
@@ -1179,62 +1182,93 @@ export function createApp() {
     }),
   );
 
+  /** Canais das listas M3U do cliente, no formato do reprodutor (as listas extras completam a principal). */
+  async function m3uChannels(c, req) {
+    const channels = [];
+    const playlists = [];
+    const errors = [];
+    const sources = await clientPlaylists(c);
+    for (const p of sources) {
+      let text;
+      try {
+        text = await loadPlaylistText(p);
+      } catch (err) {
+        console.warn(`[rtec] Lista do cliente "${c.username}" falhou: ${err.message}`);
+        errors.push(err.message);
+        continue;
+      }
+      // Varias listas do cliente: aparecem como uma lista so (as extras completam a principal).
+      if (!p.id.startsWith(`own-${c.id}`) || !playlists.some((x) => x.id.startsWith(`own-${c.id}`))) playlists.push({ id: p.id, name: p.name });
+      const mode = p.playback || DEFAULT_PLAYBACK;
+      const app = isApp(req) || liteDirect(req);
+      const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
+      for (const e of parseEntries(text, Infinity)) {
+        if (!/^https?:\/\//i.test(e.url)) continue;
+        // Servidores Xtream entregam o mesmo canal em HLS (.m3u8), que toca em mais aparelhos (ex: iPhone).
+        const hlsUrl = /\/live\/.+\.ts$/i.test(e.url.split("?")[0]) ? e.url.replace(/\.ts(\?|$)/i, ".m3u8$1") : "";
+        // Sem proxy, o navegador vai direto na fonte: prefere HLS, que costuma funcionar melhor assim.
+        const [main, alt] = !viaProxy(mode, e.url, app) && hlsUrl ? [hlsUrl, e.url] : [e.url, hlsUrl];
+        channels.push({
+          id: crypto.createHash("sha1").update(`${p.id}|${e.url}`).digest("hex").slice(0, 12),
+          name: e.name,
+          group: e.group || p.name,
+          logo: logoUrl(c.id, e.logo),
+          src: link(main),
+          type: streamType(main, e.kind),
+          alt: alt ? link(alt) : "",
+          alt_type: alt ? streamType(alt, e.kind) : "",
+          kind: e.kind,
+          epg_id: e.tvg_id,
+          playlist_id: p.id,
+        });
+      }
+    }
+    if (channels.length > MAX_M3U_ITEMS) {
+      return { playlists, channels: [], sources, errors: [`A lista tem ${channels.length.toLocaleString("pt-BR")} itens, grande demais para carregar de uma vez. Cadastre no formato Xtream (servidor, usuario e senha).`] };
+    }
+    const own = new Set(sources.filter((p) => p.id.startsWith(`own-${c.id}`)).map((p) => p.id));
+    return { playlists, channels: mergeOwnChannels(channels, own, playlists[0]?.id), sources, errors };
+  }
+
   app.get(
     "/api/player/channels",
     requireClient,
     wrap(async (req, res) => {
       const c = req.client;
       await touch("clients", c, "last_access_at");
-      const channels = [];
-      const playlists = [];
-      const errors = [];
-      const sources = await clientPlaylists(c);
-      for (const p of sources) {
-        let text;
-        try {
-          text = await loadPlaylistText(p);
-        } catch (err) {
-          console.warn(`[rtec] Lista do cliente "${c.username}" falhou: ${err.message}`);
-          errors.push(err.message);
-          continue;
-        }
-        // Varias listas do cliente: aparecem como uma lista so (as extras completam a principal).
-        if (!p.id.startsWith(`own-${c.id}`) || !playlists.some((x) => x.id.startsWith(`own-${c.id}`))) playlists.push({ id: p.id, name: p.name });
-        const mode = p.playback || DEFAULT_PLAYBACK;
-        const app = isApp(req) || liteDirect(req);
-        const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
-        for (const e of parseEntries(text, Infinity)) {
-          if (!/^https?:\/\//i.test(e.url)) continue;
-          // Servidores Xtream entregam o mesmo canal em HLS (.m3u8), que toca em mais aparelhos (ex: iPhone).
-          const hlsUrl = /\/live\/.+\.ts$/i.test(e.url.split("?")[0]) ? e.url.replace(/\.ts(\?|$)/i, ".m3u8$1") : "";
-          // Sem proxy, o navegador vai direto na fonte: prefere HLS, que costuma funcionar melhor assim.
-          const [main, alt] = !viaProxy(mode, e.url, app) && hlsUrl ? [hlsUrl, e.url] : [e.url, hlsUrl];
-          channels.push({
-            id: crypto.createHash("sha1").update(`${p.id}|${e.url}`).digest("hex").slice(0, 12),
-            name: e.name,
-            group: e.group || p.name,
-            logo: logoUrl(c.id, e.logo),
-            src: link(main),
-            type: streamType(main, e.kind),
-            alt: alt ? link(alt) : "",
-            alt_type: alt ? streamType(alt, e.kind) : "",
-            kind: e.kind,
-            epg_id: e.tvg_id,
-            playlist_id: p.id,
-          });
-        }
+      const { playlists, channels, sources, errors } = await m3uChannels(c, req);
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ playlists, channels, errors, no_source: sources.length === 0 });
+    }),
+  );
+
+  // Jogos do dia: a agenda vem pronta do servidor (games.js), ja cruzada com os canais ao vivo da lista do cliente.
+  app.get(
+    "/api/player/games",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      let agenda;
+      try {
+        agenda = await getAgenda(getStore());
+      } catch (err) {
+        console.warn(`[rtec] Jogos: agenda indisponivel: ${err.message}`);
+        throw new HttpError(503, "Agenda de jogos indisponivel agora. Tente de novo em alguns minutos.");
+      }
+      const adult = (name) => ADULT_GROUP.test(name || "");
+      let games;
+      const cat = catalogFor(c);
+      if (cat) {
+        const [cats, list] = await Promise.all([cat.categories("live"), cat.items("live", "")]).catch(() => [[], []]);
+        const names = new Map(cats.map((x) => [x.id, x.name]));
+        const live = list.filter((it) => !adult(names.get(it.category_id)));
+        games = matchGames(agenda.games, live, (it) => xtreamChannel(c, it, names.get(it.category_id) || "", directXtream(req), cat.sources));
+      } else {
+        const { channels } = await m3uChannels(c, req);
+        games = matchGames(agenda.games, channels.filter((ch) => ch.kind === "live" && !adult(ch.group)));
       }
       res.setHeader("Cache-Control", "no-store");
-      if (channels.length > MAX_M3U_ITEMS) {
-        return res.json({
-          playlists,
-          channels: [],
-          errors: [`A lista tem ${channels.length.toLocaleString("pt-BR")} itens, grande demais para carregar de uma vez. Cadastre no formato Xtream (servidor, usuario e senha).`],
-        });
-      }
-      const own = new Set(sources.filter((p) => p.id.startsWith(`own-${c.id}`)).map((p) => p.id));
-      const merged = mergeOwnChannels(channels, own, playlists[0]?.id);
-      res.json({ playlists, channels: merged, errors, no_source: sources.length === 0 });
+      res.json({ updated_at: agenda.updated_at, games });
     }),
   );
 
