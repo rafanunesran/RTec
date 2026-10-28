@@ -76,7 +76,7 @@ function xtreamApi(req, res) {
         movie_data: { stream_id: 51, name: "Abelha Rainha" },
       });
     case "get_series_info":
-      return json({ info: {}, episodes: { 1: [{ id: 902, episode_num: 2, season: 1, title: "Ep 2", container_extension: "mkv" }, { id: 901, episode_num: 1, season: 1, title: "Ep 1", container_extension: "mp4" }] } });
+      return json({ info: { cover: "https://img.example/capa.jpg" }, episodes: { 1: [{ id: 902, episode_num: 2, season: 1, title: "Ep 2", container_extension: "mkv" }, { id: 901, episode_num: 1, season: 1, title: "Ep 1", container_extension: "mp4" }] } });
     case "get_short_epg": {
       const now = Math.floor(Date.now() / 1000);
       return json({ epg_listings: [{ title: b64("Jogo ao vivo"), description: b64("Final"), start_timestamp: now - 600, stop_timestamp: now + 600 }] });
@@ -521,6 +521,7 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
   const eps = (await call("GET", "/api/player/xtream/series/70?name=Serie%20Teste")).body;
   assert.deepEqual(eps.map((e) => [e.name, e.season, e.episode]), [["Ep 1", 1, 1], ["Ep 2", 1, 2]]);
   assert.equal(eps[0].parent_series, "70");
+  assert.equal(eps[0].cover, "https://img.example/capa.jpg", "episodio leva a capa da serie (para o historico)");
   const acc = (await call("GET", "/api/player/xtream/items?section=movie&limit=10&q=TESTE")).body;
   assert.equal(acc.items[0].name, "Filme Teste", "busca ignora maiusculas/acentos");
   assert.match(plain(eps[1].src), /\/series\/TiaX\/Sen%401\/902\.mkv/);

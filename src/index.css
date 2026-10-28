@@ -82,6 +82,7 @@ html.tv-screen { font-size: max(16px, 1.25vw); }
 /* Linhas de canal: selecionada fica preenchida, como na lista do Duplecast. */
 .tv-nav .channel-row:focus { outline: none; background: hsl(var(--foreground)); color: hsl(var(--background)); }
 .tv-nav .channel-row:focus * { color: hsl(var(--background)) !important; }
+.tv-nav .poster-remove:focus { outline: none; background: hsl(var(--destructive)); color: #fff; }
 
 /* Barra de tempo e volume do player: trilho desenhado por baixo, so a bolinha aparece. */
 .seek-range::-webkit-slider-runnable-track { height: 100%; background: transparent; }

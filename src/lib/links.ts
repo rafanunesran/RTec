@@ -3,7 +3,7 @@ import { api, type Channel } from "@/lib/api";
 // Links que passam pelo servidor de video expiram em 12 h. O que fica guardado no aparelho
 // (historico, favoritos, "continuar assistindo") precisa ser renovado antes de tocar.
 const PROXY = /\/api\/player\/proxy\?/;
-const FIELDS = ["src", "alt", "fallback", "logo"] as const;
+const FIELDS = ["src", "alt", "fallback", "logo", "cover"] as const;
 
 function expiresSoon(url: string) {
   if (!PROXY.test(url)) return false;

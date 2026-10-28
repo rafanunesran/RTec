@@ -651,6 +651,7 @@ function xtreamChannel(c, item, group, app = false, srcs = [c.source]) {
     ...(item.rating ? { rating: item.rating } : {}),
     ...(item.genres?.length ? { genres: item.genres } : {}),
     ...(item.season ? { season: item.season, episode: item.episode } : {}),
+    ...(item.cover ? { cover: logoUrl(c.id, item.cover) } : {}),
     ...(more.length ? { more } : {}),
   };
 }
@@ -709,7 +710,7 @@ const MAX_FAVORITES = 500;
 const MAX_HISTORY = 60;
 const MAX_PROGRESS = 400;
 const MAX_SYNC_BYTES = 900 * 1024; // um documento do Firestore aceita ate 1 MB
-const CHANNEL_TEXT = ["id", "name", "group", "logo", "src", "type", "kind", "epg_id", "playlist_id", "series_id", "parent_series", "alt", "alt_type", "fallback", "xt_id"];
+const CHANNEL_TEXT = ["id", "name", "group", "logo", "src", "type", "kind", "epg_id", "playlist_id", "series_id", "parent_series", "cover", "alt", "alt_type", "fallback", "xt_id"];
 
 /** Guarda so os campos conhecidos de um canal/filme/serie vindo do aparelho. */
 function cleanChannel(c) {

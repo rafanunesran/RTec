@@ -108,6 +108,8 @@ export type Channel = {
   genres?: string[];
   /** Episodio: id da serie a que pertence (para achar o proximo). */
   parent_series?: string;
+  /** Episodio: capa da serie (o logo do episodio costuma ser a cena dele). */
+  cover?: string;
   xt_id?: string; // id do filme no fornecedor (ficha do titulo)
   season?: number;
   episode?: number;

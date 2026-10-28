@@ -186,6 +186,7 @@ export async function seriesEpisodes(creds, seriesId) {
         episode: Number(ep.episode_num) || 0,
         name: ep.title || `Episodio ${ep.episode_num}`,
         logo: ep.info?.movie_image || data?.info?.cover || "",
+        cover: data?.info?.cover || "",
         url: `${base}/${ep.id}.${ext(ep.container_extension, "mp4")}`,
       });
     }

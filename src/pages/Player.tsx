@@ -777,10 +777,14 @@ function Watch({
     else setPinFor(() => fn);
   };
 
-  const addHistory = (c: Channel) =>
+  const addHistory = (c0: Channel) =>
     setHistory((old) => {
       // Episodio: sai do historico o EP anterior da mesma serie, fica so o ultimo tocado.
-      const sk = seriesKeyOf(c);
+      const sk = seriesKeyOf(c0);
+      // Guarda a capa da serie junto (o logo do episodio costuma ser a cena dele).
+      const fromSeries = series && (xt ? c0.group : episodeInfo(c0.name).series) === series.name ? series.logo : "";
+      const cover = c0.cover || (sk && old.find((h) => h.cover && seriesKeyOf(h) === sk)?.cover) || fromSeries;
+      const c = sk && cover ? { ...c0, cover } : c0;
       const next = [c, ...old.filter((h) => h.id !== c.id && (!sk || seriesKeyOf(h) !== sk))].slice(0, HISTORY_MAX);
       saveList("history", next);
       return next;
@@ -1068,7 +1072,7 @@ function Watch({
     if (!isEpisode) return c;
     if (xt && !c.parent_series) return c; // historico antigo, sem a serie de origem
     const name = xt ? c.group : episodeInfo(c.name).series;
-    const logo = series && series.name === name ? series.logo : c.logo;
+    const logo = c.cover || (series && series.name === name ? series.logo : c.logo);
     return seriesCard(xt ? c.parent_series! : name, name, logo);
   };
   const isFavorite = (id: string) => favorites.some((f) => f.id === id);
@@ -1129,6 +1133,14 @@ function Watch({
   const empty = xt ? sections.every((s) => !counts[s.key]) : channels.length === 0;
   const total = pagedAll ? (pageState?.total ?? 0) : section === "series" && !series ? seriesList.length : visible.length;
   const cap = pagedAll ? Infinity : limit;
+  const removeHistory = (c: Channel) => {
+    // Episodio: sai a serie inteira (historico antigo podia ter mais de um EP dela).
+    const sk = seriesKeyOf(c);
+    const next = history.filter((h) => h.id !== c.id && (!sk || seriesKeyOf(h) !== sk));
+    setHistory(next);
+    saveList("history", next);
+    toast.success(`"${c.kind === "series" && favItem(c) !== c ? favItem(c).name : c.name}" saiu do histórico`);
+  };
   const clearHistory = () => {
     const next = history.filter((h) => h.kind !== section);
     setHistory(next);
@@ -1343,6 +1355,7 @@ function Watch({
                   setHistory([]);
                   saveList("history", []);
                 }}
+                onRemove={removeHistory}
                 currentId={current?.id}
                 isFavorite={(id) => isFav(history.find((h) => h.id === id) ?? ({ id } as Channel))}
                 onFavorite={toggleFavorite}
@@ -1564,8 +1577,9 @@ function Watch({
                   const card = favItem(c);
                   if (card === c) return { ...c, progress: fraction(c), sub: metaLine(c) };
                   const ep = c.season ? { season: c.season, episode: c.episode || 0 } : episodeInfo(c.name);
-                  return { ...c, name: card.name, progress: fraction(c), sub: ep.episode ? `Parou em T${ep.season} E${ep.episode}` : undefined };
+                  return { ...c, name: card.name, logo: card.logo, progress: fraction(c), sub: ep.episode ? `Parou em T${ep.season} E${ep.episode}` : undefined };
                 })}
+                onRemove={removeHistory}
                 onSelect={(c) => {
                   const card = favItem(c);
                   if (card === c) openItem(c);
@@ -1573,7 +1587,12 @@ function Watch({
                 }}
               />
             ) : section === "movie" || special ? (
-              <PosterGrid items={visible.slice(0, cap).map((c) => ({ ...c, progress: fraction(c), sub: metaLine(c) }))} activeId={current?.id} onSelect={(c) => openItem(c)} />
+              <PosterGrid
+                items={visible.slice(0, cap).map((c) => ({ ...c, progress: fraction(c), sub: metaLine(c) }))}
+                activeId={current?.id}
+                onSelect={(c) => openItem(c)}
+                onRemove={group === HISTORY ? removeHistory : undefined}
+              />
             ) : (
               <PosterGrid items={seriesList.slice(0, cap).map((s) => ({ ...s, id: s.key }))} onSelect={openSeries} />
             )}
@@ -1821,6 +1840,7 @@ function ChannelRow({
   badge,
   sub,
   onFocus,
+  onRemove,
 }: {
   channel: Channel;
   label?: string;
@@ -1833,6 +1853,8 @@ function ChannelRow({
   badge?: ReactNode;
   sub?: string;
   onFocus?: () => void;
+  /** Historico: tira o item da lista. */
+  onRemove?: () => void;
 }) {
   return (
     <li className={cn("flex items-center rounded-xl transition-colors", active ? "bg-primary/10 ring-1 ring-primary/40" : "hover:bg-accent")}>
@@ -1853,17 +1875,34 @@ function ChannelRow({
           <Heart className={cn("h-4 w-4", favorite && "fill-destructive text-destructive")} />
         </button>
       )}
+      {onRemove && (
+        <button onClick={onRemove} className="rounded-lg p-3 text-muted-foreground transition-colors hover:text-destructive" aria-label={`Remover ${c.name} do histórico`}>
+          <X className="h-4 w-4" />
+        </button>
+      )}
     </li>
   );
 }
 
 type PosterItem = { id: string; name: string; logo: string; sub?: string; progress?: number };
 
-function PosterGrid<T extends PosterItem>({ items, activeId, onSelect }: { items: T[]; activeId?: string; onSelect: (item: T) => void }) {
+function PosterGrid<T extends PosterItem>({
+  items,
+  activeId,
+  onSelect,
+  onRemove,
+}: {
+  items: T[];
+  activeId?: string;
+  onSelect: (item: T) => void;
+  /** Historico: botao "Remover" embaixo de cada card. */
+  onRemove?: (item: T) => void;
+}) {
   return (
     <div className="poster-grid grid grid-cols-3 gap-3 pb-1 pt-1 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8">
       {items.map((item) => (
-        <button key={item.id} onClick={() => onSelect(item)} className="poster-card group text-left">
+        <div key={item.id} className="flex min-w-0 flex-col">
+        <button onClick={() => onSelect(item)} className="poster-card group text-left">
           <div
             className={cn(
               "poster-frame relative flex aspect-[2/3] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-b from-secondary to-card ring-1 ring-border transition-all duration-300 group-hover:-translate-y-1 group-hover:shadow-glow group-hover:ring-primary/50",
@@ -1892,6 +1931,16 @@ function PosterGrid<T extends PosterItem>({ items, activeId, onSelect }: { items
           <div className="poster-title mt-2 line-clamp-2 text-xs font-semibold">{item.name}</div>
           {item.sub && <div className="text-[11px] text-muted-foreground">{item.sub}</div>}
         </button>
+        {onRemove && (
+          <button
+            onClick={() => onRemove(item)}
+            className="poster-remove mt-1 flex items-center gap-1 self-start rounded-lg px-1.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:text-destructive"
+            aria-label={`Remover ${item.name} do histórico`}
+          >
+            <X className="h-3.5 w-3.5" /> Remover
+          </button>
+        )}
+        </div>
       ))}
     </div>
   );
@@ -2147,6 +2196,7 @@ function HomePage({
   onOpen,
   onExplore,
   onClear,
+  onRemove,
   currentId,
   isFavorite,
   onFavorite,
@@ -2159,6 +2209,7 @@ function HomePage({
   onOpen: (c: Channel) => void;
   onExplore: () => void;
   onClear: () => void;
+  onRemove: (c: Channel) => void;
   currentId?: string;
   isFavorite: (id: string) => boolean;
   onFavorite: (c: Channel) => void;
@@ -2212,6 +2263,7 @@ function HomePage({
               favorite={isFavorite(c.id)}
               onPlay={() => onOpen(c)}
               onFavorite={() => onFavorite(c)}
+              onRemove={() => onRemove(c)}
               progress={liveLike(c.kind) ? 0 : fraction(c)}
               now={c.epg_id ? epg[c.epg_id]?.[0]?.title : undefined}
               badge={<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-bold uppercase">{KIND_LABEL[c.kind]}</span>}
