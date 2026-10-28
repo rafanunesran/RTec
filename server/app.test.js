@@ -540,6 +540,25 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
   assert.deepEqual(santos.channels, [], "canal que o cliente nao tem");
 });
 
+test("alertas de novos episodios: favorita entra sozinha, sino liga e desliga, por perfil", async () => {
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
+  assert.deepEqual((await call("GET", "/api/player/alerts")).body.items, []);
+  const serie = { id: "s70", series_id: "70", name: "Serie Teste", kind: "series", logo: "", src: "", type: "file", group: "Serie Teste" };
+  await call("PUT", "/api/player/sync", { favorites: [serie] });
+  const first = (await call("GET", "/api/player/alerts")).body;
+  assert.equal(first.mode, "xtream");
+  assert.deepEqual(first.items.map((i) => [i.id, i.fav, i.new, i.base?.count]), [["s70", true, 0, 2]], "conferiu no fornecedor e guardou os 2 EPs");
+  assert.equal((await call("PUT", "/api/player/alerts", { id: "s70", series_id: "70", name: "Serie Teste", on: false })).status, 200);
+  assert.deepEqual((await call("GET", "/api/player/alerts")).body.items, [], "desligado no sino");
+  // Episodio a menos do que o servidor conhece: "viu" 1, o fornecedor tem 2 -> 1 novo depois da proxima conferida.
+  await call("PUT", "/api/player/alerts", { id: "s70", series_id: "70", name: "Serie Teste", on: true, count: 1, top: 10001 });
+  assert.equal((await call("POST", "/api/player/alerts/seen", { id: "x" })).status, 400);
+  assert.equal((await call("GET", "/api/player/alerts")).body.items[0].new, 0, "ainda nao conferiu de novo (3 h)");
+  assert.deepEqual((await call("GET", "/api/player/alerts?profile=nao-existe")).status, 404);
+  await call("PUT", "/api/player/sync", { favorites: [] });
+});
+
 test("trocar a lista nao perde historico e favoritos: religa cada titulo pelo nome", async () => {
   cookie = "";
   await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });

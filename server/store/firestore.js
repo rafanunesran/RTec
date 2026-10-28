@@ -124,6 +124,7 @@ export function createFirestoreStore() {
     playlists: new FirestoreCollection(db, "playlists"),
     sync: new FirestoreCollection(db, "player_sync"),
     profiles: new FirestoreCollection(db, "player_profiles"),
+    alerts: new FirestoreCollection(db, "player_alerts"),
     config: new FirestoreCollection(db, "config"),
     async getOrCreateSecret(generate) {
       return db.runTransaction(async (t) => {

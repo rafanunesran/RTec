@@ -82,6 +82,7 @@ export function createMemoryStore() {
     playlists: new MemoryCollection(),
     sync: new MemoryCollection(),
     profiles: new MemoryCollection(),
+    alerts: new MemoryCollection(),
     config,
     async getOrCreateSecret(generate) {
       const doc = await config.get("secrets");

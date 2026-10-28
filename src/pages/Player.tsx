@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, RotateCw, Search, Settings, Share, SquarePlus, Trophy, Tv, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Bell, BellRing, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, RotateCw, Search, Settings, Share, SquarePlus, Trophy, Tv, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, isListExpired, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
@@ -18,6 +18,7 @@ import SettingsDialog from "@/components/player/SettingsDialog";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
 import ListExpired from "@/components/player/ListExpired";
 import GamesPage, { GameAlerts } from "@/components/player/Games";
+import { alertOn, epLabel, favoriteAdded, favoriteRemoved, loadEpAlerts, markSeen, markShown, resetEpAlerts, setEpAlert, shouldShow, useEpAlerts, type EpAlert } from "@/lib/epalerts";
 import Screensaver, { saverItem, type SaverItem } from "@/components/player/Screensaver";
 import { tvScreenOn } from "@/lib/tvnav";
 import { castControl, castPlay, castTarget, knownDevices, onCastPlay, setCastNow, setCastTarget, startCast, useCast, type CastPlay } from "@/lib/cast";
@@ -1074,11 +1075,48 @@ function Watch({
   const isFav = (c: Channel) => isFavorite(favItem(c).id);
   const toggleFavorite = (c: Channel) => {
     const item = favItem(c);
-    const next = isFavorite(item.id) ? favorites.filter((f) => f.id !== item.id) : [...favorites, item];
+    const was = isFavorite(item.id);
+    const next = was ? favorites.filter((f) => f.id !== item.id) : [...favorites, item];
     setFavorites(next);
     saveList("favorites", next);
+    // Serie favorita ganha alerta de novos episodios.
+    if (item.kind === "series" && (item.series_id || item.id.startsWith("serie:"))) {
+      if (was) favoriteRemoved(item.id);
+      else favoriteAdded(item, series?.name === item.name ? series.episodes : null);
+    }
     if (item !== c) toast.success(isFavorite(item.id) ? "Série removida dos favoritos" : "Série adicionada aos favoritos");
   };
+
+  // Alertas de novos episodios: o servidor confere as series (Xtream); nas listas M3U compara com os EPs do aparelho.
+  const epAlerts = useEpAlerts();
+  const channelsRef = useRef(channels);
+  channelsRef.current = channels;
+  const listReady = xt || channels.length > 0;
+  useEffect(() => resetEpAlerts(), []);
+  useEffect(() => {
+    if (!catalog || !listReady) return;
+    const episodesOf = (a: EpAlert) => {
+      if (!a.id.startsWith("serie:")) return null;
+      return channelsRef.current.filter((x) => x.kind === "series" && episodeInfo(x.name).series === a.name).map((x) => episodeInfo(x.name));
+    };
+    void loadEpAlerts(episodesOf, true);
+    const onVisible = () => document.visibilityState === "visible" && void loadEpAlerts(episodesOf);
+    document.addEventListener("visibilitychange", onVisible);
+    const t = setInterval(() => void loadEpAlerts(episodesOf), 30 * 60_000);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(t);
+    };
+  }, [catalog, listReady]);
+  const openSeriesCard = series ? seriesCard(xt ? series.key : series.name, series.name, series.logo) : null;
+  const seriesAlert = !!openSeriesCard && epAlerts.some((a) => a.id === openSeriesCard.id);
+  // Abriu a serie com alerta: os episodios de agora passam a ser os "ja vistos".
+  useEffect(() => {
+    if (openSeriesCard && series?.episodes?.length && alertOn(openSeriesCard.id)) void markSeen(openSeriesCard, series.episodes);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [series?.episodes, seriesAlert]);
+  const newEpisodes = epAlerts.filter((a) => a.new > 0);
+  const openAlert = (a: EpAlert) => openSeriesFrom(seriesCard(a.series_id || a.name, a.name, a.logo));
 
   const logout = async () => {
     await api.post("/api/player/logout").catch(() => {});
@@ -1292,6 +1330,8 @@ function Watch({
       <main className={cn("mx-auto w-full flex-1", tv ? "px-10 pb-10 pt-8" : "max-w-[1600px] px-4 pb-8 pt-4 lg:px-6", cast.target && !tv && "pb-24")}>
             {page === "home" ? (
               <HomePage
+                newEpisodes={newEpisodes}
+                onOpenAlert={openAlert}
                 history={shownHistory}
                 loading={catalog === null}
                 onOpen={openItem}
@@ -1436,9 +1476,23 @@ function Watch({
                     const card = seriesCard(xt ? series.key : series.name, series.name, series.logo);
                     const fav = isFavorite(card.id);
                     return (
-                      <Button variant={fav ? "secondary" : "outline"} size="sm" onClick={() => toggleFavorite(card)} aria-pressed={fav}>
-                        <Heart className={cn(fav && "fill-destructive text-destructive")} /> {fav ? "Favorita" : "Favoritar série"}
-                      </Button>
+                      <>
+                        <Button variant={fav ? "secondary" : "outline"} size="sm" onClick={() => toggleFavorite(card)} aria-pressed={fav}>
+                          <Heart className={cn(fav && "fill-destructive text-destructive")} /> {fav ? "Favorita" : "Favoritar série"}
+                        </Button>
+                        <Button
+                          variant={seriesAlert ? "secondary" : "outline"}
+                          size="sm"
+                          aria-pressed={seriesAlert}
+                          onClick={() => {
+                            const on = !seriesAlert;
+                            setEpAlert(card, on, series.episodes).catch(() => toast.error("Não foi possível salvar o alerta"));
+                            toast.success(on ? "Você será avisado quando sair episódio novo" : "Alerta de novos episódios desligado");
+                          }}
+                        >
+                          {seriesAlert ? <BellRing className="text-primary" /> : <Bell />} {seriesAlert ? "Alerta ligado" : "Avisar novos episódios"}
+                        </Button>
+                      </>
                     );
                   })()}
                 />
@@ -1650,7 +1704,58 @@ function Watch({
       />
       {/* Alertas dos Jogos do dia: avisa quando o jogo comeca, mesmo fora da aba (e por cima do video). */}
       <GameAlerts onPlay={(c, list) => play(c, list)} isLocked={isLocked} />
+      {/* Novos episodios das series com alerta: avisa uma vez por episodio novo. */}
+      <EpisodeAlerts items={newEpisodes} onOpen={openAlert} />
     </div>
+  );
+}
+
+function EpisodeAlerts({ items, onOpen }: { items: EpAlert[]; onOpen: (a: EpAlert) => void }) {
+  const [shown, setShown] = useState<EpAlert[] | null>(null);
+  useEffect(() => {
+    if (shown || !shouldShow(items)) return;
+    markShown(items);
+    setShown(items);
+    const title = items.length === 1 ? `Episódio novo: ${items[0].name}` : `${items.length} séries com episódios novos`;
+    if (typeof Notification !== "undefined" && Notification.permission === "granted" && document.hidden) {
+      try {
+        new Notification(title, { body: items.map((a) => a.name).join(", "), icon: "/icons/icon-192.png" });
+      } catch {
+        /* celular sem suporte a notificacao fora do service worker */
+      }
+    }
+  }, [items, shown]);
+  if (!shown) return null;
+  return (
+    <Dialog open onClose={() => setShown(null)} title="Novos episódios" description="Saíram episódios novos das séries que você acompanha." icon={<BellRing className="h-6 w-6 text-primary" />}>
+      <ul className="max-h-[50vh] space-y-1 overflow-y-auto">
+        {shown.map((a) => (
+          <li key={a.id}>
+            <button
+              className="flex w-full items-center gap-3 rounded-xl p-2 text-left transition-colors hover:bg-muted focus-visible:bg-muted"
+              onClick={() => {
+                setShown(null);
+                onOpen(a);
+              }}
+            >
+              <div className="flex h-14 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted ring-1 ring-border">
+                {a.logo ? <img src={a.logo} alt="" className="h-full w-full object-cover" onError={(e) => (e.currentTarget.style.display = "none")} /> : <Clapperboard className="h-4 w-4 text-muted-foreground" />}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold">{a.name}</div>
+                <div className="text-xs text-primary">{epLabel(a)}</div>
+              </div>
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="mt-5 flex justify-end">
+        <Button variant="ghost" onClick={() => setShown(null)}>
+          Ver depois
+        </Button>
+      </div>
+    </Dialog>
   );
 }
 
@@ -2020,6 +2125,8 @@ const KIND_LABEL: Record<Section, string> = { live: "TV ao vivo", radio: "Rádio
 
 /** Pagina inicial: historico do que o cliente assistiu por ultimo. */
 function HomePage({
+  newEpisodes,
+  onOpenAlert,
   history,
   loading,
   onOpen,
@@ -2030,6 +2137,8 @@ function HomePage({
   onFavorite,
   epg,
 }: {
+  newEpisodes: EpAlert[];
+  onOpenAlert: (a: EpAlert) => void;
   history: Channel[];
   loading: boolean;
   onOpen: (c: Channel) => void;
@@ -2041,7 +2150,7 @@ function HomePage({
   epg: Record<string, Programme[]>;
 }) {
   const resume = history.filter((c) => !liveLike(c.kind) && fraction(c) > 0 && fraction(c) < WATCHED_AT);
-  if (!loading && !history.length) {
+  if (!loading && !history.length && !newEpisodes.length) {
     return (
       <EmptyState
         icon={<History className="h-6 w-6" />}
@@ -2057,12 +2166,21 @@ function HomePage({
   }
   return (
     <div className="space-y-8">
+      {!!newEpisodes.length && (
+        <section>
+          <h2 className="mb-3 flex items-center gap-2 text-lg font-bold tracking-tight">
+            <BellRing className="h-5 w-5 text-primary" /> Novos episódios
+          </h2>
+          <PosterGrid items={newEpisodes.map((a) => ({ ...a, sub: epLabel(a) }))} onSelect={onOpenAlert} />
+        </section>
+      )}
       {!!resume.length && (
         <section>
           <h2 className="mb-3 text-lg font-bold tracking-tight">Continuar assistindo</h2>
           <PosterGrid items={resume.slice(0, 16).map((c) => ({ ...c, progress: fraction(c), sub: c.kind === "series" ? c.group : undefined }))} activeId={currentId} onSelect={onOpen} />
         </section>
       )}
+      {!!history.length && (
       <section>
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-bold tracking-tight">Histórico</h2>
@@ -2086,6 +2204,7 @@ function HomePage({
           ))}
         </ul>
       </section>
+      )}
     </div>
   );
 }

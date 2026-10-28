@@ -15,6 +15,7 @@ import { episodeInfo, episodeOf, normTitle } from "./titlekey.js";
 import { createCatalog, sourceKey } from "./merge.js";
 import { hasDataKey, needsSeal, openUrl, sealUrl } from "./seal.js";
 import { getAgenda, leagueList, matchGames } from "./games.js";
+import { CHECK_EVERY_MS, alertList, alertTargets, checkAlerts, cleanSeries, markSeen, readSnap, setAlert } from "./epalerts.js";
 
 const COOKIE = "rtec_session";
 const CLIENT_COOKIE = "rtec_player";
@@ -1058,7 +1059,9 @@ export function createApp() {
     wrap(async (req, res) => {
       const profiles = (await db().profiles.get(req.params.id))?.list ?? [];
       for (const p of profiles) if (p.id !== MAIN_PROFILE) await db().sync.delete(syncDocId(req.params.id, p.id));
+      for (const p of profiles) if (p.id !== MAIN_PROFILE) await db().alerts.delete(syncDocId(req.params.id, p.id));
       await db().sync.delete(req.params.id);
+      await db().alerts.delete(req.params.id);
       await db().profiles.delete(req.params.id);
       await db().clients.delete(req.params.id);
       forgetClient(req.params.id);
@@ -1552,6 +1555,62 @@ export function createApp() {
     }),
   );
 
+  // ---------- Alertas de novos episodios (por perfil) ----------
+  // Lista Xtream: o servidor confere os episodios no fornecedor no maximo a cada 3 h (nada roda no aparelho).
+  // Listas M3U: o aparelho ja tem todos os episodios; aqui so fica guardado o que o cliente viu.
+  app.get(
+    "/api/player/alerts",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      const docId = syncDocId(c.id, await requestProfile(req));
+      const [doc, s] = await Promise.all([db().alerts.get(docId).then((d) => d || {}), loadSync(docId)]);
+      const targets = alertTargets(doc, s.favorites);
+      const cat = catalogFor(c);
+      if (cat && targets.length && Date.now() - (doc.checked_at || 0) > CHECK_EVERY_MS) {
+        await checkAlerts(doc, targets, (t) => cat.episodes(t.series_id));
+        await db().alerts.set(docId, doc);
+      }
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ mode: cat ? "xtream" : "m3u", checked_at: doc.checked_at || 0, items: alertList(doc, targets) });
+    }),
+  );
+
+  // Liga/desliga o alerta de uma serie (on: true, false ou null para seguir o favorito).
+  // Com count/top (episodios que o aparelho esta vendo), ja guarda a comparacao.
+  app.put(
+    "/api/player/alerts",
+    requireClient,
+    wrap(async (req, res) => {
+      const s = cleanSeries(req.body);
+      if (!s) throw new HttpError(400, "Serie invalida");
+      const on = req.body.on === true || req.body.on === false ? req.body.on : null;
+      const docId = syncDocId(req.client.id, await requestProfile(req));
+      const doc = (await db().alerts.get(docId)) || {};
+      setAlert(doc, s, on, readSnap(req.body));
+      await db().alerts.set(docId, doc);
+      res.json({ ok: true });
+    }),
+  );
+
+  // O cliente abriu a serie: os episodios de agora passam a ser os "ja vistos".
+  app.post(
+    "/api/player/alerts/seen",
+    requireClient,
+    wrap(async (req, res) => {
+      const s = cleanSeries(req.body);
+      const snap = readSnap(req.body);
+      if (!s || !snap) throw new HttpError(400, "Serie invalida");
+      const docId = syncDocId(req.client.id, await requestProfile(req));
+      const doc = (await db().alerts.get(docId)) || {};
+      const e = doc.series?.[s.id];
+      if (e?.base?.count === snap.count && e.base.top === snap.top && e.cur?.count === snap.count && e.cur.top === snap.top) return res.json({ ok: true });
+      markSeen(doc, s, snap);
+      await db().alerts.set(docId, doc);
+      res.json({ ok: true });
+    }),
+  );
+
   // ---------- Perfis ----------
   app.get(
     "/api/player/profiles",
@@ -1596,6 +1655,7 @@ export function createApp() {
       if (list.length <= 1) throw new HttpError(400, "A conta precisa de pelo menos um perfil");
       await db().profiles.set(req.client.id, { list: list.filter((p) => p.id !== req.params.pid) });
       await db().sync.delete(syncDocId(req.client.id, req.params.pid));
+      await db().alerts.delete(syncDocId(req.client.id, req.params.pid));
       res.json({ ok: true });
     }),
   );
