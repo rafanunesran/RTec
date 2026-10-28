@@ -18,6 +18,7 @@ const TTL_SECONDS = 12 * 3600;
 // ffmpeg (a imagem passa sem mexer, gasta pouco processador). Limite de conversoes ao mesmo tempo.
 const MAX_AAC = Number(process.env.MAX_AAC || 8);
 let aacRunning = 0;
+let streaming = 0;
 const isMain = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (!SECRET && isMain) {
   console.error("Defina PROXY_SECRET (o mesmo valor configurado na Vercel).");
@@ -356,6 +357,9 @@ function json(res, status, body) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://local");
   if (url.pathname === "/health") return send(res, 200, "ok");
+  // Quantos videos passam por aqui agora (a atualizacao automatica espera chegar a 0 para reiniciar).
+  // So para quem esta na propria maquina (o que vem da internet passa pelo Caddy, com X-Forwarded-For).
+  if (url.pathname === "/active" && !req.headers["x-forwarded-for"]) return send(res, 200, String(streaming));
   if (req.method === "OPTIONS") {
     res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Range", "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS" });
     return res.end();
@@ -366,6 +370,8 @@ const server = http.createServer(async (req, res) => {
   const token = url.searchParams.get("u") || "";
   const u = valid(c, e, token, s) ? open(token) : "";
   if (!/^https?:\/\//i.test(u)) return send(res, 403, "Link invalido ou expirado");
+  streaming++;
+  res.once("close", () => streaming--);
   if (url.pathname === "/api/player/aac") return aac(u, req, res);
 
   const controller = new AbortController();

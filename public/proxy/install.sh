@@ -77,6 +77,9 @@ systemctl restart caddy
 echo "==> Instalando o vigia de atividade (a Oracle recolhe maquinas gratis paradas)"
 curl -fsSL "$SRC/guard.sh" | RTEC_GUARD_SRC="$SRC/guard.sh" bash -s -- install || echo "    (nao consegui agora; rode depois: curl -fsSL $SRC/guard.sh | sudo bash -s -- install)"
 
+echo "==> Ligando a atualizacao automatica (o servidor se atualiza sozinho pelo GitHub)"
+curl -fsSL "$SRC/autoupdate.sh" | RTEC_UPDATE_SRC="$SRC" bash -s -- install || echo "    (nao consegui agora; rode depois: curl -fsSL $SRC/autoupdate.sh | sudo bash -s -- install)"
+
 echo "==> Testando"
 sleep 5
 if curl -fsS "https://$DOMAIN/health" >/dev/null 2>&1; then
