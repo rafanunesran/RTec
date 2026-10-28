@@ -51,6 +51,11 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
           hls.recoverMediaError();
         } else onFail(describe(data.response?.code, data.details));
       });
+      // hls.js tira o audio que o navegador nao toca: o primeiro trecho sem faixa de audio fica anotado.
+      hls.on(Hls.Events.BUFFER_CODECS, (_e, d) => {
+        if (d.audio || d.audiovideo) video.dataset.acodec = d.audio?.codec || "ok";
+        else if (d.video) video.dataset.acodec ||= "none";
+      });
       hls.loadSource(src);
       hls.attachMedia(video);
       // Os controles do player leem daqui as faixas de audio e legenda.
@@ -103,16 +108,22 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
 }
 
 /**
- * O video toca mas nenhum som foi decodificado: em geral o canal manda audio Dolby (AC-3/E-AC-3), que
- * Chrome, Android e Fire Stick nao tocam no navegador (hls.js e mpegts.js descartam o audio sem avisar).
- * So responde "sim" quando o navegador permite ter certeza.
+ * O video toca mas o som nao: em geral o canal manda audio Dolby (AC-3/E-AC-3), que Chrome, Android e
+ * Fire Stick nao tocam no navegador (hls.js e mpegts.js descartam o audio sem avisar). So responde "sim"
+ * com certeza: o motor disse que o audio ficou de fora (dataset.acodec) e o navegador confirma que video
+ * esta sendo decodificado e audio nao. TVs que decodificam no hardware zeram os contadores: ali nunca acusa.
  */
 function noAudio(video: HTMLVideoElement) {
-  const v = video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number; mozHasAudio?: boolean };
-  if (typeof v.webkitAudioDecodedByteCount === "number") return v.webkitAudioDecodedByteCount === 0;
-  if (typeof v.mozHasAudio === "boolean") return !v.mozHasAudio;
-  return false;
+  const codec = video.dataset.acodec || "";
+  const dropped = codec === "none" || unsupportedAudio(codec);
+  if (!dropped) return false;
+  const v = video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number; webkitVideoDecodedByteCount?: number };
+  if (typeof v.webkitAudioDecodedByteCount !== "number" || !v.webkitVideoDecodedByteCount) return false;
+  return v.webkitAudioDecodedByteCount === 0;
 }
+
+/** Audio Dolby que este navegador nao toca pelo MediaSource. */
+const unsupportedAudio = (codec: string) => /^[ae]c-3$/.test(codec) && !window.MediaSource?.isTypeSupported(`audio/mp4;codecs=${codec}`);
 
 /**
  * Link de conversao de audio (Dolby -> AAC) no servidor de video separado (Oracle). Usa a mesma assinatura do
@@ -437,9 +448,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       setState("playing");
       setHint("");
       // Audio Dolby ja identificado pelo mpegts.js e que este navegador nao toca: nem espera os 5 s.
-      const codec = video.dataset.acodec || "";
-      const known = /^[ae]c-3$/.test(codec) && !window.MediaSource?.isTypeSupported(`audio/mp4;codecs=${codec}`);
-      if (!silentMode) audioTimer = setTimeout(checkAudio, known ? 1500 : 5000);
+      if (!silentMode) audioTimer = setTimeout(checkAudio, unsupportedAudio(video.dataset.acodec || "") ? 1500 : 5000);
       void applyBoost();
     };
     // Ao vivo parado com video ja baixado mais a frente (buraco no sinal ou decodificador engasgado):
