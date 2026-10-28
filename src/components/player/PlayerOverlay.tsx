@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   ArrowLeft,
   Captions,
+  ChevronsRight,
   Cast,
   Heart,
   ListRestart,
@@ -19,7 +20,7 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import type { Channel } from "@/lib/api";
+import { api, type Channel, type EpisodeMarks } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fraction, resumeAt, saveProgress, WATCHED_AT } from "@/lib/progress";
 import VideoPlayer, { type BoostState } from "@/components/VideoPlayer";
@@ -228,6 +229,35 @@ export default function PlayerOverlay({
     setSt((s) => ({ ...s, pos: 0, dur: 0 }));
   }, [channel.id]);
 
+  // Pular intro / Proximo EP nos creditos: o servidor descobre os tempos pelo audio. Na primeira vez de uma
+  // temporada ele ainda esta analisando (pending): pergunta de novo algumas vezes enquanto o episodio toca.
+  const [marks, setMarks] = useState<EpisodeMarks | null>(null);
+  useEffect(() => {
+    setMarks(null);
+    const ep = channel as Ep;
+    if (ep.kind !== "series" || !ep.parent_series || !ep.episode) return;
+    const q = new URLSearchParams({ series: ep.parent_series, season: String(ep.season ?? 0), episode: String(ep.episode), name: ep.group || "" });
+    const waits = [40, 90, 180, 300];
+    let n = 0;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = () =>
+      api
+        .get<{ marks: EpisodeMarks | null; pending?: boolean }>(`/api/player/marks?${q}`)
+        .then((r) => {
+          if (stop) return;
+          setMarks(r.marks);
+          if (r.pending && n < waits.length) timer = setTimeout(ask, waits[n++] * 1000);
+        })
+        .catch(() => {});
+    ask();
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel.id]);
+
   // Estado do video para os controles (o <video> pode ser trocado pelo reprodutor, por isso e lido sempre).
   useEffect(() => {
     let n = 0;
@@ -277,20 +307,34 @@ export default function PlayerOverlay({
   const shown = chrome || st.paused || panel !== null || scrub !== null;
 
   const nearEnd = isVod && next && remaining !== null && remaining < 45;
-  const showNext = !!next && (!!nearEnd || countdown !== null);
+  // Com os creditos conhecidos, o "Proximo episodio" aparece quando eles comecam; com cena pos-creditos,
+  // so no fim do video. Sem dados, como antes: nos ultimos 45 s.
+  const atCredits = isVod && marks?.credits != null && !marks.post && st.pos >= marks.credits;
+  const showNext = !!next && (countdown !== null || atCredits || (!!nearEnd && !marks?.post && marks?.credits == null));
+  const intro = isVod ? marks?.intro : null;
+  const showIntro = !!intro && countdown === null && st.pos >= intro[0] && st.pos < intro[1] - 2;
+  const skipIntro = () => {
+    if (!intro) return;
+    seekTo(intro[1]);
+    say("Abertura pulada");
+  };
 
-  // Controle remoto: o botao "Proximo episodio" ja aparece selecionado, entao um OK basta.
+  // Controle remoto: os botoes "Pular intro" e "Proximo episodio" ja aparecem selecionados, entao um OK basta.
   const nextRef = useRef<HTMLButtonElement>(null);
+  const introRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (showNext && tvNavigationOn()) nextRef.current?.focus({ preventScroll: true });
   }, [showNext]);
+  useEffect(() => {
+    if (showIntro && tvNavigationOn()) introRef.current?.focus({ preventScroll: true });
+  }, [showIntro]);
 
   // TV: quando os controles somem, tira a selecao deles para o OK voltar a pausar/continuar
   // (senao o OK "clicaria" um botao invisivel).
   useEffect(() => {
     if (shown || !tv) return;
     const a = document.activeElement as HTMLElement | null;
-    if (a && a !== nextRef.current && rootRef.current?.contains(a)) a.blur();
+    if (a && a !== nextRef.current && a !== introRef.current && rootRef.current?.contains(a)) a.blur();
   }, [shown, tv]);
 
   // Teclas: qualquer uma mostra os controles. Na TV, ▼ leva aos botoes de baixo e, na barra de tempo,
@@ -619,6 +663,22 @@ export default function PlayerOverlay({
           )}
         </div>
       </div>
+
+      {showIntro && !showNext && (
+        <div className="absolute bottom-[9.5rem] right-4 z-10">
+          <button
+            ref={introRef}
+            onClick={(e) => {
+              e.stopPropagation();
+              skipIntro();
+            }}
+            className="flex items-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-bold text-black shadow-lg ring-white/60 hover:bg-white/90 focus:ring-4"
+          >
+            <ChevronsRight className="h-4 w-4" />
+            Pular intro
+          </button>
+        </div>
+      )}
 
       {showNext && next && (
         <div className="absolute bottom-[9.5rem] right-4 z-10 flex items-center gap-2">

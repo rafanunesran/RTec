@@ -131,6 +131,12 @@ export type Catalog = {
   sig?: string;
 };
 
+/**
+ * Pular intro / Proximo EP: tempos (s) achados no servidor. intro: [inicio, fim]; credits: onde comecam os
+ * creditos; post: ha cena pos-creditos (o Proximo EP so aparece no fim).
+ */
+export type EpisodeMarks = { intro: [number, number] | null; credits: number | null; post: boolean };
+
 export type ChannelsResponse = {
   playlists: { id: string; name: string }[];
   channels: Channel[];

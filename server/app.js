@@ -15,6 +15,7 @@ import { episodeInfo, episodeOf, normTitle } from "./titlekey.js";
 import { createCatalog, sourceKey } from "./merge.js";
 import { hasDataKey, needsSeal, openUrl, sealUrl } from "./seal.js";
 import { getAgenda, leagueList, matchGames } from "./games.js";
+import { RETRY_FAILED_MS, cleanMarks, markKey, neighbors, theIntroDb } from "./marks.js";
 import { CHECK_EVERY_MS, alertList, alertTargets, checkAlerts, cleanSeries, markSeen, readSnap, setAlert } from "./epalerts.js";
 
 const COOKIE = "rtec_session";
@@ -1380,6 +1381,78 @@ export function createApp() {
       res.setHeader("Cache-Control", "no-store");
       // parent_series: permite achar o proximo episodio mesmo abrindo pelo historico.
       res.json(episodes.map((ep) => ({ ...xtreamChannel(c, ep, String(req.query.name || ""), directXtream(req), cat.sources), parent_series: req.params.id })));
+    }),
+  );
+
+  // "Pular intro" e "Proximo EP" nos creditos (marks.js). O aparelho so recebe os tempos; a analise do audio
+  // roda no servidor de video e fica guardada por episodio. pending: ainda analisando (o reprodutor pergunta de novo).
+  async function seriesTmdbId(cat, seriesId, name) {
+    const r = cat.ref(seriesId);
+    const info = await r.prov.info("series", r.id).catch(() => ({}));
+    if (/^\d+$/.test(info.tmdb_id || "")) return info.tmdb_id;
+    return (await lookupOnline("series", name || info.name, info.year))?.tmdb_id || "";
+  }
+
+  async function audioMarks(c, list) {
+    const base = proxyBase();
+    if (!base) return { status: "off" };
+    const u = list.map((e) => sealUrl(proxySecret(), e.url)).join("~");
+    const exp = Math.ceil((Date.now() / 1000 + 3600) / 3600) * 3600;
+    const q = new URLSearchParams({ u, c: c.id, e: String(exp), s: signUrl(c.id, exp, u) });
+    try {
+      const r = await fetch(`${base}/api/player/marks?${q}`, { signal: AbortSignal.timeout(6000) });
+      // Servidor de video ainda sem esta funcao (precisa atualizar o server.mjs): segue so com a base publica.
+      if (r.status === 404) return { status: "off" };
+      return await r.json();
+    } catch {
+      return { status: "busy" };
+    }
+  }
+
+  app.get(
+    "/api/player/marks",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      res.setHeader("Cache-Control", "no-store");
+      const cat = catalogFor(c);
+      const seriesId = String(req.query.series || "").replace(/[^\w~-]/g, "").slice(0, 60);
+      const season = Number(req.query.season) || 0;
+      const episode = Number(req.query.episode) || 0;
+      if (!cat || !seriesId || !episode) return res.json({ marks: null });
+      const episodes = (await cat.episodes(seriesId).catch(() => [])).filter((e) => e.url);
+      const i = episodes.findIndex((e) => e.season === season && e.episode === episode);
+      if (i < 0) return res.json({ marks: null });
+      const ep = episodes[i];
+      const key = markKey(ep.url);
+      const saved = key ? await db().marks.get(key) : null;
+      if (saved?.done) return res.json({ marks: cleanMarks(saved) });
+
+      const dur = Number(req.query.dur) || 0;
+      const publicMarks = () => seriesTmdbId(cat, seriesId, String(req.query.name || "")).then((id) => theIntroDb(id, season, episode, dur)).catch(() => null);
+      const failedRecently = saved?.failed_at && Date.now() - saved.failed_at < RETRY_FAILED_MS;
+      const nbs = neighbors(episodes, i);
+      const audio = failedRecently || !nbs.length ? { status: "off" } : await audioMarks(c, [ep, ...nbs]);
+
+      if (audio.status === "done" && Array.isArray(audio.eps)) {
+        const list = [ep, ...nbs];
+        let mine = cleanMarks(audio.eps[0]);
+        if (!mine) mine = await publicMarks();
+        await db().marks.set(key, { ...(mine || { intro: null, credits: null, post: false }), done: true, src: cleanMarks(audio.eps[0]) ? "audio" : mine ? "tidb" : "none", at: nowIso() });
+        // O vizinho tambem saiu da comparacao: ja fica pronto (so se achou algo; senao tenta com outro vizinho depois).
+        for (let k = 1; k < list.length; k++) {
+          const m = cleanMarks(audio.eps[k]);
+          const nk = markKey(list[k].url);
+          if (m && nk && nk !== key) await db().marks.set(nk, { ...m, done: true, src: "audio", at: nowIso() });
+        }
+        return res.json({ marks: mine });
+      }
+      if (audio.status === "error") await db().marks.set(key, { done: false, failed_at: Date.now() });
+      const pending = audio.status === "pending" || audio.status === "busy";
+      const pub = await publicMarks();
+      // Sem servidor de video (ou falhou): a base publica e a resposta final para este episodio.
+      if (!pending && pub && key) await db().marks.set(key, { ...pub, done: true, src: "tidb", at: nowIso() });
+      res.json({ marks: pub, pending });
     }),
   );
 

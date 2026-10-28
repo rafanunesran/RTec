@@ -75,6 +75,7 @@ async function fromTmdb(kind, title, year, tmdbId) {
     age: certification(d, type),
     source: "TMDB",
     link: `https://www.themoviedb.org/${type}/${id}`,
+    tmdb_id: String(id),
   };
 }
 

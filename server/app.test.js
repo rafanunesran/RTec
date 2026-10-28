@@ -559,6 +559,39 @@ test("alertas de novos episodios: favorita entra sozinha, sino liga e desliga, p
   await call("PUT", "/api/player/sync", { favorites: [] });
 });
 
+test("pular intro: servidor de video analisa o episodio com o vizinho e o resultado fica guardado", async () => {
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
+  assert.deepEqual((await call("GET", "/api/player/marks?series=70&season=1&episode=1")).body, { marks: null, pending: false }, "sem servidor de video nem base publica");
+
+  const seen = [];
+  let ready = false;
+  const video = http
+    .createServer((req, res) => {
+      const q = new URL(req.url, "http://x").searchParams;
+      seen.push(q.get("u").split("~").map((t) => openUrl("teste-proxy", t)));
+      const eps = [{ intro: [62.4, 104.1], credits: 1290.5, post: false }, { intro: [10, 52], credits: 1300, post: true }];
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(ready ? { status: "done", eps } : { status: "pending" }));
+    })
+    .listen(0);
+  process.env.STREAM_PROXY_URL = `http://127.0.0.1:${video.address().port}`;
+  try {
+    assert.deepEqual((await call("GET", "/api/player/marks?series=70&season=1&episode=1")).body, { marks: null, pending: true });
+    assert.equal(seen[0].length, 2, "episodio pedido e o proximo da temporada");
+    assert.match(seen[0][0], /\/series\/TiaX\/Sen%401\/901\.mp4$/);
+    assert.match(seen[0][1], /902\.mkv$/);
+    ready = true;
+    assert.deepEqual((await call("GET", "/api/player/marks?series=70&season=1&episode=1")).body.marks, { intro: [62.4, 104.1], credits: 1290.5, post: false });
+    const n = seen.length;
+    assert.deepEqual((await call("GET", "/api/player/marks?series=70&season=1&episode=2")).body.marks, { intro: [10, 52], credits: 1300, post: true }, "vizinho ja ficou pronto");
+    assert.deepEqual((await call("GET", "/api/player/marks?series=70&season=1&episode=1")).body.marks.intro, [62.4, 104.1]);
+    assert.equal(seen.length, n, "guardado no banco: nao analisa de novo");
+  } finally {
+    delete process.env.STREAM_PROXY_URL;
+    video.close();
+  }
+});
+
 test("trocar a lista nao perde historico e favoritos: religa cada titulo pelo nome", async () => {
   cookie = "";
   await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });

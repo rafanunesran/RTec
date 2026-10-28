@@ -57,6 +57,12 @@ sudo apt-get install -y ffmpeg && sudo curl -fsSL https://raw.githubusercontent.
 Com o ffmpeg, canais que chegam mudos no navegador (audio Dolby AC-3) tocam com o audio convertido para AAC.
 Limite de conversoes ao mesmo tempo: `MAX_AAC` em `/etc/rtec-proxy.env` (padrao 8).
 
+O mesmo comando liga o **Pular intro** e o **Proximo EP nos creditos**: na primeira vez que alguem assiste um
+episodio, o servidor compara o audio do comeco e do fim com o episodio vizinho (um de cada vez, com o ffmpeg) e
+acha a abertura e os creditos. O resultado fica guardado no banco e vale para todos os clientes. Se depois dos
+creditos ainda tiver mais de 20 s diferentes (cena pos-creditos), o botao Proximo EP so aparece no fim.
+Fila maxima de analises: `MAX_MARK_JOBS` (padrao 30). Sem atualizar o servidor, so a base publica TheIntroDB e usada.
+
 ## Manter a maquina ativa (vigia)
 A Oracle recolhe maquinas gratis que passam 7 dias com CPU abaixo de 20% (95o percentil, ou seja, ~8,4 h/semana acima de 20% ja basta).
 O instalador liga um **vigia**: anota o uso a cada 10 min e, toda madrugada (02:00 de Brasilia), se nos ultimos 3 dias
