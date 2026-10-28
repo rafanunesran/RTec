@@ -83,6 +83,7 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
         liveSync: false,
       },
     );
+    player.on(mpegts.Events.MEDIA_INFO, (info: { audioCodec?: string }) => (video.dataset.acodec = info?.audioCodec || ""));
     player.on(mpegts.Events.ERROR, (type: string, detail: string, info?: { code?: number; msg?: string }) => onFail(describe(info?.code, detail || type)));
     player.attachMediaElement(video);
     player.load();
@@ -95,6 +96,18 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
   }
 
   return native(video, src, onFail);
+}
+
+/**
+ * O video toca mas nenhum som foi decodificado: em geral o canal manda audio Dolby (AC-3/E-AC-3), que
+ * Chrome, Android e Fire Stick nao tocam no navegador (hls.js e mpegts.js descartam o audio sem avisar).
+ * So responde "sim" quando o navegador permite ter certeza.
+ */
+function noAudio(video: HTMLVideoElement) {
+  const v = video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number; mozHasAudio?: boolean };
+  if (typeof v.webkitAudioDecodedByteCount === "number") return v.webkitAudioDecodedByteCount === 0;
+  if (typeof v.mozHasAudio === "boolean") return !v.mozHasAudio;
+  return false;
 }
 
 /** Mensagem de erro com o motivo real (codigo HTTP do fornecedor quando houver). */
@@ -177,6 +190,8 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
   const [error, setError] = useState("");
   const [tried, setTried] = useState<string[]>([]); // o que aconteceu em cada caminho tentado
   const [muted, setMuted] = useState(false); // navegador bloqueou o som no inicio
+  const [noSound, setNoSound] = useState(""); // nenhum caminho tem som que este aparelho toque
+  const [hint, setHint] = useState(""); // por que esta carregando (sinal lento do fornecedor)
   const [attempt, setAttempt] = useState(0); // "Tentar novamente"
   // Troca o <video> por um novo: para pedir o video com CORS (reforco) ou quando o reforco ja pegou o audio
   // e o caminho seguinte e de outro dominio (ficaria mudo).
@@ -274,9 +289,14 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     let lastSaved = 0;
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    let audioTimer: ReturnType<typeof setTimeout> | undefined;
+    // Primeiro caminho que tocou sem som: se nenhum outro tiver som, volta para ele (melhor que nada).
+    let silent: { src: string; type: Channel["type"]; step: number; codec: string } | null = null;
+    let silentMode = false;
     const clearTimers = () => {
       clearTimeout(watchdog);
       clearTimeout(stallTimer);
+      clearTimeout(audioTimer);
     };
     // Toca; se o navegador bloquear o som automatico, comeca sem som e mostra o aviso.
     const tryPlay = () =>
@@ -291,6 +311,8 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     setError("");
     setTried([]);
     setMuted(false);
+    setNoSound("");
+    setHint("");
 
     const start = async (src: string, type: Channel["type"]) => {
       active = { src, type };
@@ -299,6 +321,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       clearTimers();
       // Se nao comecar a tocar em alguns segundos, passa para o proximo caminho (plano B).
       watchdog = setTimeout(() => !cancelled && fail(channel!.kind === "radio" ? "A rádio não começou a tocar (sem som depois de 15 s)." : "O canal não começou a tocar (sem imagem depois de 15 s)."), live ? 15000 : 25000);
+      delete video.dataset.acodec;
       try {
         const s = await attach(video, src, type, fail);
         if (cancelled) return s();
@@ -333,16 +356,45 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       }
       firstError ||= msg;
       steps.push(`${paths[step]?.label ?? "direto"} (${active.type}): ${msg}`);
-      // Plano B: o proximo caminho (servidor de video, outro formato, outra lista do cliente).
+      next();
+    }
+
+    // Plano B: o proximo caminho (servidor de video, outro formato, outra lista do cliente).
+    function next() {
       if (step + 1 < paths.length) {
         step++;
         start(paths[step].src, paths[step].type);
         return;
       }
-      setError(firstError || msg);
+      // Nenhum caminho com som: toca o que funcionou sem som e avisa.
+      if (silent && !silentMode) {
+        silentMode = true;
+        step = silent.step;
+        const dolby = /^[ae]c-3$/.test(silent.codec);
+        setNoSound(
+          dolby
+            ? "Este canal está sem som neste aparelho: o fornecedor manda o áudio em Dolby (AC-3), que ele não toca. Na TV Samsung ou LG costuma ter som."
+            : "Este canal está sem som neste aparelho: o áudio vem num formato que ele não toca (geralmente Dolby AC-3). Na TV Samsung ou LG costuma ter som.",
+        );
+        // Ja e o que esta tocando: so avisa, sem recarregar.
+        if (silent.src !== active.src || video!.paused) start(silent.src, silent.type);
+        return;
+      }
+      setError(firstError);
       setTried(steps.length > 1 ? steps : []);
       setState("error");
     }
+
+    /** Tocou mas sem som: tenta o proximo caminho, que pode mandar audio em AAC. */
+    const checkAudio = () => {
+      if (cancelled || silentMode || video.paused || !noAudio(video)) return;
+      const codec = video.dataset.acodec || "";
+      silent ||= { ...active, step, codec };
+      steps.push(`${paths[step]?.label ?? "direto"} (${active.type}): tocou sem som${codec ? ` (áudio ${codec})` : ""}`);
+      firstError ||= "Este canal está sem som neste aparelho.";
+      playedAt = 0; // nao e queda de sinal: o proximo caminho que falhar passa adiante, sem reconectar
+      next();
+    };
 
     const onPlaying = () => {
       clearTimers();
@@ -353,6 +405,8 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       }
       playedAt ||= Date.now();
       setState("playing");
+      setHint("");
+      if (!silentMode) audioTimer = setTimeout(checkAudio, 5000);
       void applyBoost();
     };
     // Ao vivo parado com video ja baixado mais a frente (buraco no sinal ou decodificador engasgado):
@@ -372,6 +426,11 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       }
       return false;
     };
+    const ahead = () => {
+      const b = video.buffered;
+      for (let i = 0; i < b.length; i++) if (b.start(i) <= video.currentTime + 0.3 && b.end(i) > video.currentTime) return b.end(i) - video.currentTime;
+      return 0;
+    };
     const onWaiting = () => {
       setState((s) => (s === "error" ? s : "loading"));
       // Ao vivo travado no "carregando" depois de ja ter tocado: tenta destravar e, se nao voltar, reconecta.
@@ -379,7 +438,8 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
         clearTimeout(stallTimer);
         stallTimer = setTimeout(() => {
           if (cancelled || video.paused) return;
-          unstick();
+          // Sem video baixado a frente: e o sinal que nao chega (internet ou servidor da lista lento).
+          if (!unstick() && ahead() < 0.5) setHint("Esperando o sinal do fornecedor. A internet ou o servidor da lista está lento agora.");
           stallTimer = setTimeout(() => !cancelled && video.paused === false && fail("O sinal travou."), 8000);
         }, 2000);
       }
@@ -436,8 +496,9 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
         </div>
       )}
       {channel && state === "loading" && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
           <Loader2 className="h-10 w-10 animate-spin text-white/80" />
+          {hint && <span className="max-w-md rounded-full bg-black/70 px-4 py-1.5 text-xs text-white/85">{hint}</span>}
         </div>
       )}
       {state === "error" && (
@@ -458,6 +519,14 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
             <RotateCw className="h-4 w-4" /> Tentar novamente
           </button>
         </div>
+      )}
+      {noSound && state === "playing" && (
+        <button
+          onClick={() => setNoSound("")}
+          className="absolute left-1/2 top-4 flex max-w-[90%] -translate-x-1/2 items-center gap-2 rounded-2xl bg-black/80 px-4 py-2 text-left text-xs text-white ring-1 ring-white/20"
+        >
+          <VolumeX className="h-4 w-4 shrink-0" /> {noSound}
+        </button>
       )}
       {muted && state === "playing" && (
         <button
