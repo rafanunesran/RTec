@@ -5,6 +5,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { Readable } from "node:stream";
+import { spawn } from "node:child_process";
 
 const SECRET = process.env.PROXY_SECRET;
 const PORT = Number(process.env.PORT || 8080);
@@ -12,6 +13,10 @@ const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "127.0.0.1";
 const UA = "VLC/3.0.20 LibVLC/3.0.20";
 const TTL_SECONDS = 12 * 3600;
+// Canais com audio Dolby (AC-3) ficam mudos no navegador: /api/player/aac troca so o audio por AAC com o
+// ffmpeg (a imagem passa sem mexer, gasta pouco processador). Limite de conversoes ao mesmo tempo.
+const MAX_AAC = Number(process.env.MAX_AAC || 8);
+let aacRunning = 0;
 if (!SECRET) {
   console.error("Defina PROXY_SECRET (o mesmo valor configurado na Vercel).");
   process.exit(1);
@@ -74,6 +79,52 @@ function send(res, status, body) {
   res.end(body);
 }
 
+/** Repassa o canal com o audio convertido para AAC (MPEG-TS continuo, para o mpegts.js). */
+function aac(u, req, res) {
+  if (aacRunning >= MAX_AAC) return send(res, 503, "Muitas conversoes de audio ao mesmo tempo");
+  // Link HLS o ffmpeg ja acompanha sozinho; MPEG-TS continuo precisa reconectar se o fornecedor cortar.
+  const input = /\.m3u8$/i.test(new URL(u).pathname) ? [] : ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"];
+  const ff = spawn(
+    "ffmpeg",
+    [
+      "-loglevel", "error", "-nostdin",
+      "-user_agent", UA,
+      "-protocol_whitelist", "http,https,tcp,tls,crypto",
+      ...input,
+      "-probesize", "2000000", "-analyzeduration", "2000000", // comeca a tocar mais rapido
+      "-i", u,
+      "-map", "0:v:0?", "-map", "0:a:0",
+      "-c:v", "copy", "-c:a", "aac", "-ac", "2", "-b:a", "160k",
+      "-f", "mpegts", "-muxdelay", "0", "pipe:1",
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  aacRunning++;
+  let done = false;
+  const stop = () => {
+    if (done) return;
+    done = true;
+    aacRunning--;
+    ff.kill("SIGKILL");
+  };
+  ff.on("error", (err) => {
+    console.warn(`[aac] ffmpeg nao abriu: ${err.message}`);
+    stop();
+    if (!res.headersSent) send(res, 500, "ffmpeg nao instalado");
+    else res.end();
+  });
+  ff.stderr.on("data", (d) => console.warn(`[aac] ${new URL(u).host}: ${String(d).trim().slice(0, 300)}`));
+  ff.stdout.once("data", () => res.headersSent || res.writeHead(200, { "Content-Type": "video/mp2t", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" }));
+  ff.stdout.pipe(res);
+  ff.on("close", () => {
+    stop();
+    if (!res.headersSent) send(res, 502, "Nao consegui abrir o canal para converter o audio");
+    else res.end();
+  });
+  req.on("close", stop);
+  res.on("close", stop);
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://local");
   if (url.pathname === "/health") return send(res, 200, "ok");
@@ -81,11 +132,12 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Range", "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS" });
     return res.end();
   }
-  if (url.pathname !== "/api/player/proxy") return send(res, 404, "not found");
+  if (url.pathname !== "/api/player/proxy" && url.pathname !== "/api/player/aac") return send(res, 404, "not found");
   const { c, e, s } = Object.fromEntries(url.searchParams);
   const token = url.searchParams.get("u") || "";
   const u = valid(c, e, token, s) ? open(token) : "";
   if (!/^https?:\/\//i.test(u)) return send(res, 403, "Link invalido ou expirado");
+  if (url.pathname === "/api/player/aac") return aac(u, req, res);
 
   const controller = new AbortController();
   res.on("close", () => controller.abort());

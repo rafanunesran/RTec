@@ -84,7 +84,11 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
       },
     );
     player.on(mpegts.Events.MEDIA_INFO, (info: { audioCodec?: string }) => (video.dataset.acodec = info?.audioCodec || ""));
-    player.on(mpegts.Events.ERROR, (type: string, detail: string, info?: { code?: number; msg?: string }) => onFail(describe(info?.code, detail || type)));
+    player.on(mpegts.Events.ERROR, (type: string, detail: string, info?: { code?: number; msg?: string }) => {
+      // Audio que o navegador nao toca (Dolby AC-3): a imagem segue sem som e o player tenta um caminho com som.
+      if (/addSourceBuffer/.test(info?.msg || "") && /audio\//.test(info?.msg || "")) return;
+      onFail(describe(info?.code, detail || type));
+    });
     player.attachMediaElement(video);
     player.load();
     return () => {
@@ -108,6 +112,25 @@ function noAudio(video: HTMLVideoElement) {
   if (typeof v.webkitAudioDecodedByteCount === "number") return v.webkitAudioDecodedByteCount === 0;
   if (typeof v.mozHasAudio === "boolean") return !v.mozHasAudio;
   return false;
+}
+
+/**
+ * Link de conversao de audio (Dolby -> AAC) no servidor de video separado (Oracle). Usa a mesma assinatura do
+ * link do proxy dele, trocando so o caminho. O proxy da propria Vercel nao converte.
+ */
+function aacLink(channel: Channel) {
+  for (const l of [channel.fallback, channel.src, channel.alt]) {
+    if (!l) continue;
+    try {
+      const u = new URL(l, location.href);
+      if (u.origin === location.origin || u.pathname !== "/api/player/proxy") continue;
+      u.pathname = "/api/player/aac";
+      return u.href;
+    } catch {
+      /* link invalido */
+    }
+  }
+  return "";
 }
 
 /** Mensagem de erro com o motivo real (codigo HTTP do fornecedor quando houver). */
@@ -260,13 +283,16 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     carry.current = null;
     // Caminhos, em ordem: o link do canal, pelo servidor de video, o outro formato (HLS <-> MPEG-TS) e depois
     // o mesmo titulo nas outras listas do cliente ("more"), cada uma com seus planos B.
-    const paths: { src: string; type: Channel["type"]; label: string }[] = [];
+    const paths: { src: string; type: Channel["type"]; label: string; list: number; aac?: boolean }[] = [];
     [channel, ...(channel.more || [])].forEach((s, n) => {
       const list = n ? `lista ${n + 1}, ` : "";
-      if (s.src) paths.push({ src: s.src, type: s.type, label: `${list}direto` });
-      if (s.fallback) paths.push({ src: s.fallback, type: s.type, label: `${list}servidor` });
-      if (s.alt) paths.push({ src: s.alt, type: s.alt_type || "hls", label: `${list}formato alternativo` });
+      if (s.src) paths.push({ src: s.src, type: s.type, label: `${list}direto`, list: n });
+      if (s.fallback) paths.push({ src: s.fallback, type: s.type, label: `${list}servidor`, list: n });
+      if (s.alt) paths.push({ src: s.alt, type: s.alt_type || "hls", label: `${list}formato alternativo`, list: n });
     });
+    // Por ultimo, so se tudo tocou sem som: o servidor de video converte o audio Dolby para AAC.
+    const aacSrc = aacLink(channel);
+    if (aacSrc) paths.push({ src: aacSrc, type: "mpegts", label: "servidor com o som convertido", list: -1, aac: true });
     let step = resume?.step ?? 0;
     let active = { src: resume?.src ?? channel.src, type: resume?.type ?? channel.type };
     const seekTo = resume ? resume.at : cb.current.startAt;
@@ -361,6 +387,8 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
 
     // Plano B: o proximo caminho (servidor de video, outro formato, outra lista do cliente).
     function next() {
+      // A conversao de audio so vale a pena quando o problema e falta de som.
+      while (step + 1 < paths.length && paths[step + 1].aac && !silent) step++;
       if (step + 1 < paths.length) {
         step++;
         start(paths[step].src, paths[step].type);
@@ -393,6 +421,8 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       steps.push(`${paths[step]?.label ?? "direto"} (${active.type}): tocou sem som${codec ? ` (áudio ${codec})` : ""}`);
       firstError ||= "Este canal está sem som neste aparelho.";
       playedAt = 0; // nao e queda de sinal: o proximo caminho que falhar passa adiante, sem reconectar
+      // Os outros caminhos da mesma lista mandam o mesmo audio: vai direto para a proxima lista ou a conversao.
+      while (step + 1 < paths.length && paths[step + 1].list === paths[step].list) step++;
       next();
     };
 
@@ -406,7 +436,10 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       playedAt ||= Date.now();
       setState("playing");
       setHint("");
-      if (!silentMode) audioTimer = setTimeout(checkAudio, 5000);
+      // Audio Dolby ja identificado pelo mpegts.js e que este navegador nao toca: nem espera os 5 s.
+      const codec = video.dataset.acodec || "";
+      const known = /^[ae]c-3$/.test(codec) && !window.MediaSource?.isTypeSupported(`audio/mp4;codecs=${codec}`);
+      if (!silentMode) audioTimer = setTimeout(checkAudio, known ? 1500 : 5000);
       void applyBoost();
     };
     // Ao vivo parado com video ja baixado mais a frente (buraco no sinal ou decodificador engasgado):

@@ -49,6 +49,14 @@ Projeto → **Settings** → **Environment Variables**:
 - `PROXY_SECRET` = o mesmo segredo usado no comando
 Depois **Deployments** → **⋯** → **Redeploy**.
 
+## Atualizar o servidor (ex: som dos canais Dolby/AC-3)
+Dentro da maquina, um comando (nao precisa do segredo):
+```bash
+sudo apt-get install -y ffmpeg && sudo curl -fsSL https://raw.githubusercontent.com/rafanunesran/RTec/main/public/proxy/server.mjs -o /opt/rtec-proxy/server.mjs && sudo systemctl restart rtec-proxy
+```
+Com o ffmpeg, canais que chegam mudos no navegador (audio Dolby AC-3) tocam com o audio convertido para AAC.
+Limite de conversoes ao mesmo tempo: `MAX_AAC` em `/etc/rtec-proxy.env` (padrao 8).
+
 ## Manter a maquina ativa (vigia)
 A Oracle recolhe maquinas gratis que passam 7 dias com CPU abaixo de 20% (95o percentil, ou seja, ~8,4 h/semana acima de 20% ja basta).
 O instalador liga um **vigia**: anota o uso a cada 10 min e, toda madrugada (02:00 de Brasilia), se nos ultimos 3 dias

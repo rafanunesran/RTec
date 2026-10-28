@@ -16,10 +16,10 @@ IP="$(curl -fsS https://api.ipify.org || curl -fsS https://ifconfig.me)"
 DOMAIN="${IP//./-}.sslip.io"
 echo "    IP: $IP  ->  dominio: $DOMAIN"
 
-echo "==> Instalando Node.js 22 e Caddy"
+echo "==> Instalando Node.js 22, Caddy e ffmpeg (som Dolby/AC-3 convertido para AAC)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl ca-certificates gnupg debian-keyring debian-archive-keyring apt-transport-https iptables-persistent
+apt-get install -y curl ca-certificates gnupg debian-keyring debian-archive-keyring apt-transport-https iptables-persistent ffmpeg
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 20 ]; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   apt-get install -y nodejs
