@@ -1557,6 +1557,21 @@ function Watch({
                   />
                 ))}
               </ul>
+            ) : group === HISTORY && section === "series" ? (
+              // Historico dentro de Series: card da serie (abre a ficha com as temporadas), nao o episodio direto.
+              <PosterGrid
+                items={visible.slice(0, cap).map((c) => {
+                  const card = favItem(c);
+                  if (card === c) return { ...c, progress: fraction(c), sub: metaLine(c) };
+                  const ep = c.season ? { season: c.season, episode: c.episode || 0 } : episodeInfo(c.name);
+                  return { ...c, name: card.name, progress: fraction(c), sub: ep.episode ? `Parou em T${ep.season} E${ep.episode}` : undefined };
+                })}
+                onSelect={(c) => {
+                  const card = favItem(c);
+                  if (card === c) openItem(c);
+                  else openSeriesFrom(card);
+                }}
+              />
             ) : section === "movie" || special ? (
               <PosterGrid items={visible.slice(0, cap).map((c) => ({ ...c, progress: fraction(c), sub: metaLine(c) }))} activeId={current?.id} onSelect={(c) => openItem(c)} />
             ) : (
