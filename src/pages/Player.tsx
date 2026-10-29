@@ -13,6 +13,7 @@ import { applyRelink, relinkM3u, relinkXtream } from "@/lib/relink";
 import { episodeInfo, lastEpisodePerSeries, seriesKeyOf } from "@/lib/titlekey";
 import { listChanged, onRemoteList, startSync } from "@/lib/sync";
 import { refreshChannels } from "@/lib/links";
+import { warmPlayer } from "@/lib/warm";
 import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
@@ -454,6 +455,8 @@ function Watch({
   const [history, setHistory] = useState<Channel[]>(() => load(scoped("rtec:history"), []));
   // Historico guardado antes desta regra pode ter varios EPs da mesma serie: mostra so o mais recente.
   const shownHistory = useMemo(() => lastEpisodePerSeries(history), [history]);
+  // Primeiro play mais rapido: motores de video e conexao com os servidores ja prontos.
+  useEffect(() => warmPlayer([...history.slice(0, 8), ...favorites.slice(0, 4)]), []);
   // Favoritos, historico e progresso acompanham o perfil na conta: o que fizer aqui aparece nos outros aparelhos.
   useEffect(() => {
     const off = onRemoteList((key, items) => {

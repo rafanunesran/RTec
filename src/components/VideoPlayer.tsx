@@ -30,6 +30,7 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
       });
       const hls = new Hls({
         enableWorker: true,
+        startFragPrefetch: true, // ja baixa o primeiro pedaco enquanto prepara o video
         lowLatencyMode: false,
         liveSyncDurationCount: 4,
         maxBufferLength: 30,
@@ -78,7 +79,7 @@ async function attach(video: HTMLVideoElement, src: string, type: Channel["type"
       {
         enableWorker: true,
         enableStashBuffer: true, // junta um pouco de video antes de tocar: comeca mais rapido e trava menos
-        stashInitialSize: 512 * 1024,
+        stashInitialSize: 384 * 1024,
         lazyLoad: false,
         autoCleanupSourceBuffer: true,
         // Guarda so 30 s ja vistos: o padrao (3 min) enche a memoria das TVs e o video engasga.
