@@ -20,7 +20,7 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { api, type Channel, type EpisodeMarks } from "@/lib/api";
+import { api, type Channel, type EpisodeMarks, type Version } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fraction, resumeAt, saveProgress, WATCHED_AT } from "@/lib/progress";
 import VideoPlayer, { type BoostState } from "@/components/VideoPlayer";
@@ -81,6 +81,7 @@ export default function PlayerOverlay({
   onClose,
   info,
   onCast,
+  onVersion,
   children,
 }: {
   channel: Channel;
@@ -97,6 +98,8 @@ export default function PlayerOverlay({
   info?: ReactNode;
   /** Passar para outro aparelho (TV) do ponto onde esta. */
   onCast?: () => void;
+  /** Trocou a versao (dublado, legendado, 4K...): continua do mesmo ponto. */
+  onVersion?: (v: Version) => void;
   /** Janelas abertas por cima do player (ficam dentro dele para aparecer em tela cheia). */
   children?: ReactNode;
 }) {
@@ -118,6 +121,7 @@ export default function PlayerOverlay({
   const [scrub, setScrub] = useState<number | null>(null); // posicao sendo escolhida na barra de tempo
   const scrubTimer = useRef<ReturnType<typeof setTimeout>>();
   const playRef = useRef<HTMLButtonElement>(null);
+  const switchAt = useRef<{ id: string; at: number } | null>(null); // trocou de versao: segue do mesmo ponto
   const seekRef = useRef<HTMLInputElement>(null);
 
   const say = (msg: string) => {
@@ -469,7 +473,8 @@ export default function PlayerOverlay({
   const prevLabel = channel.kind === "series" ? "Episódio anterior" : "Canal anterior";
   const nextLabel = channel.kind === "series" ? "Próximo episódio" : "Próximo canal";
   const listLabel = channel.kind === "series" ? "Episódios" : "Canais";
-  const hasTracks = tracks.audio.length > 1 || tracks.text.length > 0;
+  const versions = onVersion && channel.versions && channel.versions.length > 1 ? channel.versions : null;
+  const hasTracks = tracks.audio.length > 1 || tracks.text.length > 0 || !!versions;
   const pos = scrub ?? st.pos;
 
   const playBtn = (big?: boolean) => (
@@ -520,11 +525,11 @@ export default function PlayerOverlay({
       onPointerDown={(e) => (tap.current.type = e.pointerType)}
     >
       <VideoPlayer
-        key={channel.id}
+        key={`${channel.id}|${channel.tag || ""}`}
         channel={channel}
         boost={boost}
         onBoost={onBoost}
-        startAt={isVod ? resumeAt(channel) : 0}
+        startAt={!isVod ? 0 : switchAt.current?.id === channel.id ? switchAt.current.at : resumeAt(channel)}
         onProgress={(p, dur) => {
           saveProgress(channel, p, dur);
           setRemaining(dur - p);
@@ -670,7 +675,7 @@ export default function PlayerOverlay({
               </CtlButton>
             )}
             {hasTracks && (
-              <CtlButton onClick={() => setPanel("tracks")} label="Áudio e legendas">
+              <CtlButton onClick={() => setPanel("tracks")} label={versions ? "Versão, áudio e legendas" : "Áudio e legendas"}>
                 <Captions className="h-5 w-5" />
               </CtlButton>
             )}
@@ -775,6 +780,18 @@ export default function PlayerOverlay({
       {panel === "tracks" && (
         <TracksPanel
           tracks={tracks}
+          versions={versions}
+          current={channel.tag}
+          onVersion={(ver) => {
+            const v = video();
+            if (v && isVod && v.duration > 0) {
+              saveProgress(channel, v.currentTime, v.duration);
+              switchAt.current = { id: channel.id, at: v.currentTime };
+            }
+            setPanel(null);
+            onVersion?.(ver);
+            say(`Versão ${ver.label}: fica escolhida para os próximos títulos`);
+          }}
           onAudio={(id) => {
             const v = video();
             if (v) setAudioTrack(v, id);
@@ -956,11 +973,18 @@ export function ListPanel({
 
 export function TracksPanel({
   tracks,
+  versions,
+  current,
+  onVersion,
   onAudio,
   onText,
   onClose,
 }: {
   tracks: { audio: Track[]; text: Track[] };
+  /** Versoes do titulo (dublado, legendado, 4K...), quando tem mais de uma. */
+  versions?: Version[] | null;
+  current?: string;
+  onVersion?: (v: Version) => void;
   onAudio: (id: number) => void;
   onText: (id: number) => void;
   onClose: () => void;
@@ -980,8 +1004,14 @@ export function TracksPanel({
     </button>
   );
   return (
-    <SidePanel title="Áudio e legendas" onClose={onClose}>
+    <SidePanel title={versions ? "Versão, áudio e legendas" : "Áudio e legendas"} onClose={onClose}>
       <div ref={boxRef} className="space-y-4 px-2">
+        {versions && onVersion && (
+          <div className="space-y-1">
+            <div className="px-1 text-xs font-semibold uppercase tracking-wider text-white/50">Versão</div>
+            {versions.map((v, n) => row({ id: n, label: v.label, active: v.tag === current }, () => v.tag !== current && onVersion(v)))}
+          </div>
+        )}
         {tracks.audio.length > 1 && (
           <div className="space-y-1">
             <div className="px-1 text-xs font-semibold uppercase tracking-wider text-white/50">Áudio</div>

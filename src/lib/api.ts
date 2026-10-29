@@ -119,11 +119,17 @@ export type Channel = {
   fallback?: string;
   /** O mesmo titulo nas outras listas do cliente: tentado em ordem se este nao tocar. */
   more?: PlayLink[];
+  /** Filme/episodio com mais de uma versao (dublado, legendado, 4K...): a que esta nos links acima e todas. */
+  tag?: string;
+  versions?: Version[];
   /** Recomendacoes: por que o titulo foi sugerido ("Direção de ...", "Com ..."). */
   reasons?: string[];
 };
 
 export type PlayLink = Pick<Channel, "src" | "type" | "alt" | "alt_type" | "fallback">;
+
+/** Uma versao do titulo: tag "L|4K" (legendado, 4K), nome para mostrar e os links dela. */
+export type Version = PlayLink & { tag: string; label: string; more?: PlayLink[] };
 
 export type Catalog = {
   mode: "xtream" | "m3u";

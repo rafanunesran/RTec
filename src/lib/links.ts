@@ -20,7 +20,8 @@ export async function refreshChannels(list: Channel[]): Promise<Channel[]> {
   const need: string[] = [];
   for (const c of list) {
     // Inclui as reservas de outras listas do cliente ("more").
-    for (const v of [...FIELDS.map((f) => c[f]), ...(c.more || []).flatMap((m) => [m.src, m.alt, m.fallback])]) {
+    const links = [...(c.more || []), ...(c.versions || []), ...(c.versions || []).flatMap((v) => v.more || [])];
+    for (const v of [...FIELDS.map((f) => c[f]), ...links.flatMap((m) => [m.src, m.alt, m.fallback])]) {
       if (v && expiresSoon(v) && !need.includes(v)) need.push(v);
     }
   }
@@ -38,7 +39,9 @@ export async function refreshChannels(list: Channel[]): Promise<Channel[]> {
       if (v && fresh.has(v)) n[f] = fresh.get(v)!;
     }
     const renew = (v?: string) => (v && fresh.get(v)) || v || "";
-    if (c.more) n.more = c.more.map((m) => ({ ...m, src: renew(m.src), alt: renew(m.alt), fallback: renew(m.fallback) }));
+    const fix = <T extends { src: string; alt: string; fallback?: string }>(m: T): T => ({ ...m, src: renew(m.src), alt: renew(m.alt), fallback: renew(m.fallback) });
+    if (c.more) n.more = c.more.map(fix);
+    if (c.versions) n.versions = c.versions.map((v) => ({ ...fix(v), ...(v.more ? { more: v.more.map(fix) } : {}) }));
     return n;
   });
 }

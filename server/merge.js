@@ -101,10 +101,15 @@ const joins = (section) => section === "movie" || section === "series";
 const sameYear = (a, b) => !a.year || !b.year || a.year === b.year;
 const rawId = (it) => it.series_id || it.stream_id;
 
-/** Versao do titulo que o nome normalizado nao mostra: legendado e 4K nao se juntam com o dublado/HD. */
-const variant = (name) => {
+/**
+ * Versao do titulo, que o nome normalizado nao mostra: "L|4K" (legendado em 4K), "|FHD", "|" (sem marca).
+ * As versoes do mesmo titulo viram um item so e o reprodutor deixa escolher entre elas.
+ */
+export const variant = (name) => {
   const n = String(name || "");
-  return `${/\[L\]|\(L\)|\blegendad|\bleg\b/i.test(n) ? "L" : ""}${/\b(4k|uhd)\b/i.test(n) ? "4K" : ""}`;
+  const lang = /\[L\]|\(L\)|\blegendad|\bleg\b/i.test(n) ? "L" : "";
+  const q = /\b(4k|uhd|2160p)\b/i.test(n) ? "4K" : /\b(fhd|1080p)\b/i.test(n) ? "FHD" : /\b(hd|720p)\b/i.test(n) ? "HD" : /\bsd\b/i.test(n) ? "SD" : "";
+  return `${lang}|${q}`;
 };
 
 /** O titulo que fica no catalogo herda o que so a copia repetida trazia (nota, ano, genero, capa). */
@@ -114,6 +119,10 @@ function fillIn(dst, src) {
   if (!dst.genre && src.genre) dst.genre = src.genre;
   if (!dst.logo && src.logo) dst.logo = src.logo;
   if (src.added > (dst.added || 0)) dst.added = src.added;
+  if (src._tag === "|" && dst._tag !== "|" && !dst._named) {
+    dst.name = src.name;
+    dst._named = true;
+  }
 }
 const memoCache = new Map();
 
@@ -163,9 +172,10 @@ export function createCatalog(sources) {
     });
 
   // Todos os titulos de uma secao, juntando as listas: o mesmo nome (e ano) em outra lista vira reserva.
-  // Filmes e series repetidos dentro da mesma lista (o fornecedor poe o mesmo titulo em varias categorias)
-  // tambem viram um so, desde que o ano nao seja diferente e a versao seja a mesma (legendado/4K continuam separados).
-  // O titulo que fica herda a nota, o ano, o genero e a capa que faltarem nele.
+  // Filmes e series repetidos dentro da mesma lista (o fornecedor poe o mesmo titulo em varias categorias, e
+  // dublado/legendado/4K como titulos separados) tambem viram um so, desde que o ano nao seja diferente. As
+  // versoes (_tag) ficam nas reservas e o reprodutor deixa trocar. O titulo que fica herda a nota, o ano, o
+  // genero e a capa que faltarem nele, e o nome sem marca de versao.
   const index = (section) =>
     memo(`i|${section}`, async () => {
       const dedupe = joins(section);
@@ -181,7 +191,7 @@ export function createCatalog(sources) {
           const it = { ...raw, category_id: map.get(`${i}|${raw.category_id}`) ?? qualify(i, raw.category_id), _i: i };
           const k = normTitle(it.name);
           it._tag = variant(it.name);
-          const same = (e) => (e._i !== i ? i && sameYear(e, it) : dedupe && e._tag === it._tag && sameYear(e, it));
+          const same = (e) => (e._i !== i ? i : dedupe) && sameYear(e, it);
           const hit = k ? (byKey.get(k) || []).find(same) : null;
           byId.set(qualify(i, rawId(raw)), hit || it);
           if (hit) {
@@ -242,7 +252,7 @@ export function createCatalog(sources) {
         group.map((s, n) =>
           provs[s._i]
             .episodes(s.series_id)
-            .then((eps) => eps.map((ep) => ({ ...ep, _i: s._i, _g: n })))
+            .then((eps) => eps.map((ep) => ({ ...ep, _i: s._i, _g: n, _tag: s._tag })))
             .catch((err) => (n === 0 ? Promise.reject(err) : [])),
         ),
       );

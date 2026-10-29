@@ -634,7 +634,10 @@ function xtreamChannel(c, item, group, app = false, srcs = [c.source]) {
   if (item.kind === "series" && item.series_id) {
     return { id: `s${pre}${item.series_id}`, series_id: pre + item.series_id, name: item.name, group, logo: logoUrl(c.id, item.logo), src: "", type: "file", alt: "", alt_type: "", kind: "series", epg_id: "", playlist_id: "own", added: item.added, year: item.year, rating: item.rating, genres: item.genres || [] };
   }
-  const more = (item._alts || []).filter((a) => a.url).slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app));
+  const alts = (item._alts || []).filter((a) => a.url);
+  const versions = item.kind === "live" || item.kind === "radio" ? null : versionsOf(c, item, alts, srcs, app);
+  const tag = item._tag || "|";
+  const more = (versions ? alts.filter((a) => (a._tag || "|") === tag) : alts).slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app));
   return {
     id: i ? hashId(c.id, p.key, item.kind, item.stream_id) : hashId(c.id, item.kind, item.stream_id),
     name: item.name,
@@ -653,7 +656,34 @@ function xtreamChannel(c, item, group, app = false, srcs = [c.source]) {
     ...(item.season ? { season: item.season, episode: item.episode } : {}),
     ...(item.cover ? { cover: logoUrl(c.id, item.cover) } : {}),
     ...(more.length ? { more } : {}),
+    ...(versions ? { tag, versions } : {}),
   };
+}
+
+/** "L|4K" -> "Legendado · 4K". Mostra so o que muda entre as versoes do titulo. */
+function versionLabel(tag, langs, quals) {
+  const [lang, q] = tag.split("|");
+  const parts = [];
+  if (langs) parts.push(lang === "L" ? "Legendado" : "Dublado");
+  if (quals) parts.push(q || "Normal");
+  return parts.join(" · ");
+}
+
+/**
+ * Filme/episodio com mais de uma versao (dublado, legendado, 4K...): uma entrada por versao, com os links dela e
+ * as reservas da mesma versao. null quando so existe uma versao.
+ */
+function versionsOf(c, item, alts, srcs, app) {
+  const all = [item, ...alts];
+  const tags = [...new Set(all.map((a) => a._tag || "|"))];
+  if (tags.length < 2) return null;
+  const langs = new Set(tags.map((t) => t.split("|")[0])).size > 1;
+  const quals = new Set(tags.map((t) => t.split("|")[1])).size > 1;
+  return tags.map((tag) => {
+    const [first, ...rest] = all.filter((a) => (a._tag || "|") === tag);
+    const more = rest.slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app));
+    return { tag, label: versionLabel(tag, langs, quals), ...playLinks(c, first, srcs[first._i], app), ...(more.length ? { more } : {}) };
+  });
 }
 
 /** Chave para achar o mesmo titulo em outra lista: tipo + nome normalizado (episodio: serie + temporada + numero). */

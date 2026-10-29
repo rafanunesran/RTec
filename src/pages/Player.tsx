@@ -13,6 +13,7 @@ import { applyRelink, relinkM3u, relinkXtream } from "@/lib/relink";
 import { episodeInfo, lastEpisodePerSeries, seriesKeyOf } from "@/lib/titlekey";
 import { listChanged, onRemoteList, startSync } from "@/lib/sync";
 import { refreshChannels } from "@/lib/links";
+import { preferredVersion, saveVersionPref, withVersion } from "@/lib/versions";
 import { warmPlayer } from "@/lib/warm";
 import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
@@ -816,7 +817,7 @@ function Watch({
     const c = await refreshChannels([c0])
       .then((r) => r[0])
       .catch(() => c0);
-    setCurrent(c);
+    setCurrent(preferredVersion(c));
     if (list !== undefined) setQueue(list);
     addHistory(c);
   };
@@ -1662,6 +1663,11 @@ function Watch({
           onFavorite={() => toggleFavorite(current)}
           onNext={(n) => play(n, undefined, false)}
           onClose={() => setCurrent(null)}
+          onVersion={(v) => {
+            // Lembra a escolha: os proximos titulos/episodios abrem nessa versao quando ela existir.
+            saveVersionPref(v.tag);
+            setCurrent((c) => (c ? withVersion(c, v) : c));
+          }}
           onCast={
             tv
               ? undefined

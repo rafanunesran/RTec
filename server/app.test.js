@@ -83,6 +83,7 @@ function xtreamApi(req, res) {
         movie_data: { stream_id: 51, name: "Abelha Rainha" },
       });
     case "get_series_info":
+      if (q.get("series_id") === "72") return json({ episodes: { 1: [{ id: 911, episode_num: 1, season: 1, title: "Ep 1", container_extension: "mp4" }] } });
       return json({ info: { cover: "https://img.example/capa.jpg" }, episodes: { 1: [{ id: 902, episode_num: 2, season: 1, title: "Ep 2", container_extension: "mkv" }, { id: 901, episode_num: 1, season: 1, title: "Ep 1", container_extension: "mp4" }] } });
     case "get_short_epg": {
       const now = Math.floor(Date.now() / 1000);
@@ -526,9 +527,14 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
   const series = (await call("GET", "/api/player/xtream/items?section=series&category=30")).body;
   assert.deepEqual(series.map((s) => [s.series_id, s.rating]), [["70", 8]], "repetida na mesma lista vira uma so, com a nota da copia");
   const netflix = (await call("GET", "/api/player/xtream/items?section=series&category=31")).body;
-  assert.deepEqual(netflix.map((s) => s.series_id).sort(), ["70", "72"], "na outra categoria aparece a mesma; legendada fica separada");
+  assert.deepEqual(netflix.map((s) => s.series_id), ["70"], "na outra categoria aparece a mesma (a legendada tambem vira versao dela)");
   const busca = (await call("GET", "/api/player/xtream/items?section=series&limit=10&q=serie")).body;
-  assert.equal(busca.total, 2);
+  assert.equal(busca.total, 1);
+  const vers = (await call("GET", "/api/player/xtream/series/70?name=Serie%20Teste")).body;
+  assert.deepEqual(vers[0].versions.map((v) => [v.tag, v.label]), [["|", "Dublado"], ["L|", "Legendado"]], "EP 1 tem a versao legendada");
+  assert.match(plain(vers[0].versions[1].src), /911\.mp4/);
+  assert.equal(vers[0].tag, "|");
+  assert.equal(vers[1].versions, undefined, "EP 2 so existe dublado");
   const eps71 = (await call("GET", "/api/player/xtream/series/71?name=Serie%20Teste")).body;
   assert.deepEqual(eps71.map((e) => [e.season, e.episode]), [[1, 1], [1, 2]], "id da copia (favorito antigo) ainda abre os episodios sem repetir");
   const eps = (await call("GET", "/api/player/xtream/series/70?name=Serie%20Teste")).body;
