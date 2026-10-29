@@ -133,6 +133,20 @@ function saveList(key: "favorites" | "history", items: Channel[]) {
   listChanged(key);
 }
 
+/** Troca na lista atual os itens que foram renovados (`before[i]` -> `fresh[i]`), sem desfazer o que mudou enquanto isso. */
+function swapRenewed(cur: Channel[], before: Channel[], fresh: Channel[]): Channel[] {
+  const renewed = new Map<string, Channel>();
+  before.forEach((c, i) => fresh[i] && fresh[i] !== c && renewed.set(JSON.stringify(c), fresh[i]));
+  if (!renewed.size) return cur;
+  let changed = false;
+  const next = cur.map((c) => {
+    const n = renewed.get(JSON.stringify(c));
+    if (n) changed = true;
+    return n ?? c;
+  });
+  return changed ? next : cur;
+}
+
 function save(key: string, value: unknown) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
@@ -464,7 +478,7 @@ function Watch({
       set(items);
       // Vindo de outro aparelho pode trazer links do servidor de video ja vencidos: renova.
       refreshChannels(items)
-        .then((fresh) => fresh !== items && set(fresh))
+        .then((fresh) => fresh !== items && set((cur) => swapRenewed(cur, items, fresh)))
         .catch(() => {});
     });
     const stop = startSync(profile.username);
@@ -522,20 +536,25 @@ function Watch({
   }, [handleAuthError]);
 
   // Ao entrar: renova os links guardados no historico e nos favoritos (logos e videos).
+  // A renovacao pode demorar (muitos favoritos): o que foi tocado ou favoritado enquanto isso continua na lista,
+  // so os itens que ainda estao iguais aos de antes ganham o link novo.
   useEffect(() => {
     let alive = true;
-    (async () => {
-      try {
-        const [h, f] = await Promise.all([refreshChannels(load<Channel[]>(scoped("rtec:history"), [])), refreshChannels(load<Channel[]>(scoped("rtec:favs"), []))]);
-        if (!alive) return;
-        setHistory(h);
-        save(scoped("rtec:history"), h);
-        setFavorites(f);
-        save(scoped("rtec:favs"), f);
-      } catch {
-        /* sem conexao: tenta de novo na proxima vez */
-      }
-    })();
+    for (const [key, set] of [["rtec:history", setHistory], ["rtec:favs", setFavorites]] as const) {
+      const before = load<Channel[]>(scoped(key), []);
+      refreshChannels(before)
+        .then((fresh) => {
+          if (!alive || fresh === before) return;
+          set((cur) => {
+            const next = swapRenewed(cur, before, fresh);
+            if (next !== cur) save(scoped(key), next);
+            return next;
+          });
+        })
+        .catch(() => {
+          /* sem conexao: tenta de novo na proxima vez */
+        });
+    }
     return () => {
       alive = false;
     };
