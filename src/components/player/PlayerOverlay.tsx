@@ -239,7 +239,8 @@ export default function PlayerOverlay({
     const ep = channel as Ep;
     if (ep.kind !== "series" || !ep.parent_series || !ep.episode) return;
     const q = new URLSearchParams({ series: ep.parent_series, season: String(ep.season ?? 0), episode: String(ep.episode), name: ep.group || "" });
-    const waits = [40, 90, 180, 300];
+    // A analise baixa minutos de dois episodios do fornecedor: pergunta por ate ~30 min enquanto toca.
+    const waits = [30, 45, 60, 90, 90, 90, 120, 120, 120, 180, 180, 180, 240, 240];
     let n = 0;
     let stop = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
