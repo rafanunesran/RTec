@@ -875,6 +875,28 @@ export function createApp() {
     }),
   );
 
+  // Situacao do servidor de video (STREAM_PROXY_URL): ffmpeg, analises de Pular intro e atualizacoes.
+  app.get(
+    "/api/admin/video-server",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      const base = proxyBase();
+      if (!base) return res.json({ configured: false });
+      const exp = Math.ceil(Date.now() / 1000) + 300;
+      const q = new URLSearchParams({ c: "admin", e: String(exp), s: signUrl("admin", exp, "status") });
+      const host = new URL(base).host;
+      try {
+        const r = await fetch(`${base}/api/player/status?${q}`, { signal: AbortSignal.timeout(15000) });
+        if (r.status === 404) return res.json({ configured: true, host, ok: false, error: "O servidor ainda esta na versao antiga (a atualizacao automatica troca em ate 15 min)." });
+        if (!r.ok) return res.json({ configured: true, host, ok: false, error: `O servidor respondeu HTTP ${r.status}` });
+        res.json({ configured: true, host, ...(await r.json()) });
+      } catch (err) {
+        res.json({ configured: true, host, ok: false, error: `Sem resposta do servidor de video (${err.cause?.code || err.name})` });
+      }
+    }),
+  );
+
   // ---------- Painel ----------
   app.get(
     "/api/stats",

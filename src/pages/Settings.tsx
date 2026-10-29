@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Button, Card, Field, IconTile, Input } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
+import VideoServerCard from "@/components/VideoServerCard";
 
 export default function Settings() {
   const [current, setCurrent] = useState("");
@@ -30,7 +31,7 @@ export default function Settings() {
 
   return (
     <>
-      <PageHeader title="Configurações" description="Segurança da conta do administrador" />
+      <PageHeader title="Configurações" description="Segurança da conta e situação do servidor de vídeo" />
       <Card className="max-w-lg p-6">
         <div className="mb-5 flex items-center gap-3">
           <IconTile icon={<KeyRound />} />
@@ -55,6 +56,9 @@ export default function Settings() {
           </Button>
         </form>
       </Card>
+      <div className="mt-6">
+        <VideoServerCard />
+      </div>
     </>
   );
 }

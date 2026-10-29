@@ -6,7 +6,8 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import fs from "node:fs";
 
 const SECRET = process.env.PROXY_SECRET;
 const PORT = Number(process.env.PORT || 8080);
@@ -320,11 +321,16 @@ async function pumpMarks() {
   try {
     job.state.eps = await analyzeEpisodes(job.urls);
     job.state.status = "done";
+    markStats.done++;
+    if (job.state.eps.some((m) => m && (m.intro || m.credits != null))) markStats.found++;
   } catch (err) {
     job.state.status = "error";
     job.state.error = String(err.message || err).slice(0, 200);
+    markStats.errors++;
+    markStats.last_error = job.state.error;
     console.warn(`[marcas] falhou: ${job.state.error}`);
   }
+  markStats.last_at = new Date().toISOString();
   job.state.at = Date.now();
   markBusy = false;
   setImmediate(pumpMarks);
@@ -349,6 +355,61 @@ function marksRoute(url, res) {
   json(res, 200, { status: state.status, ...(state.eps ? { eps: state.eps } : {}), ...(state.error ? { error: state.error } : {}) });
 }
 
+// ---------- Situacao do servidor (aparece no painel admin, em Configuracoes) ----------
+const STARTED = new Date().toISOString();
+const markStats = { done: 0, found: 0, errors: 0, last_error: "", last_at: "" };
+const VERSION = (() => {
+  try {
+    return crypto.createHash("sha1").update(fs.readFileSync(fileURLToPath(import.meta.url))).digest("hex").slice(0, 8);
+  } catch {
+    return "";
+  }
+})();
+let ffInfo = null;
+
+/** ffmpeg instalado, versao e se a impressao digital do audio (chromaprint) funciona de verdade. */
+async function ffmpegInfo() {
+  if (ffInfo && Date.now() - ffInfo.at < 10 * 60 * 1000) return ffInfo;
+  const v = await run("ffmpeg", ["-hide_banner", "-version"]).catch(() => "");
+  let fingerprint = false;
+  if (v) {
+    const fp = await run(
+      "ffmpeg",
+      ["-loglevel", "error", "-nostdin", "-f", "lavfi", "-i", "sine=frequency=440:duration=5", "-ac", "1", "-f", "chromaprint", "-fp_format", "raw", "pipe:1"],
+      { binary: true },
+    ).catch(() => Buffer.alloc(0));
+    fingerprint = fp.length >= 40;
+  }
+  ffInfo = { at: Date.now(), installed: !!v, version: /ffmpeg version (\S+)/.exec(v)?.[1] || "", fingerprint };
+  return ffInfo;
+}
+
+function updateLog() {
+  try {
+    return fs.readFileSync("/var/log/rtec-update.log", "utf8").trim().split("\n").slice(-6);
+  } catch {
+    return [];
+  }
+}
+
+/** /api/player/status?c&e&s (assinado pelo painel com u="status"). */
+async function statusRoute(url, res) {
+  const { c, e, s } = Object.fromEntries(url.searchParams);
+  if (!valid(c, e, "status", s)) return send(res, 403, "Link invalido ou expirado");
+  const ff = await ffmpegInfo();
+  json(res, 200, {
+    ok: true,
+    version: VERSION,
+    started_at: STARTED,
+    node: process.versions.node,
+    ffmpeg: { installed: ff.installed, version: ff.version, fingerprint: ff.fingerprint },
+    streaming,
+    aac: aacRunning,
+    marks: { queue: markQueue.length, busy: markBusy, ...markStats },
+    update_log: updateLog(),
+  });
+}
+
 function json(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" });
   res.end(JSON.stringify(body));
@@ -365,6 +426,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (url.pathname === "/api/player/marks") return marksRoute(url, res);
+  if (url.pathname === "/api/player/status") return statusRoute(url, res);
   if (url.pathname !== "/api/player/proxy" && url.pathname !== "/api/player/aac") return send(res, 404, "not found");
   const { c, e, s } = Object.fromEntries(url.searchParams);
   const token = url.searchParams.get("u") || "";
