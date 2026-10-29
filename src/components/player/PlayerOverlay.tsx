@@ -335,9 +335,32 @@ export default function PlayerOverlay({
   const showIntro = !!intro && countdown === null && st.pos >= intro[0] && st.pos < intro[1] - 2;
   const skipIntro = () => {
     if (!intro) return;
+    setIntroCount(null);
     seekTo(intro[1]);
     say("Abertura pulada");
   };
+  // Abertura: pula sozinho depois de 5 s (para enquanto pausado); o botao vira "Cancelar". Cancelada, fica
+  // so o botao "Pular intro" ate o fim desse episodio.
+  const [introCount, setIntroCount] = useState<number | null>(null);
+  const [introCancelled, setIntroCancelled] = useState(false);
+  useEffect(() => {
+    setIntroCount(null);
+    setIntroCancelled(false);
+  }, [channel.id]);
+  useEffect(() => {
+    if (showIntro && !introCancelled && introCount === null) setIntroCount(5);
+    else if (!showIntro && introCount !== null) setIntroCount(null);
+  }, [showIntro, introCancelled, introCount]);
+  useEffect(() => {
+    if (introCount === null || st.paused) return;
+    if (introCount <= 0) {
+      skipIntro();
+      return;
+    }
+    const t = setTimeout(() => setIntroCount((c) => (c === null ? c : c - 1)), 1000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [introCount, st.paused]);
 
   // Controle remoto: os botoes "Pular intro" e "Proximo episodio" ja aparecem selecionados, entao um OK basta.
   const nextRef = useRef<HTMLButtonElement>(null);
@@ -694,12 +717,25 @@ export default function PlayerOverlay({
             ref={introRef}
             onClick={(e) => {
               e.stopPropagation();
-              skipIntro();
+              if (introCount !== null) {
+                setIntroCount(null);
+                setIntroCancelled(true);
+                say("Pulo automático cancelado");
+              } else skipIntro();
             }}
             className="flex items-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-bold text-black shadow-lg ring-white/60 hover:bg-white/90 focus:ring-4"
           >
-            <ChevronsRight className="h-4 w-4" />
-            Pular intro
+            {introCount !== null ? (
+              <>
+                <X className="h-4 w-4" />
+                Pulando intro em {introCount}s · Cancelar
+              </>
+            ) : (
+              <>
+                <ChevronsRight className="h-4 w-4" />
+                Pular intro
+              </>
+            )}
           </button>
         </div>
       )}
