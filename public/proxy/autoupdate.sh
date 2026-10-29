@@ -4,7 +4,7 @@
 # A cada 15 min confere no GitHub (branch main) se o server.mjs mudou. Se mudou:
 #   - instala o que faltar na maquina (pacotes de packages.txt, ex: ffmpeg);
 #   - confere se o arquivo novo e um JavaScript valido;
-#   - espera ninguem estar assistindo pelo servidor (no maximo 6 h; de madrugada aplica mesmo assim);
+#   - espera ninguem estar assistindo pelo servidor (no maximo 45 min; de madrugada aplica mesmo assim);
 #   - troca o arquivo e reinicia; se o servidor nao responder, volta a versao anterior.
 # O proprio script tambem se atualiza, entao novas configuracoes chegam sozinhas.
 #
@@ -17,7 +17,7 @@ SRC="${RTEC_UPDATE_SRC:-https://raw.githubusercontent.com/rafanunesran/RTec/main
 APP="${RTEC_UPDATE_APP:-/opt/rtec-proxy/server.mjs}"
 DIR="${RTEC_UPDATE_DIR:-/var/lib/rtec-update}"
 LOG="${RTEC_UPDATE_LOG:-/var/log/rtec-update.log}"
-MAX_WAIT=$((6 * 3600))
+MAX_WAIT=$((45 * 60)) # reiniciar leva ~2 s e o player reconecta sozinho
 
 log() { echo "$(date '+%F %T') $*" | tee -a "$LOG"; }
 fetch() { curl -fsSL --max-time 60 "$SRC/$1?t=$(date +%s)" -o "$2"; }
@@ -91,6 +91,7 @@ cmd_check() {
   hour="$(TZ=America/Sao_Paulo date +%H)"
   if [ -z "$force" ] && [ "$(viewers)" -gt 0 ] && [ $((now - since)) -lt "$MAX_WAIT" ] && [ "$hour" -ge 6 ]; then
     log "Versao nova pronta; esperando terminar $(viewers) conexao(oes) de video para reiniciar."
+    self_update
     return 0
   fi
   packages || log "Nao consegui instalar pacotes agora (apt ocupado?); sigo e tento de novo depois."

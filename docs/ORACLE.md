@@ -55,7 +55,7 @@ Rode uma vez dentro da maquina e nunca mais precisa entrar para atualizar:
 curl -fsSL https://raw.githubusercontent.com/rafanunesran/RTec/main/public/proxy/autoupdate.sh | sudo bash -s -- install
 ```
 A cada 15 min o servidor confere o GitHub. Se o `server.mjs` mudou, instala o que faltar (`packages.txt`, ex: ffmpeg),
-espera ninguem estar assistindo pelo servidor (no maximo 6 h; de madrugada aplica direto), reinicia e, se nao
+espera ninguem estar assistindo pelo servidor (no maximo 45 min; de madrugada aplica direto), reinicia e, se nao
 responder, volta a versao anterior. O proprio script tambem se atualiza.
 Ver a situacao: `sudo rtec-update status` · atualizar na hora: `sudo rtec-update now`
 Maquinas novas (install.sh) ja vem com isso ligado.
