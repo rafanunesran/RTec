@@ -50,7 +50,7 @@ function xtreamApi(req, res) {
     case "get_vod_categories":
       return json([{ category_id: "20", category_name: "Filmes | Acao" }]);
     case "get_series_categories":
-      return json([{ category_id: "30", category_name: "Series | Drama" }]);
+      return json([{ category_id: "30", category_name: "Series | Drama" }, { category_id: "31", category_name: "Series | Netflix" }]);
     case "get_live_streams":
       return json(
         [
@@ -67,7 +67,14 @@ function xtreamApi(req, res) {
         { stream_id: 52, name: "Zebra (1999)", stream_icon: "", container_extension: "mp4", category_id: "20", added: "1600000000", rating_5based: "4.5" },
       ]);
     case "get_series":
-      return json([{ series_id: 70, name: "Serie Teste", cover: "https://img.example/s.jpg", category_id: "30" }]);
+      return json(
+        [
+          { series_id: 70, name: "Serie Teste", cover: "https://img.example/s.jpg", category_id: "30" },
+          // O fornecedor repete a serie em outra categoria (so esta copia traz a nota) e tem a versao legendada.
+          { series_id: 71, name: "Serie Teste", cover: "", category_id: "31", rating: "8", year: "2013" },
+          { series_id: 72, name: "Serie Teste [L]", cover: "", category_id: "31" },
+        ].filter((x) => !q.get("category_id") || x.category_id === q.get("category_id")),
+      );
     case "get_vod_info":
       if (q.get("vod_id") === "50") return json({ info: { name: "Filme Teste", genre: "Action", director: "Joao Silva", cast: "Outra Pessoa" } });
       if (q.get("vod_id") === "52") return json({ info: { name: "Zebra", genre: "Comedia, Familia" } });
@@ -517,7 +524,13 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
   assert.equal((await first.arrayBuffer()).byteLength, 1048576);
 
   const series = (await call("GET", "/api/player/xtream/items?section=series&category=30")).body;
-  assert.equal(series[0].series_id, "70");
+  assert.deepEqual(series.map((s) => [s.series_id, s.rating]), [["70", 8]], "repetida na mesma lista vira uma so, com a nota da copia");
+  const netflix = (await call("GET", "/api/player/xtream/items?section=series&category=31")).body;
+  assert.deepEqual(netflix.map((s) => s.series_id).sort(), ["70", "72"], "na outra categoria aparece a mesma; legendada fica separada");
+  const busca = (await call("GET", "/api/player/xtream/items?section=series&limit=10&q=serie")).body;
+  assert.equal(busca.total, 2);
+  const eps71 = (await call("GET", "/api/player/xtream/series/71?name=Serie%20Teste")).body;
+  assert.deepEqual(eps71.map((e) => [e.season, e.episode]), [[1, 1], [1, 2]], "id da copia (favorito antigo) ainda abre os episodios sem repetir");
   const eps = (await call("GET", "/api/player/xtream/series/70?name=Serie%20Teste")).body;
   assert.deepEqual(eps.map((e) => [e.name, e.season, e.episode]), [["Ep 1", 1, 1], ["Ep 2", 1, 2]]);
   assert.equal(eps[0].parent_series, "70");

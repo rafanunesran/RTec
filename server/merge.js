@@ -96,8 +96,25 @@ function providerFor(p, key) {
 
 // ---------- Catalogo ----------
 
+/** Secoes em que titulos repetidos dentro da mesma lista viram um so (canais e radios ficam como vieram). */
+const joins = (section) => section === "movie" || section === "series";
 const sameYear = (a, b) => !a.year || !b.year || a.year === b.year;
 const rawId = (it) => it.series_id || it.stream_id;
+
+/** Versao do titulo que o nome normalizado nao mostra: legendado e 4K nao se juntam com o dublado/HD. */
+const variant = (name) => {
+  const n = String(name || "");
+  return `${/\[L\]|\(L\)|\blegendad|\bleg\b/i.test(n) ? "L" : ""}${/\b(4k|uhd)\b/i.test(n) ? "4K" : ""}`;
+};
+
+/** O titulo que fica no catalogo herda o que so a copia repetida trazia (nota, ano, genero, capa). */
+function fillIn(dst, src) {
+  if (src.rating > (dst.rating || 0)) dst.rating = src.rating;
+  if (!dst.year && src.year) dst.year = src.year;
+  if (!dst.genre && src.genre) dst.genre = src.genre;
+  if (!dst.logo && src.logo) dst.logo = src.logo;
+  if (src.added > (dst.added || 0)) dst.added = src.added;
+}
 const memoCache = new Map();
 
 /**
@@ -146,9 +163,12 @@ export function createCatalog(sources) {
     });
 
   // Todos os titulos de uma secao, juntando as listas: o mesmo nome (e ano) em outra lista vira reserva.
-  // Dentro da mesma lista nada e juntado (fica como o fornecedor mandou).
+  // Filmes e series repetidos dentro da mesma lista (o fornecedor poe o mesmo titulo em varias categorias)
+  // tambem viram um so, desde que o ano nao seja diferente e a versao seja a mesma (legendado/4K continuam separados).
+  // O titulo que fica herda a nota, o ano, o genero e a capa que faltarem nele.
   const index = (section) =>
     memo(`i|${section}`, async () => {
+      const dedupe = joins(section);
       const [{ map }, lists] = await Promise.all([
         cats(section),
         Promise.all(provs.map((p, i) => (i ? p.items(section, "").catch(() => []) : p.items(section, "")))),
@@ -160,11 +180,14 @@ export function createCatalog(sources) {
         for (const raw of list) {
           const it = { ...raw, category_id: map.get(`${i}|${raw.category_id}`) ?? qualify(i, raw.category_id), _i: i };
           const k = normTitle(it.name);
-          const hit = i && k ? (byKey.get(k) || []).find((e) => e._i !== i && sameYear(e, it)) : null;
+          it._tag = variant(it.name);
+          const same = (e) => (e._i !== i ? i && sameYear(e, it) : dedupe && e._tag === it._tag && sameYear(e, it));
+          const hit = k ? (byKey.get(k) || []).find(same) : null;
           byId.set(qualify(i, rawId(raw)), hit || it);
           if (hit) {
             hit._alts.push(it);
             hit._cats.add(it.category_id);
+            fillIn(hit, it);
             continue;
           }
           it._alts = [];
@@ -197,28 +220,29 @@ export function createCatalog(sources) {
       return (await cats(section)).list;
     },
     async items(section, category) {
-      if (!merged) return (await provs[0].items(section, category)).map((it) => ({ ...it, _i: 0 }));
+      if (!merged && !joins(section)) return (await provs[0].items(section, category)).map((it) => ({ ...it, _i: 0 }));
       const { entries } = await index(section);
       return category ? entries.filter((e) => e._cats.has(category)) : entries;
     },
     /** Item do catalogo pelo id (com as reservas das outras listas). */
     async find(section, qid) {
-      if (!merged) return null;
+      if (!merged && !joins(section)) return null;
       return (await index(section)).byId.get(String(qid)) || null;
     },
     /** Episodios de uma serie; com mais de uma lista, junta temporada/episodio das outras listas. */
     async episodes(qid) {
-      const entry = merged ? (await index("series").catch(() => null))?.byId.get(String(qid)) : null;
+      const entry = merged || joins("series") ? (await index("series").catch(() => null))?.byId.get(String(qid)) : null;
       if (!entry) {
         const r = ref(qid);
         return (await r.prov.episodes(r.id)).map((ep) => ({ ...ep, _i: r.i }));
       }
-      const group = [entry, ...entry._alts];
+      // Reserva de outra lista vem antes da copia repetida na mesma lista (que costuma ser o mesmo arquivo).
+      const group = [entry, ...entry._alts.filter((s) => s._i !== entry._i), ...entry._alts.filter((s) => s._i === entry._i)];
       const lists = await Promise.all(
         group.map((s, n) =>
           provs[s._i]
             .episodes(s.series_id)
-            .then((eps) => eps.map((ep) => ({ ...ep, _i: s._i })))
+            .then((eps) => eps.map((ep) => ({ ...ep, _i: s._i, _g: n })))
             .catch((err) => (n === 0 ? Promise.reject(err) : [])),
         ),
       );
@@ -228,8 +252,8 @@ export function createCatalog(sources) {
         for (const ep of eps) {
           const k = ep.episode ? `${ep.season}|${ep.episode}` : "";
           const hit = k && byNum.get(k);
-          if (hit && hit._i !== ep._i) {
-            hit._alts.push(ep);
+          if (hit && hit._g !== ep._g) {
+            if (ep.url !== hit.url && !hit._alts.some((x) => x.url === ep.url)) hit._alts.push(ep);
             continue;
           }
           const e = { ...ep, _alts: [] };
