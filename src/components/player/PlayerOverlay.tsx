@@ -225,6 +225,8 @@ export default function PlayerOverlay({
   useEffect(() => {
     setRemaining(null);
     setCountdown(null);
+    autoCount.current = false;
+    cancelled.current = false;
     setScrub(null);
     setSt((s) => ({ ...s, pos: 0, dur: 0 }));
   }, [channel.id]);
@@ -278,16 +280,22 @@ export default function PlayerOverlay({
     return () => clearInterval(t);
   }, []);
 
-  // Contagem regressiva para o proximo episodio quando o atual termina.
+  // Contagem regressiva para o proximo episodio: 13 s quando o botao aparece nos creditos (para enquanto
+  // o video esta pausado) e 5 s quando o video termina. Cancelada no X, nao volta neste episodio.
+  const autoCount = useRef(false);
+  const cancelled = useRef(false);
   useEffect(() => {
     if (countdown === null || !next) return;
     if (countdown <= 0) {
+      // Zera junto com a troca: senao, no proximo episodio a contagem em 0 pularia de novo.
+      setCountdown(null);
       onNext(next);
       return;
     }
+    if (autoCount.current && st.paused) return;
     const t = setTimeout(() => setCountdown((c) => (c === null ? c : c - 1)), 1000);
     return () => clearTimeout(t);
-  }, [countdown, next, onNext]);
+  }, [countdown, next, onNext, st.paused]);
 
   const showChrome = () => {
     setChrome(true);
@@ -310,7 +318,18 @@ export default function PlayerOverlay({
   // Com os creditos conhecidos, o "Proximo episodio" aparece quando eles comecam; com cena pos-creditos,
   // so no fim do video. Sem dados, como antes: nos ultimos 45 s.
   const atCredits = isVod && marks?.credits != null && !marks.post && st.pos >= marks.credits;
-  const showNext = !!next && (countdown !== null || atCredits || (!!nearEnd && !marks?.post && marks?.credits == null));
+  const offerNext = !!next && (atCredits || (!!nearEnd && !marks?.post && marks?.credits == null));
+  const showNext = !!next && (countdown !== null || offerNext);
+  useEffect(() => {
+    if (offerNext && countdown === null && !cancelled.current) {
+      autoCount.current = true;
+      setCountdown(13);
+    } else if (!offerNext && countdown !== null && autoCount.current) {
+      // Voltou para antes dos creditos: a contagem para.
+      autoCount.current = false;
+      setCountdown(null);
+    }
+  }, [offerNext, countdown]);
   const intro = isVod ? marks?.intro : null;
   const showIntro = !!intro && countdown === null && st.pos >= intro[0] && st.pos < intro[1] - 2;
   const skipIntro = () => {
@@ -488,7 +507,11 @@ export default function PlayerOverlay({
         }}
         onEnded={() => {
           saveProgress(channel, Number.MAX_SAFE_INTEGER, 1);
-          if (next) setCountdown(5);
+          // Terminou: a contagem dos creditos continua mesmo com o video parado; sem ela, 5 s.
+          if (next && !cancelled.current) {
+            autoCount.current = false;
+            setCountdown((c) => c ?? 5);
+          }
         }}
         className="relative h-full w-full flex-1 overflow-hidden bg-black"
       >
@@ -683,7 +706,13 @@ export default function PlayerOverlay({
       {showNext && next && (
         <div className="absolute bottom-[9.5rem] right-4 z-10 flex items-center gap-2">
           {countdown !== null && (
-            <button onClick={() => setCountdown(null)} className="grid h-11 w-11 place-items-center rounded-full bg-black/60 ring-1 ring-white/20" aria-label="Cancelar">
+            <button
+              onClick={() => {
+                cancelled.current = true;
+                autoCount.current = false;
+                setCountdown(null);
+              }}
+              className="grid h-11 w-11 place-items-center rounded-full bg-black/60 ring-1 ring-white/20" aria-label="Cancelar">
               <X className="h-5 w-5" />
             </button>
           )}
