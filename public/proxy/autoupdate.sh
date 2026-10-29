@@ -93,7 +93,7 @@ cmd_check() {
     log "Versao nova pronta; esperando terminar $(viewers) conexao(oes) de video para reiniciar."
     return 0
   fi
-  packages
+  packages || log "Nao consegui instalar pacotes agora (apt ocupado?); sigo e tento de novo depois."
   cp -f "$APP" "$DIR/server.mjs.bak" 2>/dev/null || true
   install -m 644 "$tmp" "$APP"
   systemctl restart rtec-proxy
