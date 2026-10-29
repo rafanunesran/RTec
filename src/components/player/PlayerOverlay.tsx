@@ -712,7 +712,12 @@ export default function PlayerOverlay({
       </div>
 
       {showIntro && !showNext && (
-        <div className="absolute bottom-[9.5rem] right-4 z-10">
+        <div className="absolute bottom-[9.5rem] right-4 z-10 flex flex-col items-end gap-2">
+          {introCount !== null && (
+            <div className="rounded-full bg-black/70 px-3 py-1 text-sm font-semibold tabular-nums text-white ring-1 ring-white/20">
+              Pulando intro em {introCount}s
+            </div>
+          )}
           <button
             ref={introRef}
             onClick={(e) => {
@@ -728,7 +733,7 @@ export default function PlayerOverlay({
             {introCount !== null ? (
               <>
                 <X className="h-4 w-4" />
-                Pulando intro em {introCount}s · Cancelar
+                Cancelar
               </>
             ) : (
               <>
