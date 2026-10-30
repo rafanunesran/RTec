@@ -1437,6 +1437,42 @@ export function createApp() {
     }),
   );
 
+  // Quantas temporadas cada serie tem (o "T2" no card). A lista do fornecedor nao traz isso: conta pelos episodios
+  // (get_series_info), algumas series por vez, e guarda aqui para nao perguntar de novo ao fornecedor.
+  const seasonsCache = new Map();
+  const SEASONS_TTL = 12 * 3600 * 1000;
+  app.get(
+    "/api/player/xtream/seasons",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      const cat = requireXtream(c);
+      const ids = [...new Set(String(req.query.ids || "").split(",").map((s) => s.replace(/[^\w~-]/g, "").slice(0, 60)).filter(Boolean))].slice(0, 30);
+      const out = {};
+      const queue = [...ids];
+      const worker = async () => {
+        for (let id; (id = queue.shift()); ) {
+          const k = `${c.id}|${id}`;
+          const hit = seasonsCache.get(k);
+          if (hit && Date.now() - hit.at < SEASONS_TTL) {
+            out[id] = hit.n;
+            continue;
+          }
+          const eps = await cat.episodes(id).catch(() => null);
+          const n = eps ? new Set(eps.map((e) => e.season)).size : 0;
+          if (eps) {
+            if (seasonsCache.size > 20000) seasonsCache.clear();
+            seasonsCache.set(k, { at: Date.now(), n });
+          }
+          out[id] = n;
+        }
+      };
+      await Promise.all(Array.from({ length: 6 }, worker));
+      res.setHeader("Cache-Control", "no-store");
+      res.json(out);
+    }),
+  );
+
   // "Pular intro" e "Proximo EP" nos creditos (marks.js). O aparelho so recebe os tempos; a analise do audio
   // roda no servidor de video e fica guardada por episodio. pending: ainda analisando (o reprodutor pergunta de novo).
   async function seriesTmdbId(cat, seriesId, name) {

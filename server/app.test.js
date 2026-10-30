@@ -986,6 +986,9 @@ test("ficha do filme e da serie vem do fornecedor", async () => {
   assert.equal(serie.name, "Serie Teste");
   assert.equal(serie.seasons, 1);
   assert.equal(serie.year, 2020);
+  // "T1" no card: temporadas de varias series de uma vez, contadas pelos episodios
+  const seasons = (await call("GET", "/api/player/xtream/seasons?ids=70,72,70")).body;
+  assert.deepEqual(seasons, { 70: 1, 72: 1 });
   // sem id (lista M3U): so o nome, sem erro
   const m3u = await call("GET", "/api/player/info?kind=movie&name=Qualquer");
   assert.equal(m3u.status, 200);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, Bell, BellRing, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, RotateCw, Search, Settings, Share, SquarePlus, Trophy, Tv, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Bell, BellRing, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, RotateCw, Search, Settings, Share, SquarePlus, Trash2, Trophy, Tv, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, isListExpired, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
@@ -8,6 +8,7 @@ import { Button, Dialog, EmptyState, Field, Input, Select, Skeleton } from "@/co
 import Logo from "@/components/Logo";
 import PlayerOverlay from "@/components/player/PlayerOverlay";
 import { MovieDetails, Recommendations, TitleHeader, useTitleInfo } from "@/components/player/TitleDetails";
+import { seasonsOf, useSeasonsVersion } from "@/lib/seasons";
 import { WATCHED_AT, adoptProgress, fraction, getProgress, resumeAt, saveProgress, useProgressVersion } from "@/lib/progress";
 import { applyRelink, relinkM3u, relinkXtream } from "@/lib/relink";
 import { episodeInfo, lastEpisodePerSeries, seriesKeyOf } from "@/lib/titlekey";
@@ -110,7 +111,11 @@ function localFacets(list: Channel[]): Facets {
   return { genres: [...genres.values()].sort((a, b) => b.count - a.count || collator.compare(a.name, b.name)).slice(0, 60), years: { min, max }, rated };
 }
 
-const metaLine = (c: Channel) => [c.year || "", c.rating ? `★ ${c.rating.toFixed(1)}` : ""].filter(Boolean).join(" · ") || undefined;
+/** Serie (nao episodio): "2020 · ★ 6.0 · T2", com o numero de temporadas (seasons.ts). */
+const metaLine = (c: Channel) => {
+  const n = c.kind === "series" && !c.season && !c.parent_series ? seasonsOf(c.series_id || c.id) : 0;
+  return [c.year || "", c.rating ? `★ ${c.rating.toFixed(1)}` : "", n ? `T${n}` : ""].filter(Boolean).join(" · ") || undefined;
+};
 
 const sections: { key: Section; label: string; icon: typeof Tv }[] = [
   { key: "live", label: "TV ao vivo", icon: Tv },
@@ -459,6 +464,7 @@ function Watch({
   const [allRes, setAllRes] = useState<{ key: string; loading: boolean; data: Record<Section, { total: number; items: Channel[] }> } | null>(null);
   const pendingSeries = useRef<{ key: string; name: string; logo: string; sub: string; episodes: Episode[] | null } | null>(null);
   useProgressVersion();
+  const seasonsVersion = useSeasonsVersion();
   const [playlistId, setPlaylistId] = useState("");
   const [current, setCurrent] = useState<Channel | null>(null);
   const [group, setGroup] = useState("");
@@ -748,10 +754,12 @@ function Watch({
     }
     for (const s of map.values()) {
       s.episodes!.sort((a, b) => a.season - b.season || a.episode - b.episode);
-      s.sub = `${s.episodes!.length} episódio(s)`;
+      const n = new Set(s.episodes!.map((e) => e.season)).size;
+      s.sub = `${s.episodes!.length} episódio(s) · T${n}`;
     }
     return [...map.values()];
-  }, [section, xt, visible]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, xt, visible, seasonsVersion]);
 
   useEffect(() => setLimit(PAGE), [group, query, section, playlistId]);
 
@@ -1425,15 +1433,33 @@ function Watch({
           {/* Dentro de uma serie a busca e as categorias saem da frente (o "Voltar" leva de volta a lista). */}
           {!series && (
           <>
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              className="pl-9"
-              aria-label="Buscar"
-              placeholder={group ? `Buscar em ${groupLabel}...` : section === "live" ? "Buscar canal..." : section === "radio" ? "Buscar rádio..." : section === "movie" ? "Buscar filme..." : "Buscar série..."}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
+          <div className="flex gap-2">
+            <div className="relative min-w-0 flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                className="pl-9"
+                aria-label="Buscar"
+                placeholder={group ? `Buscar em ${groupLabel}...` : section === "live" ? "Buscar canal..." : section === "radio" ? "Buscar rádio..." : section === "movie" ? "Buscar filme..." : "Buscar série..."}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </div>
+            {/* Lixeira: limpa a busca, a categoria, a ordenacao e os filtros de uma vez. */}
+            <Button
+              variant="outline"
+              size="icon"
+              className={cn("h-10 w-10 shrink-0", !(query || group || sort || filterCount(filters)) && "text-muted-foreground")}
+              onClick={() => {
+                setQuery("");
+                setGroup("");
+                if (sort) setSort("");
+                if (filterCount(filters)) setFilters(NO_FILTERS);
+              }}
+              aria-label="Limpar busca e filtros"
+              title="Limpar busca e filtros"
+            >
+              <Trash2 />
+            </Button>
           </div>
           <div className="flex flex-col gap-2 landscape:flex-row landscape:items-center">
             <div className="flex min-w-0 flex-1 items-center gap-2">
