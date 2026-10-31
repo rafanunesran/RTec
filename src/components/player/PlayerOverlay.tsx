@@ -341,7 +341,8 @@ export default function PlayerOverlay({
   const skipIntro = () => {
     if (!intro) return;
     setIntroCount(null);
-    seekTo(intro[1]);
+    // Cai 1 s antes do fim da abertura: da para ver que pulou e nao perde a cena inicial.
+    seekTo(Math.max(intro[0], intro[1] - 1));
     say("Abertura pulada");
   };
   // Abertura: pula sozinho depois de 5 s (para enquanto pausado); o botao vira "Cancelar". Cancelada, fica
