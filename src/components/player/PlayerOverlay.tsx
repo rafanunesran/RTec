@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
-  Captions,
+  Settings,
   ChevronsRight,
   Cast,
   Heart,
@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { api, type Channel, type EpisodeMarks, type Version } from "@/lib/api";
+import { singleVersion } from "@/lib/versions";
 import { cn } from "@/lib/utils";
 import { fraction, resumeAt, saveProgress, WATCHED_AT } from "@/lib/progress";
 import VideoPlayer, { type BoostState } from "@/components/VideoPlayer";
@@ -473,8 +474,8 @@ export default function PlayerOverlay({
   const prevLabel = channel.kind === "series" ? "Episódio anterior" : "Canal anterior";
   const nextLabel = channel.kind === "series" ? "Próximo episódio" : "Próximo canal";
   const listLabel = channel.kind === "series" ? "Episódios" : "Canais";
-  const versions = onVersion && channel.versions && channel.versions.length > 1 ? channel.versions : null;
-  const hasTracks = tracks.audio.length > 1 || tracks.text.length > 0 || !!versions;
+  // Filmes e episodios sempre mostram a versao, mesmo quando so existe uma.
+  const versions = !isVod ? null : channel.versions?.length && onVersion ? channel.versions : [singleVersion(channel)];
   const pos = scrub ?? st.pos;
 
   const playBtn = (big?: boolean) => (
@@ -674,11 +675,9 @@ export default function PlayerOverlay({
                 <span className="text-sm font-semibold">{channel.kind === "series" ? "EPs" : listLabel}</span>
               </CtlButton>
             )}
-            {hasTracks && (
-              <CtlButton onClick={() => setPanel("tracks")} label={versions ? "Versão, áudio e legendas" : "Áudio e legendas"}>
-                <Captions className="h-5 w-5" />
-              </CtlButton>
-            )}
+            <CtlButton onClick={() => setPanel("tracks")} label="Configurações">
+              <Settings className="h-5 w-5" />
+            </CtlButton>
             {!tv && !touch && (
               <div className="flex items-center">
                 <CtlButton onClick={toggleMute} label={st.muted ? "Ativar som" : "Tirar o som"}>
@@ -781,7 +780,7 @@ export default function PlayerOverlay({
         <TracksPanel
           tracks={tracks}
           versions={versions}
-          current={channel.tag}
+          current={channel.tag ?? versions?.[0]?.tag}
           onVersion={(ver) => {
             const v = video();
             if (v && isVod && v.duration > 0) {
@@ -1004,7 +1003,7 @@ export function TracksPanel({
     </button>
   );
   return (
-    <SidePanel title={versions ? "Versão, áudio e legendas" : "Áudio e legendas"} onClose={onClose}>
+    <SidePanel title="Configurações" onClose={onClose}>
       <div ref={boxRef} className="space-y-4 px-2">
         {versions && onVersion && (
           <div className="space-y-1">
@@ -1012,19 +1011,16 @@ export function TracksPanel({
             {versions.map((v, n) => row({ id: n, label: v.label, active: v.tag === current }, () => v.tag !== current && onVersion(v)))}
           </div>
         )}
-        {tracks.audio.length > 1 && (
-          <div className="space-y-1">
-            <div className="px-1 text-xs font-semibold uppercase tracking-wider text-white/50">Áudio</div>
-            {tracks.audio.map((t) => row(t, () => onAudio(t.id)))}
-          </div>
-        )}
-        {tracks.text.length > 0 && (
-          <div className="space-y-1">
-            <div className="px-1 text-xs font-semibold uppercase tracking-wider text-white/50">Legendas</div>
-            {row({ id: -1, label: "Desligadas", active: !tracks.text.some((t) => t.active) }, () => onText(-1))}
-            {tracks.text.map((t) => row(t, () => onText(t.id)))}
-          </div>
-        )}
+        {/* Sempre aparece: com uma faixa so (ou nenhuma informada), mostra a unica que existe. */}
+        <div className="space-y-1">
+          <div className="px-1 text-xs font-semibold uppercase tracking-wider text-white/50">Áudio</div>
+          {tracks.audio.length ? tracks.audio.map((t) => row(t, () => onAudio(t.id))) : row({ id: 0, label: "Padrão", active: true }, () => {})}
+        </div>
+        <div className="space-y-1">
+          <div className="px-1 text-xs font-semibold uppercase tracking-wider text-white/50">Legendas</div>
+          {row({ id: -1, label: "Desligadas", active: !tracks.text.some((t) => t.active) }, () => onText(-1))}
+          {tracks.text.map((t) => row(t, () => onText(t.id)))}
+        </div>
       </div>
     </SidePanel>
   );

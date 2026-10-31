@@ -41,9 +41,23 @@ export function preferredVersion(c: Channel): Channel {
   if (!pref || !c.versions?.length) return c;
   const score = (tag: string) => {
     const t = parse(tag);
-    return (t.lang === pref.lang ? 2 : 0) + (t.q === pref.q ? 1 : 0);
+    // Versao de cinema so quando foi a escolhida; se nao, perde para qualquer outra.
+    const cinema = t.q === "CINEMA" && pref.q !== "CINEMA" ? -4 : 0;
+    return (t.lang === pref.lang ? 2 : 0) + (t.q === pref.q ? 1 : 0) + cinema;
   };
   let best = c.versions.find((v) => v.tag === c.tag) || c.versions[0];
   for (const v of c.versions) if (score(v.tag) > score(best.tag)) best = v;
   return best.tag === c.tag ? c : withVersion(c, best);
+}
+
+/** Titulo com uma versao so: ela mesma, com o nome tirado das marcas do titulo ("[L]", "4K", "(cinema)"). */
+export function singleVersion(c: Channel): Version {
+  const n = c.name || "";
+  const parts = [];
+  if (/\[L\]|\(L\)|\blegendad|\bleg\b/i.test(n)) parts.push("Legendado");
+  else if (/\bdublad|\bdub\b/i.test(n)) parts.push("Dublado");
+  if (/[([]\s*(cinema|hdcam|cam|ts)\s*[)\]]/i.test(n)) parts.push("Cinema");
+  else if (/\b(4k|uhd|2160p)\b/i.test(n)) parts.push("4K");
+  else if (/\b(fhd|1080p)\b/i.test(n)) parts.push("FHD");
+  return { tag: c.tag || "", label: parts.join(" · ") || "Padrão", src: c.src, type: c.type, alt: c.alt, alt_type: c.alt_type, fallback: c.fallback };
 }

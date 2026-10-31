@@ -108,9 +108,12 @@ const rawId = (it) => it.series_id || it.stream_id;
 export const variant = (name) => {
   const n = String(name || "");
   const lang = /\[L\]|\(L\)|\blegendad|\bleg\b/i.test(n) ? "L" : "";
-  const q = /\b(4k|uhd|2160p)\b/i.test(n) ? "4K" : /\b(fhd|1080p)\b/i.test(n) ? "FHD" : /\b(hd|720p)\b/i.test(n) ? "HD" : /\bsd\b/i.test(n) ? "SD" : "";
+  // "(cinema)", "[CAM]": gravado no cinema; fica como versao de reserva, nunca a padrao.
+  const q = /[([]\s*(cinema|hdcam|cam|ts)\s*[)\]]/i.test(n) ? "CINEMA" : /\b(4k|uhd|2160p)\b/i.test(n) ? "4K" : /\b(fhd|1080p)\b/i.test(n) ? "FHD" : /\b(hd|720p)\b/i.test(n) ? "HD" : /\bsd\b/i.test(n) ? "SD" : "";
   return `${lang}|${q}`;
 };
+
+const isCinema = (tag) => String(tag || "").endsWith("|CINEMA");
 
 /** O titulo que fica no catalogo herda o que so a copia repetida trazia (nota, ano, genero, capa). */
 function fillIn(dst, src) {
@@ -119,7 +122,7 @@ function fillIn(dst, src) {
   if (!dst.genre && src.genre) dst.genre = src.genre;
   if (!dst.logo && src.logo) dst.logo = src.logo;
   if (src.added > (dst.added || 0)) dst.added = src.added;
-  if (src._tag === "|" && dst._tag !== "|" && !dst._named) {
+  if (((src._tag === "|" && dst._tag !== "|") || (isCinema(dst._tag) && !isCinema(src._tag))) && !dst._named) {
     dst.name = src.name;
     dst._named = true;
   }
@@ -195,8 +198,16 @@ export function createCatalog(sources) {
           const hit = k ? (byKey.get(k) || []).find(same) : null;
           byId.set(qualify(i, rawId(raw)), hit || it);
           if (hit) {
-            hit._alts.push(it);
             hit._cats.add(it.category_id);
+            if (isCinema(hit._tag) && !isCinema(it._tag)) {
+              // A copia de cinema chegou primeiro: a outra passa a ser o titulo (ficha, id e links) e ela vira reserva.
+              const { _alts, _cats, ...old } = hit;
+              for (const f of Object.keys(old)) delete hit[f];
+              Object.assign(hit, it, { _alts: [..._alts, old], _cats });
+              fillIn(hit, old);
+              continue;
+            }
+            hit._alts.push(it);
             fillIn(hit, it);
             continue;
           }

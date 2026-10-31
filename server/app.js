@@ -636,14 +636,17 @@ function xtreamChannel(c, item, group, app = false, srcs = [c.source]) {
   }
   const alts = (item._alts || []).filter((a) => a.url);
   const versions = item.kind === "live" || item.kind === "radio" ? null : versionsOf(c, item, alts, srcs, app);
-  const tag = item._tag || "|";
-  const more = (versions ? alts.filter((a) => (a._tag || "|") === tag) : alts).slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app));
+  // Versao "cinema" so toca se for escolhida: com outra versao, a outra e a padrao.
+  const main = versions && isCinema(item._tag) ? versions.find((v) => !isCinema(v.tag)) : null;
+  const tag = main ? main.tag : item._tag || "|";
+  const more = main ? main.more || [] : (versions ? alts.filter((a) => (a._tag || "|") === tag) : alts).slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app));
   return {
     id: i ? hashId(c.id, p.key, item.kind, item.stream_id) : hashId(c.id, item.kind, item.stream_id),
     name: item.name,
     group,
     logo: logoUrl(c.id, item.logo || (item._alts || []).find((a) => a.logo)?.logo),
     ...playLinks(c, item, p, app),
+    ...(main ? { src: main.src, type: main.type, alt: main.alt, alt_type: main.alt_type, fallback: main.fallback } : {}),
     kind: item.kind,
     // Lista M3U comum: guia pelo tvg-id (XMLTV); Xtream: pela API do fornecedor.
     epg_id: item.kind !== "live" ? "" : item.tvg_id != null ? item.tvg_id : `xt:${pre}${item.stream_id}`,
@@ -660,12 +663,14 @@ function xtreamChannel(c, item, group, app = false, srcs = [c.source]) {
   };
 }
 
+const isCinema = (tag) => String(tag || "").endsWith("|CINEMA");
+
 /** "L|4K" -> "Legendado · 4K". Mostra so o que muda entre as versoes do titulo. */
 function versionLabel(tag, langs, quals) {
   const [lang, q] = tag.split("|");
   const parts = [];
   if (langs) parts.push(lang === "L" ? "Legendado" : "Dublado");
-  if (quals) parts.push(q || "Normal");
+  if (quals) parts.push(q === "CINEMA" ? "Cinema" : q || "Normal");
   return parts.join(" · ");
 }
 
@@ -675,7 +680,7 @@ function versionLabel(tag, langs, quals) {
  */
 function versionsOf(c, item, alts, srcs, app) {
   const all = [item, ...alts];
-  const tags = [...new Set(all.map((a) => a._tag || "|"))];
+  const tags = [...new Set(all.map((a) => a._tag || "|"))].sort((a, b) => isCinema(a) - isCinema(b));
   if (tags.length < 2) return null;
   const langs = new Set(tags.map((t) => t.split("|")[0])).size > 1;
   const quals = new Set(tags.map((t) => t.split("|")[1])).size > 1;

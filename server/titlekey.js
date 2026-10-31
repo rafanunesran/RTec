@@ -8,7 +8,7 @@ export function normTitle(name) {
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
-    .replace(/\[[^\]]*\]|\{[^}]*\}|\((19|20)\d{2}\)/g, " ")
+    .replace(/\[[^\]]*\]|\{[^}]*\}|\((19|20)\d{2}\)|\(\s*(cinema|hdcam|cam|ts)\s*\)/g, " ")
     .replace(/\b(dublado|legendado|dub|leg|dual( audio)?|nacional|4k|uhd|fhd|hd|sd|h\.?265|hevc|1080p|720p)\b/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();

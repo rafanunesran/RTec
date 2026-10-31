@@ -62,6 +62,8 @@ function xtreamApi(req, res) {
       );
     case "get_vod_streams":
       return json([
+        // Copia gravada no cinema vem antes: junta com a normal, mas a normal e a que toca.
+        { stream_id: 49, name: "Filme Teste (Cinema)", stream_icon: "", container_extension: "mp4", category_id: "20", year: "2015" },
         { stream_id: 50, name: "Filme Teste", stream_icon: "https://img.example/f.jpg", container_extension: "mp4", category_id: "20", added: "1700000000", year: "2015", rating: "6.1" },
         { stream_id: 51, name: "Abelha Rainha", stream_icon: "", container_extension: "mp4", category_id: "20", added: "1800000000", release_date: "2023-04-01", rating: "8.4", genre: "Suspense, Drama" },
         { stream_id: 52, name: "Zebra (1999)", stream_icon: "", container_extension: "mp4", category_id: "20", added: "1600000000", rating_5based: "4.5" },
@@ -516,6 +518,10 @@ test("cliente rapido com link Xtream e catalogo por categoria", async () => {
   const allMovies = (await call("GET", "/api/player/xtream/items?section=movie&limit=10&q=teste")).body;
   assert.equal(allMovies.total, 1, "Todos: catalogo inteiro em paginas, com busca");
   assert.equal(allMovies.items[0].name, "Filme Teste");
+  const cine = allMovies.items[0];
+  assert.match(plain(cine.src), /\/50\.mp4$/, "a copia de cinema chegou primeiro, mas a normal e a que toca");
+  assert.deepEqual(cine.versions.map((v) => [v.tag, v.label]), [["|", "Normal"], ["|CINEMA", "Cinema"]]);
+  assert.equal(cine.xt_id, "50");
   assert.equal((await call("GET", "/api/player/xtream/items?section=movie&limit=10&skip=20")).body.total, 0, "pula categorias bloqueadas");
 
   // Filme pelo proxy: entregue em pedacos de 1 MB
