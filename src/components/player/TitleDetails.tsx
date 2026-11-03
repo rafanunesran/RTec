@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Film, Heart, Play, RotateCcw, Sparkles, Star } from "lucide-react";
+import VersionPicker from "@/components/player/VersionPicker";
 import { api, type Channel, type TitleInfo } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button, Skeleton } from "@/components/ui";
@@ -284,6 +285,9 @@ export function MovieDetails({
               <Button variant={favorite ? "secondary" : "outline"} onClick={onFavorite} aria-pressed={favorite}>
                 <Heart className={cn(favorite && "fill-destructive text-destructive")} /> {favorite ? "Favorito" : "Favoritar"}
               </Button>
+              <div className="basis-full pt-1">
+                <VersionPicker items={[movie]} />
+              </div>
             </>
           }
         />

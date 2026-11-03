@@ -35,29 +35,75 @@ export function withVersion(c: Channel, v: Version): Channel {
   return { ...c, src: v.src, type: v.type, alt: v.alt, alt_type: v.alt_type, fallback: v.fallback, more: v.more, tag: v.tag };
 }
 
-/** Escolhe a versao que combina com a preferencia (idioma pesa mais que a definicao). Sem preferencia: a que veio. */
-export function preferredVersion(c: Channel): Channel {
+/** Versao pelas marcas do nome (mesma regra do servidor): "Filme [L] 4K" -> "L|4K". */
+export function tagOfName(name: string): string {
+  const n = name || "";
+  const lang = /\[L\]|\(L\)|\blegendad|\bleg\b/i.test(n) ? "L" : "";
+  const q = /[([]\s*(cinema|hdcam|cam|ts)\s*[)\]]/i.test(n)
+    ? "CINEMA"
+    : /\b(4k|uhd|2160p)\b/i.test(n)
+      ? "4K"
+      : /\b(fhd|1080p)\b/i.test(n)
+        ? "FHD"
+        : /\b(hd|720p)\b/i.test(n)
+          ? "HD"
+          : /\bsd\b/i.test(n)
+            ? "SD"
+            : "";
+  return `${lang}|${q}`;
+}
+
+const QUALITY: Record<string, string> = { CINEMA: "Cinema", "": "Normal" };
+
+/** Nome da versao entre as do titulo: so o que muda entre elas ("Legendado · 4K"); sozinha, o que o nome diz. */
+export function tagLabel(tag: string, all: string[]): string {
+  const t = parse(tag);
+  const many = all.length > 1;
+  const langs = new Set(all.map((x) => parse(x).lang)).size > 1;
+  const quals = new Set(all.map((x) => parse(x).q)).size > 1;
+  const parts: string[] = [];
+  if (langs || (!many && t.lang)) parts.push(t.lang === "L" ? "Legendado" : "Dublado");
+  if (quals || (!many && t.q)) parts.push(QUALITY[t.q] ?? t.q);
+  return parts.join(" · ") || "Padrão";
+}
+
+/** Das versoes, a que combina com a preferencia (idioma pesa mais que a definicao; cinema so se escolhida). */
+export function bestTag(tags: string[], current?: string): string {
   const pref = versionPref();
-  if (!pref || !c.versions?.length) return c;
+  let best = tags.includes(current ?? "\0") ? current! : tags[0];
+  if (!pref) return best;
   const score = (tag: string) => {
     const t = parse(tag);
-    // Versao de cinema so quando foi a escolhida; se nao, perde para qualquer outra.
     const cinema = t.q === "CINEMA" && pref.q !== "CINEMA" ? -4 : 0;
     return (t.lang === pref.lang ? 2 : 0) + (t.q === pref.q ? 1 : 0) + cinema;
   };
-  let best = c.versions.find((v) => v.tag === c.tag) || c.versions[0];
-  for (const v of c.versions) if (score(v.tag) > score(best.tag)) best = v;
+  for (const tag of tags) if (score(tag) > score(best)) best = tag;
+  return best;
+}
+
+/** Escolhe a versao que combina com a preferencia. Sem preferencia: a que veio. */
+export function preferredVersion(c: Channel): Channel {
+  if (!versionPref() || !c.versions?.length) return c;
+  const tag = bestTag(
+    c.versions.map((v) => v.tag),
+    c.tag,
+  );
+  const best = c.versions.find((v) => v.tag === tag)!;
   return best.tag === c.tag ? c : withVersion(c, best);
+}
+
+/** Versoes que existem num titulo (filme) ou em qualquer episodio da serie, sem cinema na frente. */
+export function versionTags(items: Channel[], fallbackName = ""): string[] {
+  const tags = new Set<string>();
+  for (const c of items) {
+    if (c.versions?.length) c.versions.forEach((v) => tags.add(v.tag));
+    else tags.add(c.tag || tagOfName(`${fallbackName} ${c.name}`));
+  }
+  return [...tags].sort((a, b) => Number(parse(a).q === "CINEMA") - Number(parse(b).q === "CINEMA"));
 }
 
 /** Titulo com uma versao so: ela mesma, com o nome tirado das marcas do titulo ("[L]", "4K", "(cinema)"). */
 export function singleVersion(c: Channel): Version {
-  const n = c.name || "";
-  const parts = [];
-  if (/\[L\]|\(L\)|\blegendad|\bleg\b/i.test(n)) parts.push("Legendado");
-  else if (/\bdublad|\bdub\b/i.test(n)) parts.push("Dublado");
-  if (/[([]\s*(cinema|hdcam|cam|ts)\s*[)\]]/i.test(n)) parts.push("Cinema");
-  else if (/\b(4k|uhd|2160p)\b/i.test(n)) parts.push("4K");
-  else if (/\b(fhd|1080p)\b/i.test(n)) parts.push("FHD");
-  return { tag: c.tag || "", label: parts.join(" · ") || "Padrão", src: c.src, type: c.type, alt: c.alt, alt_type: c.alt_type, fallback: c.fallback };
+  const tag = c.tag || tagOfName(c.name);
+  return { tag, label: tagLabel(tag, [tag]), src: c.src, type: c.type, alt: c.alt, alt_type: c.alt_type, fallback: c.fallback };
 }

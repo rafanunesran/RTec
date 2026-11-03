@@ -14,6 +14,7 @@ import { applyRelink, relinkM3u, relinkXtream } from "@/lib/relink";
 import { episodeInfo, lastEpisodePerSeries, seriesKeyOf } from "@/lib/titlekey";
 import { listChanged, onRemoteList, startSync } from "@/lib/sync";
 import { refreshChannels } from "@/lib/links";
+import VersionPicker from "@/components/player/VersionPicker";
 import { preferredVersion, saveVersionPref, withVersion } from "@/lib/versions";
 import { warmPlayer } from "@/lib/warm";
 import PinDialog from "@/components/player/PinDialog";
@@ -1554,6 +1555,11 @@ function Watch({
                         >
                           {seriesAlert ? <BellRing className="text-primary" /> : <Bell />} {seriesAlert ? "Alerta ligado" : "Avisar novos episódios"}
                         </Button>
+                        {series.episodes && series.episodes.length > 0 && (
+                          <div className="basis-full pt-1">
+                            <VersionPicker items={series.episodes} name={series.name} />
+                          </div>
+                        )}
                       </>
                     );
                   })()}
