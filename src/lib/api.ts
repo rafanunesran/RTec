@@ -156,7 +156,43 @@ export type Programme = { start: string; stop: string; title: string; desc: stri
 
 export type PlayerSettings = { custom_pin: boolean; locked_groups: string[] };
 
-export type ClientProfile = { name: string; username: string; expires_at: string | null };
+export type ClientProfile = {
+  name: string;
+  username: string;
+  expires_at: string | null;
+  /** Aparelho desta sessao (guest: entrou por link de conexao; ends_at: hora que a conexao acaba). */
+  device?: { id: string; name: string; guest: boolean; ends_at: string | null };
+};
+
+/** Aparelho conectado a conta (Configuracoes > Dispositivos). */
+export type PlayerDevice = {
+  id: string;
+  name: string;
+  kind: "tv" | "phone" | "computer";
+  ip: string;
+  created_at: string;
+  last_seen_at: string;
+  guest: boolean;
+  label: string;
+  ends_at: string | null;
+  current: boolean;
+};
+
+/** Link de conexao direta (Configuracoes > Conexoes): abre ja logado, uma vez, em ate 48 h. */
+export type PlayerLink = {
+  id: string;
+  label: string;
+  /** null = conexao fixa (ate desconectar). */
+  hours: number | null;
+  created_at: string;
+  open_until: string;
+  used_at: string | null;
+  ends_at: string | null;
+  state: "waiting" | "connected" | "expired";
+  device: PlayerDevice | null;
+  url: string | null;
+  short: string | null;
+};
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public code?: string) {

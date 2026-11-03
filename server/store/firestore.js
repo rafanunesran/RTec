@@ -126,6 +126,8 @@ export function createFirestoreStore() {
     profiles: new FirestoreCollection(db, "player_profiles"),
     alerts: new FirestoreCollection(db, "player_alerts"),
     marks: new FirestoreCollection(db, "episode_marks"),
+    devices: new FirestoreCollection(db, "player_devices"),
+    links: new FirestoreCollection(db, "player_links"),
     config: new FirestoreCollection(db, "config"),
     async getOrCreateSecret(generate) {
       return db.runTransaction(async (t) => {

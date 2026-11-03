@@ -62,7 +62,7 @@
       if (x.readyState !== 4) return;
       var data = parse(x.responseText);
       if (x.status >= 200 && x.status < 300) done(null, data);
-      else done({ status: x.status, message: (data && data.error) || ("Erro " + x.status) }, data);
+      else done({ status: x.status, code: data && data.code, message: (data && data.error) || ("Erro " + x.status) }, data);
     };
     x.send(body ? (window.JSON ? JSON.stringify(body) : "") : null);
   }
@@ -443,13 +443,23 @@
   }
 
   // Abertura: confere se ja tem sessao (cookie) antes de pedir login.
-  api("GET", "/api/player/me", null, function (err) {
-    if (err && (err.status === 401 || err.status === 403)) {
-      if (location.hash !== "#login") location.replace("#login");
-      return loginScreen(err.status === 403 ? err.message : "");
-    }
-    render();
-  });
+  function start(notice) {
+    api("GET", "/api/player/me", null, function (err) {
+      if (err && (err.status === 401 || err.status === 403)) {
+        if (location.hash !== "#login") location.replace("#login");
+        return loginScreen(notice || (err.status === 403 || err.code === "disconnected" || err.code === "connection_ended" ? err.message : ""));
+      }
+      render();
+    });
+  }
+  // Link de conexao (Configuracoes > Conexoes no site): entra na conta sem usuario e senha.
+  var link = /[?&]c=([\w-]{16,64})/.exec(location.search);
+  if (link) {
+    if (history.replaceState) history.replaceState(null, "", "/tv-antiga.html" + location.hash);
+    api("POST", "/api/player/connect", { token: link[1] }, function (err) {
+      start(err && err.code !== "link_used" ? err.message : "");
+    });
+  } else start("");
 })();
 </script>
 </body>

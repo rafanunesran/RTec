@@ -20,6 +20,7 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
     <!-- Navegador antigo (sem modulos, ex: TV Samsung de 2011 a 2016): o site nao roda, vai para a pagina da TV antiga. -->
-    <script nomodule>location.replace("/tv-antiga.html");</script>
+    <!-- Link de conexao (/c/codigo) vai junto para a pagina da TV antiga entrar na conta. -->
+    <script nomodule>var m = /^\/c\/([\w-]+)/.exec(location.pathname); location.replace("/tv-antiga.html" + (m ? "?c=" + m[1] : ""));</script>
   </body>
 </html>

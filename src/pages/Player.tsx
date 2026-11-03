@@ -172,16 +172,52 @@ export default function Player() {
   // A cada abertura o servidor confere a lista no fornecedor; vencida, mostra a tela de lista expirada.
   const [expired, setExpired] = useState(false);
 
+  // Aviso na tela de entrar (aparelho desconectado, conexao por link que acabou, link invalido).
+  const [notice, setNotice] = useState("");
+
   useEffect(() => {
-    api
-      .get<ClientProfile>("/api/player/me")
+    const me = () => api.get<ClientProfile>("/api/player/me");
+    const link = location.pathname.match(/^\/c\/([\w-]{16,64})\/?$/);
+    let open: Promise<ClientProfile>;
+    if (link) {
+      // O codigo sai da barra de endereco logo (nao fica no historico do navegador da TV).
+      history.replaceState(null, "", "/");
+      open = api.post<ClientProfile>("/api/player/connect", { token: link[1] }).catch(async (err) => {
+        // Link ja usado neste mesmo aparelho (abriu de novo): segue com a sessao que ja existe.
+        if (err instanceof ApiError && err.code === "link_used") {
+          try {
+            return await me();
+          } catch {
+            /* nao era este aparelho */
+          }
+        }
+        throw err;
+      });
+    } else open = me();
+    open
       .then(setProfile)
       .catch((err) => {
         setProfile(null);
         setExpired(isListExpired(err));
+        if (err instanceof ApiError && (link || err.code === "disconnected" || err.code === "connection_ended")) setNotice(err.message);
       })
       .finally(() => setChecking(false));
   }, []);
+
+  // Conexao por link com tempo: na hora marcada o aparelho sai sozinho da conta.
+  const endsAt = profile?.device?.ends_at;
+  useEffect(() => {
+    if (!endsAt) return;
+    const ms = Date.parse(endsAt) - Date.now() + 1500;
+    if (ms > 2 ** 31 - 1) return;
+    const t = setTimeout(() => {
+      setProfile(null);
+      setViewer(null);
+      setViewers(null);
+      setNotice("O tempo desta conexão acabou.");
+    }, Math.max(0, ms));
+    return () => clearTimeout(t);
+  }, [endsAt]);
 
   // Perfis da conta: sempre pergunta "Quem esta assistindo?" ao abrir (como na Netflix).
   const [viewers, setViewers] = useState<ProfilesResponse | null>(null);
@@ -272,7 +308,17 @@ export default function Player() {
         }}
       />
     );
-  if (!profile) return <PlayerLogin onLogin={setProfile} onExpired={listExpired} />;
+  if (!profile)
+    return (
+      <PlayerLogin
+        notice={notice}
+        onLogin={(p) => {
+          setNotice("");
+          setProfile(p);
+        }}
+        onExpired={listExpired}
+      />
+    );
   if (!viewer && viewers)
     return (
       <ProfilePicker
@@ -308,7 +354,7 @@ export default function Player() {
   );
 }
 
-function PlayerLogin({ onLogin, onExpired }: { onLogin: (p: ClientProfile) => void; onExpired: () => void }) {
+function PlayerLogin({ notice, onLogin, onExpired }: { notice?: string; onLogin: (p: ClientProfile) => void; onExpired: () => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -335,6 +381,7 @@ function PlayerLogin({ onLogin, onExpired }: { onLogin: (p: ClientProfile) => vo
           <p className="mt-5 text-sm text-muted-foreground">TV ao vivo, filmes e séries em qualquer tela.</p>
         </div>
         <div className="rounded-3xl border bg-card/80 p-6 shadow-card backdrop-blur-xl sm:p-8">
+          {notice && <p className="mb-4 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-sm font-medium text-warning">{notice}</p>}
           <p className="mb-6 text-sm text-muted-foreground">Entre com o usuário e a senha que você recebeu.</p>
           <form onSubmit={submit} className="space-y-4">
             <Field label="Usuário">

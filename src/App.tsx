@@ -41,6 +41,8 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Player />} />
+      {/* Link de conexao direta (Configuracoes > Conexoes): a TV abre e ja entra na conta. */}
+      <Route path="/c/:token" element={<Player />} />
       <Route path="/instalar" element={<Install />} />
       <Route path="/admin/*" element={<Admin />} />
       <Route path="*" element={<Navigate to="/" replace />} />

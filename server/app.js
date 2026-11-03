@@ -380,8 +380,13 @@ function rewriteHls(text, baseUrl, clientId, base) {
     .join("\n");
 }
 
-function clientProfile(c) {
-  return { name: c.name, username: c.username, expires_at: c.expires_at };
+function clientProfile(c, d) {
+  return {
+    name: c.name,
+    username: c.username,
+    expires_at: c.expires_at,
+    ...(d && { device: { id: d.id, name: d.name, guest: !!d.guest, ends_at: d.expires_at || null } }),
+  };
 }
 
 // Publicado (Vercel), o cookie de sessao so viaja por https.
@@ -391,9 +396,105 @@ const secureCookie = (req) => req.secure || !!process.env.VERCEL;
 // sirva de cookie de administrador (e vice-versa).
 const JWT_OPTS = { algorithms: ["HS256"] };
 
-function signClientSession(res, req, c) {
-  const token = jwt.sign({ typ: "player", cid: c.id, pw: passwordFingerprint(c) }, JWT_SECRET, { expiresIn: "30d" });
-  res.cookie(CLIENT_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: secureCookie(req), maxAge: 30 * 24 * 3600 * 1000 });
+// ---------- Aparelhos conectados (Dispositivos) ----------
+// Cada login vira um aparelho (colecao player_devices) e o cookie leva o id dele (sid): apagar o aparelho
+// desconecta so aquele navegador/TV. Aparelho que entrou por link de conexao (Conexoes) pode ter hora para sair.
+const SESSION_MS = 30 * 24 * 3600 * 1000;
+const SEEN_EVERY_MS = 30 * 60_000;
+const deviceCache = new Map();
+async function getDevice(id) {
+  const hit = deviceCache.get(id);
+  if (hit && Date.now() - hit.at < CLIENT_TTL_MS) return hit.device;
+  const device = await getStore().devices.get(id);
+  deviceCache.set(id, { at: Date.now(), device });
+  if (deviceCache.size > 5000) deviceCache.delete(deviceCache.keys().next().value);
+  return device;
+}
+const forgetDevice = (id) => deviceCache.delete(String(id));
+
+/** Nome amigavel do aparelho pelo navegador ("TV Samsung · Navegador", "iPhone · Safari"). */
+export function describeDevice(ua = "") {
+  const has = (re) => re.test(ua);
+  let name = "Aparelho";
+  let kind = "computer";
+  if (has(/Tizen|SMART-TV.*Samsung|SamsungBrowser.*TV|Maple/i)) [name, kind] = ["TV Samsung", "tv"];
+  else if (has(/Web0S|webOS|NetCast/i)) [name, kind] = ["TV LG", "tv"];
+  else if (has(/\bAFT[A-Z]|Fire TV/i)) [name, kind] = ["Fire TV", "tv"];
+  else if (has(/Android TV|GoogleTV|BRAVIA|AndroidTV|\bTV Box\b/i)) [name, kind] = ["Android TV", "tv"];
+  else if (has(/SmartTV|Smart-TV|HbbTV|CrKey|Roku|VIDAA|Hisense|Philips|Viera/i)) [name, kind] = ["Smart TV", "tv"];
+  else if (has(/iPhone/)) [name, kind] = ["iPhone", "phone"];
+  else if (has(/iPad/)) [name, kind] = ["iPad", "phone"];
+  else if (has(/Android/) && has(/Mobile/)) [name, kind] = ["Celular Android", "phone"];
+  else if (has(/Android/)) [name, kind] = ["Tablet ou TV Box Android", "phone"];
+  else if (has(/Windows/)) name = "Computador Windows";
+  else if (has(/Macintosh|Mac OS X/)) name = "Mac";
+  else if (has(/CrOS/)) name = "Chromebook";
+  else if (has(/Linux/)) name = "Computador Linux";
+  const browser = has(/\bRTecApp\b/)
+    ? "App RTec"
+    : has(/Edg\//)
+      ? "Edge"
+      : has(/SamsungBrowser/)
+        ? "Samsung Internet"
+        : has(/OPR\/|Opera/)
+          ? "Opera"
+          : has(/Firefox\//)
+            ? "Firefox"
+            : has(/Chrome\/|CriOS/)
+              ? "Chrome"
+              : has(/Safari\//)
+                ? "Safari"
+                : kind === "tv"
+                  ? "Navegador da TV"
+                  : "";
+  return { name: browser ? `${name} · ${browser}` : name, kind };
+}
+
+async function registerDevice(req, c, extra = {}, id = undefined) {
+  const ua = String(req.get("user-agent") || "").slice(0, 400);
+  const { name, kind } = describeDevice(ua);
+  return getStore().devices.create({ client_id: c.id, name, kind, ua, ip: req.ip || "", last_seen_at: nowIso(), ...extra }, id);
+}
+
+async function dropDevice(d) {
+  await getStore().devices.delete(d.id);
+  forgetDevice(d.id);
+  if (d.link_id) await getStore().links.delete(d.link_id);
+}
+
+const deviceExpired = (d) => !!d.expires_at && Date.parse(d.expires_at) <= Date.now();
+
+function signClientSession(res, req, c, device) {
+  // A sessao dura 30 dias desde o ultimo uso (o cookie e renovado na abertura do app); conexao com tempo
+  // termina na hora marcada.
+  const until = Math.min(Date.now() + SESSION_MS, device?.expires_at ? Date.parse(device.expires_at) : Infinity);
+  const seconds = Math.max(60, Math.floor((until - Date.now()) / 1000));
+  const token = jwt.sign({ typ: "player", cid: c.id, pw: passwordFingerprint(c), ...(device && { sid: device.id }) }, JWT_SECRET, { expiresIn: seconds });
+  res.cookie(CLIENT_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: secureCookie(req), maxAge: seconds * 1000 });
+}
+
+/** Confere se o aparelho da sessao ainda esta conectado. Na abertura do app (renew), registra sessoes antigas
+ * (de antes dos aparelhos) e renova o cookie. */
+async function checkDevice(req, res, payload, c, renew) {
+  if (!payload.sid) {
+    if (!renew) return;
+    req.device = await registerDevice(req, c);
+    signClientSession(res, req, c, req.device);
+    return;
+  }
+  const d = await getDevice(String(payload.sid));
+  if (!d || d.client_id !== c.id) throw new HttpError(401, "Este aparelho foi desconectado da conta. Entre novamente.", "disconnected");
+  if (deviceExpired(d)) {
+    await dropDevice(d);
+    throw new HttpError(401, "O tempo desta conexão acabou.", "connection_ended");
+  }
+  req.device = d;
+  if (Date.now() - Date.parse(d.last_seen_at || 0) > SEEN_EVERY_MS || (renew && d.ip !== req.ip)) {
+    d.last_seen_at = nowIso();
+    d.ip = req.ip || "";
+    await getStore().devices.update(d.id, { last_seen_at: d.last_seen_at, ip: d.ip });
+  }
+  if (renew && Date.now() / 1000 - (payload.iat || 0) > 24 * 3600) signClientSession(res, req, c, d);
 }
 
 // Muda quando a senha do admin muda (inclusive por ADMIN_RESET_PASSWORD), derrubando as sessoes antigas do painel.
@@ -440,23 +541,41 @@ function clientPayload(req) {
   throw new HttpError(401, "Nao autenticado");
 }
 
-const requireClient = wrap(async (req, _res, next) => {
+/** Aparelho do cookie atual, sem conferir senha (para nao deixar aparelho repetido ao entrar/sair). */
+function previousDevice(req) {
+  try {
+    const p = clientPayload(req);
+    return p.sid ? { sid: String(p.sid), cid: p.cid } : null;
+  } catch {
+    return null;
+  }
+}
+
+const requireClient = wrap(async (req, res, next) => {
   const payload = clientPayload(req);
   const c = await getClient(payload.cid);
   if (!c || payload.pw !== passwordFingerprint(c)) throw new HttpError(401, "Sessao expirada, entre novamente");
+  await checkDevice(req, res, payload, c, false);
   assertClientAccess(c);
   req.client = c;
   next();
 });
 
 /** Sessao do reprodutor sem barrar lista expirada (para conferir de novo na abertura do app). */
-const clientSession = wrap(async (req, _res, next) => {
+const clientSession = wrap(async (req, res, next) => {
   const payload = clientPayload(req);
   const c = await getClient(payload.cid);
   if (!c || payload.pw !== passwordFingerprint(c)) throw new HttpError(401, "Sessao expirada, entre novamente");
+  await checkDevice(req, res, payload, c, true);
   req.client = c;
   next();
 });
+
+/** Gerenciar aparelhos e links so do aparelho do proprio cliente (nunca de uma TV que entrou por link). */
+const requireOwner = (req, _res, next) => {
+  if (req.device?.guest) return next(new HttpError(403, "Este aparelho entrou por um link de conexão e não pode gerenciar a conta."));
+  next();
+};
 
 async function clientPlaylists(c) {
   const db = getStore();
@@ -1122,6 +1241,9 @@ export function createApp() {
       await db().sync.delete(req.params.id);
       await db().alerts.delete(req.params.id);
       await db().profiles.delete(req.params.id);
+      for (const d of await db().devices.where("client_id", "==", req.params.id)) forgetDevice(d.id);
+      await db().devices.deleteWhere("client_id", "==", req.params.id);
+      await db().links.deleteWhere("client_id", "==", req.params.id);
       await db().clients.delete(req.params.id);
       forgetClient(req.params.id);
       res.json({ ok: true });
@@ -1220,17 +1342,245 @@ export function createApp() {
       if (!c.active) throw new HttpError(403, BLOCKED, "blocked");
       await refreshListStatus(c, { force: true });
       await touch("clients", c, "last_access_at");
+      // Entrou de novo no mesmo navegador: o aparelho antigo sai da lista (nao fica repetido).
+      const before = previousDevice(req);
+      if (before) {
+        const d = await getDevice(before.sid);
+        if (d && (d.client_id === before.cid || d.client_id === c.id)) await dropDevice(d);
+      }
+      const device = await registerDevice(req, c);
       // A sessao fica valida mesmo com a lista expirada: quando o adm renovar, o app libera sozinho ao abrir.
-      signClientSession(res, req, c);
+      signClientSession(res, req, c, device);
       assertClientAccess(c);
-      res.json(clientProfile(c));
+      res.json(clientProfile(c, device));
     }),
   );
 
-  app.post("/api/player/logout", (_req, res) => {
-    res.clearCookie(CLIENT_COOKIE);
-    res.json({ ok: true });
+  app.post(
+    "/api/player/logout",
+    wrap(async (req, res) => {
+      const before = previousDevice(req);
+      if (before) {
+        const d = await getDevice(before.sid);
+        if (d && d.client_id === before.cid) await dropDevice(d);
+      }
+      res.clearCookie(CLIENT_COOKIE);
+      res.json({ ok: true });
+    }),
+  );
+
+  // ---------- Dispositivos: aparelhos conectados a conta ----------
+  const serializeDevice = (d, current) => ({
+    id: d.id,
+    name: d.name,
+    kind: d.kind || "computer",
+    ip: d.ip || "",
+    created_at: d.created_at,
+    last_seen_at: d.last_seen_at || d.created_at,
+    guest: !!d.guest,
+    label: d.label || "",
+    ends_at: d.expires_at || null,
+    current: d.id === current,
   });
+
+  async function clientDevices(c) {
+    const list = await db().devices.where("client_id", "==", c.id);
+    const alive = [];
+    for (const d of list) {
+      if (deviceExpired(d)) await dropDevice(d);
+      else alive.push(d);
+    }
+    return alive;
+  }
+
+  app.get(
+    "/api/player/devices",
+    requireClient,
+    requireOwner,
+    wrap(async (req, res) => {
+      const list = (await clientDevices(req.client)).map((d) => serializeDevice(d, req.device?.id));
+      list.sort((a, b) => Number(b.current) - Number(a.current) || String(b.last_seen_at).localeCompare(String(a.last_seen_at)));
+      res.json({ devices: list });
+    }),
+  );
+
+  app.delete(
+    "/api/player/devices/:id",
+    requireClient,
+    requireOwner,
+    wrap(async (req, res) => {
+      const d = await db().devices.get(req.params.id);
+      if (!d || d.client_id !== req.client.id) throw new HttpError(404, "Aparelho não encontrado");
+      if (d.id === req.device?.id) throw new HttpError(400, "Este é o aparelho que você está usando. Para sair dele, use Sair da conta.");
+      await dropDevice(d);
+      res.json({ ok: true });
+    }),
+  );
+
+  /** Desconecta de uma vez os aparelhos sem uso ha N dias (nunca o atual). */
+  app.post(
+    "/api/player/devices/cleanup",
+    requireClient,
+    requireOwner,
+    wrap(async (req, res) => {
+      const days = Math.max(1, Math.min(365, Number(req.body?.days) || 30));
+      const limit = Date.now() - days * 24 * 3600 * 1000;
+      let removed = 0;
+      for (const d of await clientDevices(req.client)) {
+        if (d.id === req.device?.id || Date.parse(d.last_seen_at || d.created_at || 0) > limit) continue;
+        await dropDevice(d);
+        removed++;
+      }
+      res.json({ removed });
+    }),
+  );
+
+  // ---------- Conexoes: link direto que ja abre logado (ex: TV de hotel) ----------
+  // O link leva um codigo aleatorio; o banco guarda so o hash dele (id do documento). Vale uma vez e precisa
+  // ser aberto em ate 48 h. Ao abrir, vira um aparelho "por link" com a duracao escolhida (ou fixo).
+  const LINK_OPEN_MS = 48 * 3600 * 1000;
+  const LINK_HOURS = [3, 6, 12, 24, 48, 72, 96, 120, 168, 240, 360, 720];
+  const linkId = (token) => crypto.createHash("sha256").update(`link|${token}`).digest("hex").slice(0, 40);
+  const linkPending = (l) => !l.device_id && Date.parse(l.open_until) > Date.now();
+
+  async function shorten(url) {
+    if (process.env.RTEC_NO_SHORTENER === "1") return null;
+    try {
+      const r = await fetch(`https://is.gd/create.php?format=json&url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(6000) });
+      const j = await r.json();
+      return typeof j.shorturl === "string" && j.shorturl.startsWith("https://is.gd/") ? j.shorturl : null;
+    } catch {
+      return null;
+    }
+  }
+
+  const serializeLink = (l, devices) => {
+    const d = l.device_id ? devices.get(l.device_id) : null;
+    let url = null;
+    let short = null;
+    if (linkPending(l)) {
+      try {
+        url = openUrl(proxySecret(), l.url);
+        short = l.short ? openUrl(proxySecret(), l.short) : null;
+      } catch {
+        /* segredo trocado: o link nao abre mais */
+      }
+    }
+    return {
+      id: l.id,
+      label: l.label || "",
+      hours: l.hours ?? null,
+      created_at: l.created_at,
+      open_until: l.open_until,
+      used_at: l.used_at || null,
+      ends_at: d?.expires_at || null,
+      state: d ? "connected" : linkPending(l) ? "waiting" : "expired",
+      device: d ? serializeDevice(d) : null,
+      url,
+      short,
+    };
+  };
+
+  app.get(
+    "/api/player/links",
+    requireClient,
+    requireOwner,
+    wrap(async (req, res) => {
+      const devices = new Map((await clientDevices(req.client)).map((d) => [d.id, d]));
+      const out = [];
+      for (const l of await db().links.where("client_id", "==", req.client.id)) {
+        // Link que nunca foi aberto e ja venceu, ou cujo aparelho saiu: some da lista.
+        if ((!l.device_id && !linkPending(l)) || (l.device_id && !devices.has(l.device_id))) {
+          await db().links.delete(l.id);
+          continue;
+        }
+        out.push(serializeLink(l, devices));
+      }
+      out.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+      res.json({ links: out, hours: LINK_HOURS });
+    }),
+  );
+
+  app.post(
+    "/api/player/links",
+    requireClient,
+    requireOwner,
+    wrap(async (req, res) => {
+      const c = req.client;
+      const raw = req.body?.hours;
+      const hours = raw === null || raw === "fixed" ? null : Number(raw);
+      if (hours !== null && !LINK_HOURS.includes(hours)) throw new HttpError(400, "Escolha o tempo da conexão");
+      const label = String(req.body?.label || "").trim().slice(0, 60);
+      const mine = await db().links.where("client_id", "==", c.id);
+      if (mine.filter(linkPending).length >= 10) throw new HttpError(400, "Já há 10 links esperando para abrir. Cancele algum antes de criar outro.");
+      const token = crypto.randomBytes(18).toString("base64url");
+      const url = `${baseUrl(req)}/c/${token}`;
+      const short = await shorten(url);
+      const link = await db().links.create(
+        {
+          client_id: c.id,
+          label,
+          hours,
+          open_until: new Date(Date.now() + LINK_OPEN_MS).toISOString(),
+          url: sealUrl(proxySecret(), url),
+          ...(short && { short: sealUrl(proxySecret(), short) }),
+        },
+        linkId(token),
+      );
+      res.json(serializeLink(link, new Map()));
+    }),
+  );
+
+  /** Cancela o link (se ainda nao foi aberto) ou desconecta a TV que entrou por ele. */
+  app.delete(
+    "/api/player/links/:id",
+    requireClient,
+    requireOwner,
+    wrap(async (req, res) => {
+      const l = await db().links.get(req.params.id);
+      if (!l || l.client_id !== req.client.id) throw new HttpError(404, "Conexão não encontrada");
+      if (l.device_id) {
+        const d = await db().devices.get(l.device_id);
+        if (d) await dropDevice(d);
+      }
+      await db().links.delete(l.id);
+      res.json({ ok: true });
+    }),
+  );
+
+  /** A TV abriu o link: entra na conta sem usuario e senha. */
+  app.post(
+    "/api/player/connect",
+    wrap(async (req, res) => {
+      assertLoginAllowed(req, "link");
+      const token = String(req.body?.token || "");
+      const l = /^[\w-]{16,64}$/.test(token) ? await db().links.get(linkId(token)) : null;
+      if (!l) {
+        loginFailed(req, "link");
+        throw new HttpError(404, "Link de conexão inválido. Peça um link novo.", "link_invalid");
+      }
+      if (l.device_id) throw new HttpError(410, "Este link já foi usado em outro aparelho. Peça um link novo.", "link_used");
+      if (!linkPending(l)) throw new HttpError(410, "Este link venceu (vale 48 horas para ser aberto). Peça um link novo.", "link_expired");
+      const c = await getClient(l.client_id);
+      if (!c) throw new HttpError(404, "Link de conexão inválido. Peça um link novo.", "link_invalid");
+      if (!c.active) throw new HttpError(403, BLOCKED, "blocked");
+      const extra = { guest: true, link_id: l.id, label: l.label || "", expires_at: l.hours ? new Date(Date.now() + l.hours * 3600 * 1000).toISOString() : null };
+      let device;
+      try {
+        // O id do aparelho vem do link: dois aparelhos abrindo ao mesmo tempo, so um entra.
+        device = await registerDevice(req, c, extra, `link-${l.id.slice(0, 24)}`);
+      } catch (err) {
+        if (err instanceof DuplicateError) throw new HttpError(410, "Este link já foi usado em outro aparelho. Peça um link novo.", "link_used");
+        throw err;
+      }
+      await db().links.update(l.id, { device_id: device.id, used_at: nowIso() });
+      await refreshListStatus(c, { force: true });
+      await touch("clients", c, "last_access_at");
+      signClientSession(res, req, c, device);
+      assertClientAccess(c);
+      res.json(clientProfile(c, device));
+    }),
+  );
 
   // Abertura do app: confere a lista no fornecedor antes de liberar.
   app.get(
@@ -1240,7 +1590,7 @@ export function createApp() {
       const c = req.client;
       if (c.active) await refreshListStatus(c, { force: req.query.recheck === "1" });
       assertClientAccess(c);
-      res.json(clientProfile(c));
+      res.json(clientProfile(c, req.device));
     }),
   );
 

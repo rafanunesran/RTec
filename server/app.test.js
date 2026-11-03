@@ -340,6 +340,91 @@ test("tocar em outro aparelho: mesmo canal e chave em todos os aparelhos da cont
   assert.notEqual(outra.key, tv.key);
 });
 
+test("dispositivos e conexoes: desconectar aparelho e link de TV com tempo, uso unico e revogavel", async () => {
+  process.env.RTEC_NO_SHORTENER = "1";
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  await call("POST", "/api/clients", { username: "hotel", password: "pw" });
+
+  // Cada aparelho com seu proprio cookie e navegador.
+  const device = (ua) => {
+    let jar = "";
+    return async (method, url, body) => {
+      const res = await fetch(base + url, { method, headers: { "Content-Type": "application/json", "User-Agent": ua, cookie: jar }, body: body ? JSON.stringify(body) : undefined });
+      const sc = res.headers.get("set-cookie");
+      if (sc) jar = sc.split(";")[0];
+      return { status: res.status, body: await res.json() };
+    };
+  };
+  const celular = device("Mozilla/5.0 (Linux; Android 14; SM-A15) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
+  const pc = device("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
+  const tv = device("Mozilla/5.0 (SMART-TV; LINUX; Tizen 7.0) AppleWebKit/537.36 SamsungBrowser/4.0 TV Safari/537.36");
+  const outraTv = device("Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 Chrome/94 Safari/537.36");
+
+  assert.equal((await celular("POST", "/api/player/login", { username: "hotel", password: "pw" })).status, 200);
+  assert.equal((await pc("POST", "/api/player/login", { username: "hotel", password: "pw" })).status, 200);
+  // Entrar de novo no mesmo navegador nao repete o aparelho.
+  await pc("POST", "/api/player/login", { username: "hotel", password: "pw" });
+  let list = (await celular("GET", "/api/player/devices")).body.devices;
+  assert.deepEqual(list.map((d) => d.name), ["Celular Android · Chrome", "Computador Windows · Chrome"]);
+  assert.equal(list[0].current, true);
+
+  // O celular desconecta o PC: o PC cai na hora.
+  const pcId = list[1].id;
+  assert.equal((await celular("DELETE", `/api/player/devices/${list[0].id}`)).status, 400);
+  assert.equal((await celular("DELETE", `/api/player/devices/${pcId}`)).status, 200);
+  const caiu = await pc("GET", "/api/player/me");
+  assert.equal(caiu.status, 401);
+  assert.equal(caiu.body.code, "disconnected");
+
+  // Link de 24 h para a TV do hotel: abre logado, uma vez so.
+  assert.equal((await celular("POST", "/api/player/links", { hours: 5 })).status, 400);
+  const link = (await celular("POST", "/api/player/links", { hours: 24, label: "Hotel quarto 302" })).body;
+  assert.equal(link.state, "waiting");
+  assert.equal(link.short, null);
+  const token = new URL(link.url).pathname.split("/c/")[1];
+  assert.match(token, /^[\w-]{24}$/);
+  assert.equal((await tv("POST", "/api/player/connect", { token: token.slice(0, -1) + (token.endsWith("A") ? "B" : "A") })).status, 404);
+  const entrou = await tv("POST", "/api/player/connect", { token });
+  assert.equal(entrou.status, 200);
+  assert.equal(entrou.body.username, "hotel");
+  assert.equal(entrou.body.device.guest, true);
+  const fim = Date.parse(entrou.body.device.ends_at) - Date.now();
+  assert.ok(fim > 23.9 * 3600e3 && fim <= 24 * 3600e3);
+  assert.equal((await tv("GET", "/api/player/me")).body.device.name, "TV Samsung · Samsung Internet");
+  const usado = await outraTv("POST", "/api/player/connect", { token });
+  assert.equal(usado.status, 410);
+  assert.equal(usado.body.code, "link_used");
+
+  // A TV do hotel nao gerencia a conta.
+  assert.equal((await tv("GET", "/api/player/devices")).status, 403);
+  assert.equal((await tv("POST", "/api/player/links", { hours: 24 })).status, 403);
+
+  let links = (await celular("GET", "/api/player/links")).body.links;
+  assert.equal(links.length, 1);
+  assert.equal(links[0].state, "connected");
+  assert.equal(links[0].url, null);
+  assert.equal(links[0].device.name, "TV Samsung · Samsung Internet");
+  list = (await celular("GET", "/api/player/devices")).body.devices;
+  assert.equal(list.find((d) => d.guest).label, "Hotel quarto 302");
+
+  // Cancelar a conexao derruba a TV.
+  assert.equal((await celular("DELETE", `/api/player/links/${links[0].id}`)).status, 200);
+  assert.equal((await tv("GET", "/api/player/me")).status, 401);
+  assert.equal((await celular("GET", "/api/player/links")).body.links.length, 0);
+
+  // Conexao fixa: sem hora para sair.
+  const fixo = (await celular("POST", "/api/player/links", { hours: null })).body;
+  const fixa = await outraTv("POST", "/api/player/connect", { token: new URL(fixo.url).pathname.split("/c/")[1] });
+  assert.equal(fixa.body.device.ends_at, null);
+  assert.equal((await outraTv("GET", "/api/player/me")).status, 200);
+
+  // Sair da conta tira o aparelho da lista.
+  await outraTv("POST", "/api/player/logout");
+  assert.deepEqual((await celular("GET", "/api/player/devices")).body.devices.map((d) => d.name), ["Celular Android · Chrome"]);
+  delete process.env.RTEC_NO_SHORTENER;
+});
+
 test("modo direto: so links https tocam direto; http sempre passa pelo servidor", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
@@ -1212,3 +1297,4 @@ test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
   assert.equal(blocked.status, 429);
   assert.match(blocked.body.error, /Aguarde/);
 });
+
