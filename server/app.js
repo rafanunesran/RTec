@@ -16,7 +16,7 @@ import { episodeInfo, episodeOf, normTitle } from "./titlekey.js";
 import { createCatalog, sourceKey } from "./merge.js";
 import { hasDataKey, needsSeal, openUrl, sealUrl } from "./seal.js";
 import { getAgenda, leagueList, matchGames } from "./games.js";
-import { RETRY_FAILED_MS, cleanMarks, markKey, neighbors, theIntroDb } from "./marks.js";
+import { MARKS_V, RETRY_FAILED_MS, cleanMarks, markKey, neighbors, theIntroDb } from "./marks.js";
 import { CHECK_EVERY_MS, alertList, alertTargets, checkAlerts, cleanSeries, markSeen, readSnap, setAlert } from "./epalerts.js";
 
 const COOKIE = "rtec_session";
@@ -1880,7 +1880,8 @@ export function createApp() {
       const ep = episodes[i];
       const key = markKey(ep.url);
       const saved = key ? await db().marks.get(key) : null;
-      if (saved?.done) return res.json({ marks: cleanMarks(saved) });
+      // Analises antigas (v < 2) so olhavam o 1o quarto do episodio: as que nao acharam abertura sao refeitas.
+      if (saved?.done && (saved.v >= MARKS_V || saved.intro)) return res.json({ marks: cleanMarks(saved) });
 
       const dur = Number(req.query.dur) || 0;
       const publicMarks = () => seriesTmdbId(cat, seriesId, String(req.query.name || "")).then((id) => theIntroDb(id, season, episode, dur)).catch(() => null);
@@ -1895,12 +1896,12 @@ export function createApp() {
         const list = [ep, ...nbs];
         let mine = cleanMarks(audio.eps[0]);
         if (!mine) mine = await publicMarks();
-        await db().marks.set(key, { ...(mine || { intro: null, credits: null, post: false }), done: true, src: cleanMarks(audio.eps[0]) ? "audio" : mine ? "tidb" : "none", at: nowIso() });
+        await db().marks.set(key, { ...(mine || { intro: null, credits: null, post: false }), done: true, v: MARKS_V, src: cleanMarks(audio.eps[0]) ? "audio" : mine ? "tidb" : "none", at: nowIso() });
         // O vizinho tambem saiu da comparacao: ja fica pronto (so se achou algo; senao tenta com outro vizinho depois).
         for (let k = 1; k < list.length; k++) {
           const m = cleanMarks(audio.eps[k]);
           const nk = markKey(list[k].url);
-          if (m && nk && nk !== key) await db().marks.set(nk, { ...m, done: true, src: "audio", at: nowIso() });
+          if (m && nk && nk !== key) await db().marks.set(nk, { ...m, done: true, v: MARKS_V, src: "audio", at: nowIso() });
         }
         return res.json({ marks: mine });
       }
@@ -1908,7 +1909,7 @@ export function createApp() {
       const pending = audio.status === "pending" || audio.status === "busy";
       const pub = await publicMarks();
       // Sem servidor de video (ou falhou): a base publica e a resposta final para este episodio.
-      if (!pending && pub && key) await db().marks.set(key, { ...pub, done: true, src: "tidb", at: nowIso() });
+      if (!pending && pub && key) await db().marks.set(key, { ...pub, done: true, v: MARKS_V, src: "tidb", at: nowIso() });
       res.json({ marks: pub, pending });
     }),
   );

@@ -9,6 +9,8 @@ import crypto from "node:crypto";
 const TIDB = "https://api.theintrodb.org/v4/media";
 const POST_MIN = 20; // mesma regra do servidor de video: sobra maior que isso depois dos creditos = cena pos-creditos
 export const RETRY_FAILED_MS = 6 * 3600 * 1000;
+// Versao da analise guardada no banco (2: abertura procurada ate 12 min / metade do episodio).
+export const MARKS_V = 2;
 
 const sha1 = (s) => crypto.createHash("sha1").update(s).digest("hex");
 const round = (n) => Math.round(n * 10) / 10;

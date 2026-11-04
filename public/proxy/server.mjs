@@ -142,9 +142,11 @@ const INTRO_MAX = 180;
 const CREDITS_MIN = 15;
 // Sobra depois dos creditos maior que isso: cena pos-creditos (o botao Proximo EP nao aparece nos creditos).
 const POST_MIN = 20;
-const HEAD_MAX = 600; // abertura: ate 10 min do comeco (no maximo 1/4 do episodio)
+// Abertura: ate 12 min do comeco (no maximo metade do episodio). A cena antes dela muda de tamanho de um
+// episodio para outro (abertura em 1 min num e em 8 min no outro); a comparacao acha o trecho em qualquer posicao.
+const HEAD_MAX = 720;
 const TAIL_MAX = 420; // creditos: ate 7 min do fim
-const MARKS_TIMEOUT_MS = 4 * 60 * 1000;
+const MARKS_TIMEOUT_MS = 6 * 60 * 1000;
 const MAX_MARK_JOBS = Number(process.env.MAX_MARK_JOBS || 30);
 
 const popcount = (x) => {
@@ -262,7 +264,7 @@ async function fingerprint(u, from, len) {
 /** Impressao do comeco e do fim de um episodio. */
 async function episodePrint(u) {
   const dur = await duration(u);
-  const head = await fingerprint(u, 0, dur ? Math.min(HEAD_MAX, dur / 4) : HEAD_MAX);
+  const head = await fingerprint(u, 0, dur ? Math.min(HEAD_MAX, dur / 2) : HEAD_MAX);
   if (head.length < 50) throw new Error("Sem audio no episodio");
   let tail = null;
   let tailFrom = 0;
