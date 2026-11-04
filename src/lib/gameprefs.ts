@@ -7,7 +7,12 @@ import { scoped } from "./profiles";
 export type GamePrefs = { sports: string[]; leagues: string[]; teams: string[] };
 export const NO_PREFS: GamePrefs = { sports: [], leagues: [], teams: [] };
 /** Jogo com alerta: o basico para mostrar o aviso mesmo sem rede. */
-export type GameAlert = Pick<Game, "id" | "start" | "league" | "home" | "away">;
+export type GameAlert = Pick<Game, "id" | "start" | "league" | "home" | "away"> & {
+  /** Quando o aviso "Começou" abriu (fica na tela de notificações ate 3 h depois do inicio). */
+  fired?: number;
+  /** O cliente ja viu o "Começou" na tela de notificações (sai da contagem do sino). */
+  seen?: boolean;
+};
 
 const PREFS = "rtec:games-prefs";
 const ALERTS = "rtec:game-alerts";
@@ -56,12 +61,23 @@ export function toggleAlert(g: Game) {
   return !on;
 }
 
+/** Jogos que ja comecaram e o cliente ainda nao viu na tela de notificacoes. */
+export const unseenGames = (list: GameAlert[]) => list.filter((a) => a.fired && !a.seen);
+export function markGamesSeen() {
+  const list = loadAlerts();
+  if (unseenGames(list).length) saveAlerts(list.map((a) => (a.fired ? { ...a, seen: true } : a)));
+}
+export function removeAlert(id: string) {
+  saveAlerts(loadAlerts().filter((a) => a.id !== id));
+}
+
 /** Le de novo quando outra parte do app muda preferencias ou alertas. */
 export function useGamesStore<T>(get: () => T): T {
   const [v, setV] = useState(get);
   useEffect(() => {
     const on = () => setV(get());
     window.addEventListener(CHANGED, on);
+    on(); // pode ter mudado antes de assinar (ex: componente filho gravou no proprio efeito)
     return () => window.removeEventListener(CHANGED, on);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

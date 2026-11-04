@@ -22,10 +22,10 @@ import {
 
 const REFRESH_MS = 5 * 60_000;
 const TZ = "America/Sao_Paulo";
-const dayKey = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: TZ });
-const hour = (d: Date) => d.toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
+export const dayKey = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: TZ });
+export const hour = (d: Date) => d.toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
 
-function dayLabel(key: string) {
+export function dayLabel(key: string) {
   const today = dayKey(new Date());
   const tomorrow = dayKey(new Date(Date.now() + 86_400_000));
   if (key === today) return "Hoje";
@@ -44,7 +44,7 @@ function countdown(start: string, now: number) {
   return "";
 }
 
-function useNow(ms = 30_000) {
+export function useNow(ms = 30_000) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), ms);
@@ -270,7 +270,7 @@ function Team({ team, right, fav }: { team: GameTeam; right?: boolean; fav?: boo
   );
 }
 
-function GameCard({
+export function GameCard({
   game: g,
   now,
   prefs,
@@ -501,10 +501,11 @@ export function GameAlerts({ onPlay, isLocked }: { onPlay: (c: Channel, list: Ch
       const list = loadAlerts();
       const old = list.filter((a) => Date.parse(a.start) < now - ALERT_KEEP_MS);
       if (old.length) saveAlerts(list.filter((a) => !old.includes(a)));
-      const alert = list.find((a) => !old.includes(a) && Date.parse(a.start) <= now);
+      const alert = list.find((a) => !old.includes(a) && !a.fired && Date.parse(a.start) <= now);
       if (!alert) return;
       checking.current = true;
-      saveAlerts(loadAlerts().filter((a) => a.id !== alert.id));
+      // Nao apaga: o jogo fica na tela de notificacoes como "Começou" (ate 3 h depois do inicio).
+      saveAlerts(loadAlerts().map((a) => (a.id === alert.id ? { ...a, fired: now } : a)));
       let game: Game | null = null;
       try {
         const r = await api.get<GamesResponse>("/api/player/games");

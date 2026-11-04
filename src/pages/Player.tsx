@@ -20,6 +20,7 @@ import { preferredVersion, saveVersionPref, withVersion } from "@/lib/versions";
 import { warmPlayer } from "@/lib/warm";
 import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
+import NotificationsPage, { CountBadge, useNotificationCount } from "@/components/player/Notifications";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
 import ListExpired from "@/components/player/ListExpired";
 import GamesPage, { GameAlerts } from "@/components/player/Games";
@@ -39,7 +40,7 @@ const ADULT = /(adult|xxx|\+18|18\+|adulto|er[oó]tic|hot\b|sexy|porn)/i;
 type Section = Channel["kind"];
 /** TV ao vivo e radios: lista de canais (sem ponto onde parou, sem filtros de filme). */
 const liveLike = (k: string) => k === "live" || k === "radio";
-type Page = "home" | "all" | "section" | "games";
+type Page = "home" | "all" | "section" | "games" | "alerts";
 
 /** Minusculas e sem acentos (busca). */
 const fold = (t: string) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -1129,6 +1130,13 @@ function Watch({
     pushNav();
     setPage("games");
   };
+  // Notificacoes: alertas de novos episodios e dos Jogos do dia juntos (sino no topo / item no menu da TV).
+  const notifyCount = useNotificationCount();
+  const goAlerts = () => {
+    if (page === "alerts") return;
+    pushNav();
+    setPage("alerts");
+  };
   const openItem = (c: Channel) =>
     c.kind === "series" && (c.series_id || c.id.startsWith("serie:")) ? openSeriesFrom(c) : c.kind === "movie" ? openMovie(c) : play(c, null);
 
@@ -1322,6 +1330,7 @@ function Watch({
               ]),
           ]}
           viewer={viewer}
+          notify={{ count: notifyCount, active: page === "alerts", onClick: goAlerts }}
           onProfile={() => onSwitchProfile(false)}
           onSettings={() => setSettingsOpen(true)}
         />
@@ -1341,6 +1350,18 @@ function Watch({
               <span className="hidden max-w-[140px] truncate font-semibold text-foreground sm:block">{viewer.name}</span>
             </button>
             <CastButton onClick={() => setCastOpen(true)} />
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={goAlerts}
+              title="Notificações"
+              aria-label={notifyCount ? `Notificações (${notifyCount} novas)` : "Notificações"}
+              aria-pressed={page === "alerts"}
+              className={cn("relative", page === "alerts" && "bg-accent text-foreground")}
+            >
+              {notifyCount ? <BellRing className="!size-5" /> : <Bell className="!size-5" />}
+              <CountBadge count={notifyCount} className="right-0.5 top-0.5" />
+            </Button>
             <Button variant="ghost" size="icon" onClick={() => setSettingsOpen(true)} title="Configurações" aria-label="Configurações">
               <Settings className="!size-5" />
             </Button>
@@ -1441,6 +1462,8 @@ function Watch({
                 onFavorite={toggleFavorite}
                 epg={epg}
               />
+            ) : page === "alerts" ? (
+              <NotificationsPage onOpenSeries={openAlert} onPlay={(c, list) => play(c, list)} onGames={goGames} isLocked={isLocked} currentId={current?.id} tv={tv} />
             ) : page === "games" ? (
               <GamesPage onPlay={(c, list) => play(c, list)} isLocked={isLocked} currentId={current?.id} tv={tv} />
             ) : page === "all" ? (
@@ -2649,7 +2672,19 @@ function SortSelect({ value, onChange, vod }: { value: string; onChange: (v: str
 type TvMenuItem = { key: string; label: string; icon: typeof Tv; active: boolean; onClick: () => void };
 
 /** TV: menu lateral fino que abre ao receber o foco do controle (padrao Netflix/Duplecast). */
-function TvSidebar({ items, viewer, onProfile, onSettings }: { items: TvMenuItem[]; viewer: Viewer; onProfile: () => void; onSettings: () => void }) {
+function TvSidebar({
+  items,
+  viewer,
+  notify,
+  onProfile,
+  onSettings,
+}: {
+  items: TvMenuItem[];
+  viewer: Viewer;
+  notify: { count: number; active: boolean; onClick: () => void };
+  onProfile: () => void;
+  onSettings: () => void;
+}) {
   const itemClass = (active: boolean) =>
     cn(
       "tv-plain-focus flex h-12 w-full items-center gap-4 rounded-xl px-3 text-left font-semibold transition-colors focus:bg-foreground focus:text-background",
@@ -2671,6 +2706,14 @@ function TvSidebar({ items, viewer, onProfile, onSettings }: { items: TvMenuItem
         </button>
       ))}
       <div className="mt-auto space-y-1">
+        <button onClick={notify.onClick} aria-current={notify.active ? "page" : undefined} className={itemClass(notify.active)} aria-label={notify.count ? `Notificações (${notify.count} novas)` : "Notificações"}>
+          <span className="relative shrink-0">
+            {notify.count ? <BellRing className="h-6 w-6 text-primary" /> : <Bell className="h-6 w-6" />}
+            <CountBadge count={notify.count} />
+            {notify.active && <span className="absolute -bottom-2 left-1/2 h-1 w-4 -translate-x-1/2 rounded-full bg-brand" />}
+          </span>
+          <span className={label}>Notificações</span>
+        </button>
         <button onClick={onProfile} className={itemClass(false)} aria-label={`Perfil ${viewer.name}. Trocar perfil`}>
           <Avatar avatar={viewer.avatar} className="w-7 shrink-0 rounded-md" />
           <span className={label}>{viewer.name}</span>
