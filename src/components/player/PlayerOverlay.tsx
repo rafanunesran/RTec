@@ -326,6 +326,23 @@ export default function PlayerOverlay({
   const atCredits = isVod && marks?.credits != null && !marks.post && st.pos >= marks.credits;
   const offerNext = !!next && (atCredits || (!!nearEnd && !marks?.post && marks?.credits == null));
   const showNext = !!next && (countdown !== null || offerNext);
+  // Aviso junto do "Proximo episodio": faltando 3, 2 ou 1 episodio para a proxima temporada (ou para o fim
+  // da serie, na ultima), e "Temporada N" quando o proximo ja abre outra temporada.
+  const seasonNote = useMemo(() => {
+    if (channel.kind !== "series" || !next || !playlist) return null;
+    const eps = playlist as Ep[];
+    const i = eps.findIndex((e) => e.id === channel.id);
+    if (i < 0) return null;
+    const season = eps[i].season ?? 0;
+    const after = eps.slice(i + 1);
+    const nextSeason = (next as Ep).season ?? 0;
+    if (nextSeason !== season) return `Começa a temporada ${nextSeason}`;
+    const left = after.filter((e) => (e.season ?? 0) === season).length;
+    if (left > 3) return null;
+    const more = after.some((e) => (e.season ?? 0) !== season);
+    const end = more ? "para a próxima temporada" : "para o fim da série";
+    return left === 1 ? `Falta 1 episódio ${end}` : `Faltam ${left} episódios ${end}`;
+  }, [channel.kind, channel.id, next, playlist]);
   useEffect(() => {
     if (offerNext && countdown === null && !cancelled.current) {
       autoCount.current = true;
@@ -751,7 +768,11 @@ export default function PlayerOverlay({
       )}
 
       {showNext && next && (
-        <div className="absolute bottom-[9.5rem] right-4 z-10 flex items-center gap-2">
+        <div className="absolute bottom-[9.5rem] right-4 z-10 flex flex-col items-end gap-2">
+          {seasonNote && (
+            <div className="rounded-full bg-black/70 px-3 py-1 text-sm font-semibold text-white ring-1 ring-white/20">{seasonNote}</div>
+          )}
+          <div className="flex items-center gap-2">
           {countdown !== null && (
             <button
               onClick={() => {
@@ -771,6 +792,7 @@ export default function PlayerOverlay({
             <SkipForward className="h-4 w-4" />
             {countdown !== null ? `Próximo episódio em ${countdown}s` : "Próximo episódio"}
           </button>
+          </div>
         </div>
       )}
 
