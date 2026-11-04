@@ -425,6 +425,31 @@ test("dispositivos e conexoes: desconectar aparelho e link de TV com tempo, uso 
   delete process.env.RTEC_NO_SHORTENER;
 });
 
+test("conexoes: link curto do is.gd com 6 numeros, sorteando outro quando o codigo ja existe", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  await call("POST", "/api/clients", { username: "curto", password: "pw" });
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "curto", password: "pw" });
+  const realFetch = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).startsWith("https://is.gd/")) return realFetch(url, opts);
+    const q = new URL(url).searchParams;
+    asked.push(q.get("shorturl"));
+    const body = asked.length === 1 ? { errorcode: 2, errormessage: "already exists" } : { shorturl: `https://is.gd/${q.get("shorturl")}` };
+    return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const link = (await call("POST", "/api/player/links", { hours: 24 })).body;
+    assert.equal(asked.length, 2);
+    assert.ok(asked.every((c) => /^[1-9]\d{5}$/.test(c)));
+    assert.equal(link.short, `https://is.gd/${asked[1]}`);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("modo direto: so links https tocam direto; http sempre passa pelo servidor", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });

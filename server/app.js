@@ -1443,12 +1443,21 @@ export function createApp() {
   const linkId = (token) => crypto.createHash("sha256").update(`link|${token}`).digest("hex").slice(0, 40);
   const linkPending = (l) => !l.device_id && Date.parse(l.open_until) > Date.now();
 
+  // Link curto facil de digitar no controle da TV: is.gd/ + 6 numeros (ex: is.gd/482913). Codigo ja usado no
+  // is.gd: sorteia outro; sem jeito, cai no codigo aleatorio do is.gd (letras e numeros).
+  const isgd = async (url, code) => {
+    const r = await fetch(`https://is.gd/create.php?format=json&url=${encodeURIComponent(url)}${code ? `&shorturl=${code}` : ""}`, { signal: AbortSignal.timeout(6000) });
+    const j = await r.json();
+    return typeof j.shorturl === "string" && j.shorturl.startsWith("https://is.gd/") ? j.shorturl : null;
+  };
   async function shorten(url) {
     if (process.env.RTEC_NO_SHORTENER === "1") return null;
     try {
-      const r = await fetch(`https://is.gd/create.php?format=json&url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(6000) });
-      const j = await r.json();
-      return typeof j.shorturl === "string" && j.shorturl.startsWith("https://is.gd/") ? j.shorturl : null;
+      for (let i = 0; i < 6; i++) {
+        const short = await isgd(url, String(crypto.randomInt(100000, 1000000)));
+        if (short) return short;
+      }
+      return await isgd(url);
     } catch {
       return null;
     }
