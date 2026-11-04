@@ -712,6 +712,8 @@ test("pular intro: servidor de video analisa o episodio com o vizinho e o result
     .listen(0);
   process.env.STREAM_PROXY_URL = `http://127.0.0.1:${video.address().port}`;
   try {
+    assert.deepEqual((await call("GET", "/api/player/marks?series=70&season=1&episode=1&quick=1")).body, { marks: null, pending: true });
+    assert.equal(seen.length, 0, "quick: nao chama o servidor de video enquanto o episodio carrega");
     assert.deepEqual((await call("GET", "/api/player/marks?series=70&season=1&episode=1")).body, { marks: null, pending: true });
     assert.equal(seen[0].length, 2, "episodio pedido e o proximo da temporada");
     assert.match(seen[0][0], /\/series\/TiaX\/Sen%401\/901\.mp4$/);
@@ -721,6 +723,7 @@ test("pular intro: servidor de video analisa o episodio com o vizinho e o result
     const n = seen.length;
     assert.deepEqual((await call("GET", "/api/player/marks?series=70&season=1&episode=2")).body.marks, { intro: [10, 52], credits: 1300, post: true }, "vizinho ja ficou pronto");
     assert.deepEqual((await call("GET", "/api/player/marks?series=70&season=1&episode=1")).body.marks.intro, [62.4, 104.1]);
+    assert.deepEqual((await call("GET", "/api/player/marks?series=70&season=1&episode=2&quick=1")).body.marks.intro, [10, 52], "quick ja devolve o que esta no banco");
     assert.equal(seen.length, n, "guardado no banco: nao analisa de novo");
   } finally {
     delete process.env.STREAM_PROXY_URL;

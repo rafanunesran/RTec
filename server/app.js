@@ -1886,6 +1886,9 @@ export function createApp() {
       const publicMarks = () => seriesTmdbId(cat, seriesId, String(req.query.name || "")).then((id) => theIntroDb(id, season, episode, dur)).catch(() => null);
       const failedRecently = saved?.failed_at && Date.now() - saved.failed_at < RETRY_FAILED_MS;
       const nbs = neighbors(episodes, i);
+      // quick=1: o player acabou de abrir o episodio. Responde so com o que ja existe (banco + base publica) e
+      // nao chama o servidor de video, que abriria conexoes no fornecedor enquanto o video ainda carrega.
+      if (req.query.quick === "1" && !failedRecently && nbs.length) return res.json({ marks: await publicMarks(), pending: true });
       const audio = failedRecently || !nbs.length ? { status: "off" } : await audioMarks(c, [ep, ...nbs]);
 
       if (audio.status === "done" && Array.isArray(audio.eps)) {

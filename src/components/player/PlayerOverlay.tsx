@@ -244,21 +244,30 @@ export default function PlayerOverlay({
     const ep = channel as Ep;
     if (ep.kind !== "series" || !ep.parent_series || !ep.episode) return;
     const q = new URLSearchParams({ series: ep.parent_series, season: String(ep.season ?? 0), episode: String(ep.episode), name: ep.group || "" });
-    // A analise baixa minutos de dois episodios do fornecedor: pergunta por ate ~30 min enquanto toca.
+    // 1a pergunta (quick): na hora, so o que ja esta pronto, sem abrir conexao no fornecedor. A analise pelo
+    // audio so comeca depois que o video ja esta tocando, para nao atrasar o carregamento do inicio; ela baixa
+    // minutos de dois episodios do fornecedor, entao pergunta de novo por ate ~30 min enquanto toca.
     const waits = [30, 45, 60, 90, 90, 90, 120, 120, 120, 180, 180, 180, 240, 240];
     let n = 0;
     let stop = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const ask = () =>
+    const ask = (quick: boolean) =>
       api
-        .get<{ marks: EpisodeMarks | null; pending?: boolean }>(`/api/player/marks?${q}`)
+        .get<{ marks: EpisodeMarks | null; pending?: boolean }>(`/api/player/marks?${q}${quick ? "&quick=1" : ""}`)
         .then((r) => {
           if (stop) return;
           setMarks(r.marks);
-          if (r.pending && n < waits.length) timer = setTimeout(ask, waits[n++] * 1000);
+          if (!r.pending) return;
+          if (quick) waitPlaying();
+          else if (n < waits.length) timer = setTimeout(() => ask(false), waits[n++] * 1000);
         })
         .catch(() => {});
-    ask();
+    const waitPlaying = () => {
+      const v = video();
+      if (v && !v.paused && v.readyState >= 3 && v.currentTime > 0) timer = setTimeout(() => ask(false), 8000);
+      else timer = setTimeout(waitPlaying, 2000);
+    };
+    ask(true);
     return () => {
       stop = true;
       clearTimeout(timer);
@@ -354,7 +363,9 @@ export default function PlayerOverlay({
     }
   }, [offerNext, countdown]);
   const intro = isVod ? marks?.intro : null;
-  const showIntro = !!intro && countdown === null && st.pos >= intro[0] && st.pos < intro[1] - 2;
+  // So depois que o video comecou a tocar (abertura logo no 0:00 tambem): pular antes disso nao funciona e
+  // atrapalharia o carregamento.
+  const showIntro = !!intro && countdown === null && st.dur > 0 && st.pos >= Math.max(intro[0], 0.5) && st.pos < intro[1] - 2;
   const skipIntro = () => {
     if (!intro) return;
     setIntroCount(null);
