@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, Bell, BellRing, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, RotateCw, Search, Settings, Share, SquarePlus, Trash2, Trophy, Tv, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Bell, BellRing, CalendarClock, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, RotateCw, Search, Settings, Share, SquarePlus, Trash2, Trophy, Tv, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, isListExpired, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
@@ -9,6 +9,7 @@ import Logo from "@/components/Logo";
 import PlayerOverlay from "@/components/player/PlayerOverlay";
 import { MovieDetails, Recommendations, TitleHeader, useTitleInfo } from "@/components/player/TitleDetails";
 import { seasonsOf, useSeasonsVersion } from "@/lib/seasons";
+import { airLabel, useSchedule, type ScheduledEpisode } from "@/lib/schedule";
 import { WATCHED_AT, adoptProgress, fraction, getProgress, resumeAt, saveProgress, useProgressVersion } from "@/lib/progress";
 import { applyRelink, relinkM3u, relinkXtream } from "@/lib/relink";
 import { episodeInfo, lastEpisodePerSeries, seriesKeyOf } from "@/lib/titlekey";
@@ -1619,6 +1620,7 @@ function Watch({
                   <EpisodeList
                     episodes={series.episodes}
                     seriesName={series.name}
+                    seriesKey={xt ? series.key : undefined}
                     currentId={current?.id}
                     xt={xt}
                     onPlay={(e) => play({ ...e, group: series.name }, series.episodes!.map((x) => ({ ...x, group: series.name })))}
@@ -2193,12 +2195,15 @@ function SeriesHeader({ series, xt, actions }: { series: OpenSeries; xt: boolean
 
 function EpisodeList({
   episodes,
+  seriesName,
+  seriesKey,
   currentId,
   xt,
   onPlay,
 }: {
   episodes: Episode[];
   seriesName: string;
+  seriesKey?: string;
   currentId?: string;
   xt: boolean;
   onPlay: (e: Episode) => void;
@@ -2211,13 +2216,28 @@ function EpisodeList({
   const resume = episodes.find((e) => e.id === lastId);
   const nextUp = resume && fraction(resume) >= WATCHED_AT ? episodes[episodes.indexOf(resume) + 1] : resume;
 
-  const seasons = useMemo(() => [...new Set(episodes.map((e) => e.season))].sort((a, b) => a - b), [episodes]);
+  // Temporada em lancamento: episodios que ainda vao sair ou ja sairam mas nao estao na lista (schedule.ts).
+  const schedule = useSchedule(seriesKey, seriesName);
+  const missingBySeason = useMemo(() => {
+    const out = new Map<number, { total: number; list: ScheduledEpisode[] }>();
+    for (const s of schedule?.seasons ?? []) {
+      const have = new Set(episodes.filter((e) => e.season === s.season).map((e) => e.episode));
+      const list = s.episodes.filter((e) => !have.has(e.episode));
+      if (list.length) out.set(s.season, { total: s.total, list });
+    }
+    return out;
+  }, [schedule, episodes]);
+  const seasons = useMemo(
+    () => [...new Set([...episodes.map((e) => e.season), ...missingBySeason.keys()])].sort((a, b) => a - b),
+    [episodes, missingBySeason],
+  );
   const playingSeason = episodes.find((e) => e.id === currentId)?.season;
   const [season, setSeason] = useState<number>(() => playingSeason ?? nextUp?.season ?? seasons[0] ?? 1);
   useEffect(() => {
     if (!seasons.includes(season)) setSeason(seasons[0] ?? 1);
   }, [seasons, season]);
   const list = episodes.filter((e) => e.season === season);
+  const missing = missingBySeason.get(season);
 
   return (
     <div className="space-y-4">
@@ -2251,7 +2271,7 @@ function EpisodeList({
               >
                 Temporada {n}
                 <span className={cn("rounded-full px-1.5 text-[11px] tabular-nums", season === n ? "bg-background/15" : "bg-muted")}>
-                  {done ? `${done}/${eps.length}` : eps.length}
+                  {!eps.length ? "Em breve" : done ? `${done}/${eps.length}` : eps.length}
                 </span>
               </button>
             );
@@ -2259,7 +2279,12 @@ function EpisodeList({
         </div>
       )}
       <div className="text-sm font-semibold text-muted-foreground">
-        Temporada {season} · {list.length} episódio(s)
+        Temporada {season} ·{" "}
+        {missing && missing.total > list.length
+          ? list.length
+            ? `${list.length} de ${missing.total} episódios na lista`
+            : `${missing.total} episódio${missing.total > 1 ? "s" : ""} previsto${missing.total > 1 ? "s" : ""}`
+          : `${list.length} episódio(s)`}
       </div>
       <ul className="grid gap-1 md:grid-cols-2">
         {list.map((e) => {
@@ -2288,7 +2313,42 @@ function EpisodeList({
           );
         })}
       </ul>
+      {missing && <UpcomingEpisodes season={season} list={missing.list} total={missing.total} />}
     </div>
+  );
+}
+
+/** Episodios que faltam na lista: data oficial de lancamento de cada um (ou "ja lancado, ainda nao chegou"). */
+function UpcomingEpisodes({ season, list, total }: { season: number; list: ScheduledEpisode[]; total: number }) {
+  const future = list.filter((e) => !airLabel(e).released).length;
+  return (
+    <section className="space-y-2" aria-label="Próximos episódios">
+      <div className="flex flex-wrap items-baseline gap-x-2 text-sm font-semibold">
+        <CalendarClock className="h-4 w-4 self-center text-primary" />
+        {future ? "Próximos episódios" : "Ainda não chegaram na lista"}
+        <span className="text-xs font-normal text-muted-foreground">
+          A temporada {season} terá {total} episódio{total > 1 ? "s" : ""}
+        </span>
+      </div>
+      <ul className="grid gap-1 md:grid-cols-2">
+        {list.map((e) => {
+          const { released, text } = airLabel(e);
+          const title = e.name && !/^epis[oó]dio\s*\d+$/i.test(e.name) ? e.name : "";
+          return (
+            <li key={e.episode} tabIndex={0} className="channel-row flex items-center gap-3 rounded-xl border border-dashed p-2 outline-none focus-visible:ring-2 focus-visible:ring-primary">
+              <div className="grid h-11 w-14 shrink-0 place-items-center rounded-xl bg-muted text-xs font-bold tabular-nums text-muted-foreground ring-1 ring-border">E{e.episode}</div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold text-muted-foreground">
+                  Episódio {e.episode}
+                  {title ? ` · ${title}` : ""}
+                </div>
+                <div className={cn("truncate text-xs", released ? "text-warning" : "text-primary")}>{text}</div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 

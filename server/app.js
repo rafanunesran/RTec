@@ -9,6 +9,7 @@ import { countChannels, headerEpgUrls, loadPlaylistText, parseEntries, sourceUrl
 import { nowNext } from "./epg.js";
 import * as xtream from "./xtream.js";
 import { lookupOnline, mergeInfo } from "./titleinfo.js";
+import { seriesSchedule } from "./schedule.js";
 import { rankSimilar } from "./recommend.js";
 import { checkSource } from "./listcheck.js";
 import { episodeInfo, episodeOf, normTitle } from "./titlekey.js";
@@ -1945,6 +1946,29 @@ export function createApp() {
       info.backdrop = logoUrl(c.id, info.backdrop);
       res.setHeader("Cache-Control", "private, max-age=21600");
       res.json(info);
+    }),
+  );
+
+  // Calendario da temporada em lancamento (schedule.js): total de episodios e a data oficial de cada um.
+  // O aparelho mostra so os que ainda nao sairam ou ja sairam mas nao estao na lista.
+  app.get(
+    "/api/player/schedule",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      const { id, name, year } = titleQuery(req);
+      const cat = id ? catalogFor(c) : null;
+      let info = {};
+      if (cat) {
+        const r = cat.ref(id);
+        info = await r.prov.info("series", r.id).catch(() => ({}));
+      }
+      let tmdbId = /^\d+$/.test(info.tmdb_id || "") ? info.tmdb_id : "";
+      const title = name || info.name || "";
+      if (!tmdbId && process.env.TMDB_API_KEY && title) tmdbId = (await lookupOnline("series", title, info.year || year))?.tmdb_id || "";
+      const out = await seriesSchedule({ name: title, year: Number(info.year) || year, tmdbId });
+      res.setHeader("Cache-Control", "private, max-age=3600");
+      res.json(out);
     }),
   );
 
