@@ -32,7 +32,7 @@ async function fetchText(url) {
     res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), headers: { "User-Agent": PLAYER_UA, Accept: "*/*" } });
   } catch (err) {
     if (err.name === "TimeoutError") throw new Error("O servidor da lista demorou demais para responder");
-    throw new Error(`Nao foi possivel conectar no servidor da lista (${err.cause?.code || err.message})`);
+    throw new Error(`Nao foi possivel conectar no servidor da lista (${err.cause?.code || String(err.message).replace(/https?:\/\/\S+/gi, "link")})`); // sem o link (tem usuario/senha)
   }
   if (res.status === 401 || res.status === 403) throw new Error(`O fornecedor recusou o acesso (HTTP ${res.status}): confira usuario/senha ou se a conta esta ativa`);
   if (!res.ok) throw new Error(`O servidor da lista respondeu com erro HTTP ${res.status}`);

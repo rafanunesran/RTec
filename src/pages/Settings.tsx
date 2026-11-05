@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { Button, Card, Field, IconTile, Input } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
 import VideoServerCard from "@/components/VideoServerCard";
+import SecurityCard from "@/components/SecurityCard";
 
 export default function Settings() {
   const [current, setCurrent] = useState("");
@@ -56,6 +57,9 @@ export default function Settings() {
           </Button>
         </form>
       </Card>
+      <div className="mt-6">
+        <SecurityCard />
+      </div>
       <div className="mt-6">
         <VideoServerCard />
       </div>

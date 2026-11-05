@@ -33,10 +33,14 @@ const MAX_MANUAL_BYTES = 900 * 1024; // um documento do Firestore aceita ate 1 M
 const DEFAULT_PLAYBACK = process.env.DEFAULT_PLAYBACK || "auto";
 const PLAYBACK_MODES = ["auto", "direct", "proxy"];
 
-function viaProxy(mode, url, app = false) {
-  if (mode === "proxy") return true;
+/**
+ * route: "hide" (links blindados: tudo passa pelo servidor de video, o aparelho nunca ve o link do fornecedor),
+ * "direct" (app/TV tocam direto do fornecedor) ou "web" (navegador: so http passa pelo servidor).
+ */
+function viaProxy(mode, url, route = "web") {
+  if (mode === "proxy" || route === "hide") return true;
   // No app Android o video vai direto do fornecedor para o aparelho (sem limite de banda do servidor).
-  if (app) return false;
+  if (route === "direct" || route === true) return false;
   // No navegador, link http nunca toca direto: e bloqueado dentro de um site https.
   return !/^https:/i.test(url);
 }
@@ -47,7 +51,9 @@ const isApp = (req) => /\bRTecApp\b/.test(req.get("user-agent") || "");
  * Canais Xtream: alem do app Android, a TV Samsung (Tizen) tambem tenta direto do fornecedor. Esses canais
  * trazem o plano B pelo servidor (fallback), usado se a TV bloquear o link http.
  */
-const directXtream = (req) => isApp(req) || liteDirect(req) || /\bTizen\b/.test(req.get("user-agent") || "");
+const directXtream = (req) => (req.hideLinks ? "hide" : isApp(req) || liteDirect(req) || /\bTizen\b/.test(req.get("user-agent") || "") ? "direct" : "web");
+/** Listas M3U: so o app Android e a versao leve tocam direto (a TV Samsung abre pelo navegador). */
+const directM3u = (req) => (req.hideLinks ? "hide" : isApp(req) || liteDirect(req) ? "direct" : "web");
 /**
  * Versao leve para TVs antigas (public/tv-antiga.html, ?direct=1): o reprodutor da TV toca o link do
  * fornecedor direto, sem passar pelo servidor (que corta o ao vivo em 50 s na Vercel).
@@ -371,15 +377,15 @@ function verifySignature(clientId, exp, url, sig, { allowExpired = false } = {})
 }
 
 /**
- * O link do fornecedor vai cifrado no link do proxy (o aparelho nao ve usuario/senha). Servidor de video
- * separado (STREAM_PROXY_URL) instalado antes desta versao so entende o link aberto: cifra la so com PROXY_ENCRYPT=1.
+ * O link do fornecedor vai sempre cifrado no link do proxy (o aparelho nao ve usuario/senha), tambem no servidor
+ * de video separado (STREAM_PROXY_URL), que se atualiza sozinho e abre o link cifrado. PROXY_ENCRYPT=0 desliga.
  */
-const sealLinks = (base) => !base || process.env.PROXY_ENCRYPT === "1";
+const sealLinks = () => process.env.PROXY_ENCRYPT !== "0";
 
 function proxyUrl(clientId, url, base = proxyBase()) {
   // Validade arredondada para a hora: o mesmo link se repete e aproveita cache do navegador.
   const exp = Math.ceil((Date.now() / 1000 + LINK_TTL_SECONDS) / 3600) * 3600;
-  const u = sealLinks(base) ? sealUrl(proxySecret(), url) : url;
+  const u = sealLinks() ? sealUrl(proxySecret(), url) : url;
   const q = new URLSearchParams({ u, c: clientId, e: String(exp), s: signUrl(clientId, exp, u) });
   return `${base}/api/player/proxy?${q}`;
 }
@@ -412,6 +418,66 @@ function rewriteHls(text, baseUrl, clientId, base) {
       return proxyUrl(clientId, abs(t), base);
     })
     .join("\n");
+}
+
+// ---------- Links blindados ----------
+// Ligado (padrao), nenhum aparelho recebe o link do fornecedor (com usuario e senha da lista): app Android,
+// TVs e navegador tocam pelo servidor de video, com o link cifrado e assinado. O admin pode desligar em
+// Configuracoes (o app e as TVs voltam a tocar direto do fornecedor, gastando menos o servidor de video).
+const SECURITY_TTL_MS = 60_000;
+let securityCache = null;
+async function securitySettings() {
+  if (securityCache && Date.now() - securityCache.at < SECURITY_TTL_MS) return securityCache.value;
+  const doc = (await getStore().config.get("security").catch(() => null)) || {};
+  const value = { hide_links: doc.hide_links !== false };
+  securityCache = { at: Date.now(), value };
+  return value;
+}
+
+/** Link com usuario/senha de lista (Xtream /live/U/S/1.ts, get.php?username=...). */
+const CRED_LINK = /\/(live|movie|series|timeshift)\/[^/?#]+\/[^/?#]+\/|[?&](username|password)=/i;
+const isOurLink = (url) => /\/api\/player\/(proxy|aac)\?/.test(url);
+
+/** Servidores (origin) das listas do cliente, inclusive as listas do painel ligadas a ele. */
+async function clientServers(c) {
+  const out = new Set();
+  for (const p of await clientPlaylists(c).catch(() => allSources(c))) {
+    const o = sourceServer(p);
+    if (o) out.add(o);
+  }
+  return out;
+}
+
+/**
+ * Com links blindados, troca um link do fornecedor guardado no aparelho (historico, favoritos) pelo link do
+ * servidor de video. So assina link dos servidores das listas do proprio cliente (nao vira um proxy aberto);
+ * link com usuario/senha de outro servidor e descartado.
+ */
+function hideLink(c, url, servers) {
+  const link = String(url || "");
+  if (!/^https?:\/\//i.test(link) || isOurLink(link)) return link;
+  let origin = "";
+  try {
+    origin = new URL(link).origin.toLowerCase();
+  } catch {
+    return "";
+  }
+  if (servers.has(origin)) return proxyUrl(c.id, link);
+  return CRED_LINK.test(link) ? "" : link;
+}
+
+const LINK_FIELDS = ["src", "alt", "fallback"];
+/** Aplica hideLink nos links de um canal guardado (e nas reservas "more"). */
+function hideChannel(c, ch, servers) {
+  if (!ch) return ch;
+  const fix = (m) => {
+    const out = { ...m };
+    for (const k of LINK_FIELDS) if (typeof m[k] === "string") out[k] = hideLink(c, m[k], servers);
+    return out;
+  };
+  const out = fix(ch);
+  if (Array.isArray(ch.more)) out.more = ch.more.map(fix);
+  return out;
 }
 
 function clientProfile(c, d) {
@@ -965,6 +1031,14 @@ async function requestProfile(req) {
   return id;
 }
 
+/** Links blindados: favoritos/historico antigos (de quando o app tocava direto) saem com o link do servidor de video. */
+async function hideSync(req, s) {
+  if (!req.hideLinks) return s;
+  const servers = await clientServers(req.client);
+  const fix = (list) => list.map((it) => hideChannel(req.client, it, servers));
+  return { ...s, favorites: fix(s.favorites), history: fix(s.history) };
+}
+
 async function loadSync(docId) {
   const doc = (await getStore().sync.get(docId)) || {};
   return {
@@ -993,6 +1067,31 @@ function loginFailed(req, scope, who = req.ip) {
   if (loginFails.size > 5000) loginFails.delete(loginFails.keys().next().value);
 }
 
+// Na Vercel cada instancia tem sua propria memoria: os erros de login tambem ficam no banco (config "lock_..."),
+// por endereco (8 erros) e por usuario (20 erros, contra tentativas espalhadas por muitos enderecos).
+const USER_MAX_FAILS = 20;
+const lockId = (scope, who) => `lock_${crypto.createHash("sha256").update(`${scope}|${who}`).digest("hex").slice(0, 24)}`;
+const lockKeys = (req, scope, user) => [[lockId(scope, `ip:${req.ip}`), LOGIN_MAX_FAILS], ...(user ? [[lockId(scope, `u:${String(user).toLowerCase()}`), USER_MAX_FAILS]] : [])];
+
+async function guardLogin(req, scope, user) {
+  assertLoginAllowed(req, scope);
+  for (const [id, max] of lockKeys(req, scope, user)) {
+    const f = await getStore().config.get(id).catch(() => null);
+    if (f && Date.now() - f.at < LOGIN_WINDOW_MS && f.count >= max) {
+      throw new HttpError(429, "Muitas tentativas erradas. Aguarde 15 minutos e tente de novo.");
+    }
+  }
+}
+
+async function failLogin(req, scope, user) {
+  loginFailed(req, scope);
+  for (const [id] of lockKeys(req, scope, user)) {
+    const f = await getStore().config.get(id).catch(() => null);
+    const next = f && Date.now() - f.at < LOGIN_WINDOW_MS ? { at: f.at, count: f.count + 1 } : { at: Date.now(), count: 1 };
+    await getStore().config.set(id, next).catch(() => {});
+  }
+}
+
 const pinMatches = (c, pin) => (c.parental_pin_hash ? bcrypt.compareSync(String(pin || ""), c.parental_pin_hash) : String(pin || "") === DEFAULT_PIN);
 
 /** PIN parental: 8 erros seguidos na conta travam o PIN por 15 minutos (4 numeros se adivinham rapido). */
@@ -1017,6 +1116,14 @@ export function createApp() {
   app.use(express.json({ limit: "4mb" }));
   app.use(cookieParser());
   app.use(wrap(async (_req, _res, next) => (await init(), next())));
+  // Links blindados (ver securitySettings): vale para todas as rotas do reprodutor.
+  app.use(
+    "/api/player",
+    wrap(async (req, _res, next) => {
+      req.hideLinks = (await securitySettings()).hide_links;
+      next();
+    }),
+  );
 
   const db = () => getStore();
 
@@ -1024,9 +1131,9 @@ export function createApp() {
   app.post(
     "/api/auth/login",
     wrap(async (req, res) => {
-      assertLoginAllowed(req, "admin");
       const username = String(req.body?.username || "").trim();
       const password = String(req.body?.password || "");
+      await guardLogin(req, "admin", username);
       let admin = await db().admins.findOne("username", username);
       if (!admin && (await db().admins.list()).length === 0) {
         // Admin apagado no Firestore com o servidor ja rodando: recria na hora.
@@ -1037,7 +1144,7 @@ export function createApp() {
         }
       }
       if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
-        loginFailed(req, "admin");
+        await failLogin(req, "admin", username);
         console.warn(`[rtec] Login de admin recusado para "${username}": ${admin ? "senha incorreta" : "usuario nao existe"}`);
         throw new HttpError(401, "Usuario ou senha invalidos");
       }
@@ -1073,6 +1180,29 @@ export function createApp() {
   );
 
   // Situacao do servidor de video (STREAM_PROXY_URL): ffmpeg, analises de Pular intro e atualizacoes.
+  // Seguranca das listas: links blindados (nenhum aparelho recebe o link do fornecedor).
+  app.get(
+    "/api/admin/security",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ ...(await securitySettings()), video_server: !!proxyBase(), sealed: sealLinks() });
+    }),
+  );
+
+  app.put(
+    "/api/admin/security",
+    requireAdmin,
+    wrap(async (req, res) => {
+      if (typeof req.body?.hide_links !== "boolean") throw new HttpError(400, "Informe hide_links (true ou false)");
+      const doc = (await db().config.get("security")) || {};
+      await db().config.set("security", { ...doc, hide_links: req.body.hide_links, updated_at: nowIso(), updated_by: req.admin.username });
+      securityCache = null;
+      console.log(`[rtec] Links blindados ${req.body.hide_links ? "ligados" : "desligados"} por ${req.admin.username}.`);
+      res.json({ ...(await securitySettings()), video_server: !!proxyBase(), sealed: sealLinks() });
+    }),
+  );
+
   app.get(
     "/api/admin/video-server",
     requireAdmin,
@@ -1476,10 +1606,11 @@ export function createApp() {
   app.post(
     "/api/player/login",
     wrap(async (req, res) => {
-      assertLoginAllowed(req, "player");
+      const user = String(req.body?.username || "").slice(0, 200);
+      await guardLogin(req, "player", user);
       const c = await findClientByLogin(req.body?.username, req.body?.password);
       if (!c) {
-        loginFailed(req, "player");
+        await failLogin(req, "player", user);
         throw new HttpError(401, "Usuario ou senha invalidos");
       }
       if (!c.active) throw new HttpError(403, BLOCKED, "blocked");
@@ -1704,11 +1835,11 @@ export function createApp() {
   app.post(
     "/api/player/connect",
     wrap(async (req, res) => {
-      assertLoginAllowed(req, "link");
+      await guardLogin(req, "link");
       const token = String(req.body?.token || "");
       const l = /^[\w-]{16,64}$/.test(token) ? await db().links.get(linkId(token)) : null;
       if (!l) {
-        loginFailed(req, "link");
+        await failLogin(req, "link");
         throw new HttpError(404, "Link de conexão inválido. Peça um link novo.", "link_invalid");
       }
       if (l.device_id) throw new HttpError(410, "Este link já foi usado em outro aparelho. Peça um link novo.", "link_used");
@@ -1764,7 +1895,7 @@ export function createApp() {
       // Varias listas do cliente: aparecem como uma lista so (as extras completam a principal).
       if (!p.id.startsWith(`own-${c.id}`) || !playlists.some((x) => x.id.startsWith(`own-${c.id}`))) playlists.push({ id: p.id, name: p.name });
       const mode = p.playback || DEFAULT_PLAYBACK;
-      const app = isApp(req) || liteDirect(req);
+      const app = directM3u(req);
       const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
       for (const e of parseEntries(text, Infinity)) {
         if (!/^https?:\/\//i.test(e.url)) continue;
@@ -2207,7 +2338,7 @@ export function createApp() {
     requireClient,
     wrap(async (req, res) => {
       res.setHeader("Cache-Control", "no-store");
-      res.json(await loadSync(syncDocId(req.client.id, await requestProfile(req))));
+      res.json(await hideSync(req, await loadSync(syncDocId(req.client.id, await requestProfile(req)))));
     }),
   );
 
@@ -2224,7 +2355,12 @@ export function createApp() {
       let changed = false;
       for (const [key, max] of [["favorites", MAX_FAVORITES], ["history", MAX_HISTORY]]) {
         if (!Array.isArray(body[key])) continue;
-        const items = body[key].map(cleanChannel).filter(Boolean);
+        let items = body[key].map(cleanChannel).filter(Boolean);
+        // Links blindados: nada de link do fornecedor guardado no banco (e devolvido a outros aparelhos).
+        if (req.hideLinks) {
+          const servers = await clientServers(req.client);
+          items = items.map((it) => hideChannel(req.client, it, servers));
+        }
         const next = body.merge ? [...s[key], ...items.filter((i) => !s[key].some((o) => o.id === i.id))] : items;
         s[key] = dedupe(next).slice(0, max);
         s[`${key}_t`] = Date.now();
@@ -2247,7 +2383,7 @@ export function createApp() {
         if (JSON.stringify(s).length > MAX_SYNC_BYTES) throw new HttpError(413, "Muitos favoritos salvos. Remova alguns e tente de novo.");
         await db().sync.set(docId, s);
       }
-      res.json(s);
+      res.json(await hideSync(req, s));
     }),
   );
 
@@ -2413,6 +2549,7 @@ export function createApp() {
     requireClient,
     wrap(async (req, res) => {
       const urls = Array.isArray(req.body?.urls) ? req.body.urls.slice(0, 50) : [];
+      const servers = req.hideLinks ? await clientServers(req.client) : null;
       const out = urls.map((raw) => {
         const link = String(raw || "");
         let parsed;
@@ -2421,7 +2558,8 @@ export function createApp() {
         } catch {
           return link;
         }
-        if (!parsed.pathname.endsWith("/api/player/proxy")) return link; // link direto: nao expira
+        // Link direto: nao expira, mas com links blindados vira link do servidor de video.
+        if (!parsed.pathname.endsWith("/api/player/proxy")) return servers ? hideLink(req.client, link, servers) : link;
         const { u, c, e, s } = Object.fromEntries(parsed.searchParams);
         const url = c === req.client.id ? proxyTarget(u, c, e, s, { allowExpired: true }) : "";
         return url ? proxyUrl(req.client.id, url) : "";

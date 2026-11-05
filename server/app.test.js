@@ -20,6 +20,8 @@ const plain = (link) => {
 };
 // Com FIRESTORE_EMULATOR_HOST (npm run test:firestore) os mesmos testes rodam no Firestore de verdade.
 setStore(process.env.FIRESTORE_EMULATOR_HOST ? createFirestoreStore() : createMemoryStore());
+// Os testes antigos conferem o modo direto (app/TV): links blindados ficam desligados ate o teste deles.
+await (await import("./store/index.js")).getStore().config.set("security", { hide_links: false });
 
 let api, source, base, cookie = "";
 
@@ -927,7 +929,10 @@ test("servidor de video separado (Oracle) aceita os links assinados pelo painel"
     const lines = (await playlist.text()).split("\n");
     const segment = await fetch("http://127.0.0.1:18089" + lines[3]);
     assert.equal(await segment.text(), "TSDATA");
-    assert.equal((await fetch(ch.src.replace("index.m3u8", "x.m3u8"))).status, 403);
+    assert.doesNotMatch(ch.src, /127\.0\.0\.1%3A|hls\.m3u|index\.m3u8/, "o link do fornecedor vai cifrado tambem no servidor separado");
+    const forged = new URL(ch.src);
+    forged.searchParams.set("u", forged.searchParams.get("u").slice(0, -4) + "AAAA");
+    assert.equal((await fetch(forged)).status, 403);
   } finally {
     delete process.env.PROXY_SECRET;
     proxy.kill();
@@ -1391,6 +1396,59 @@ test("PIN parental: muitos erros seguidos travam o PIN por um tempo", async () =
   assert.equal((await call("POST", "/api/player/pin/verify", { pin: "0000" })).status, 429);
 });
 
+test("links blindados: nenhum aparelho recebe o link do fornecedor (usuario/senha)", async () => {
+  process.env.PROXY_SECRET = "teste-proxy";
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const sec = await call("GET", "/api/admin/security");
+  assert.equal(sec.body.hide_links, false, JSON.stringify(sec));
+  assert.equal((await call("PUT", "/api/admin/security", { hide_links: "sim" })).status, 400);
+  const on = await call("PUT", "/api/admin/security", { hide_links: true });
+  assert.equal(on.body.hide_links, true);
+  assert.equal(on.body.sealed, true, "link do fornecedor sempre cifrado dentro do link do proxy");
+  try {
+    cookie = "";
+    assert.equal((await call("PUT", "/api/admin/security", { hide_links: false })).status, 401, "so o admin muda");
+    await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
+    const port = source.address().port;
+    const leaks = (text) => /TiaX\/|Sen%401|Sen@1|username=|password=/.test(text);
+    for (const [path, ua] of [
+      ["/api/player/xtream/items?section=live", "Mozilla/5.0 (Linux; Android 14; wv) Chrome/126 Mobile RTecApp/1.0"],
+      ["/api/player/xtream/items?section=movie&category=20&direct=1", "Mozilla/5.0"],
+      ["/api/player/xtream/items?section=live", "Mozilla/5.0 (SMART-TV; LINUX; Tizen 7.0) AppleWebKit/537.36"],
+      ["/api/player/xtream/series/70", "Mozilla/5.0 RTecApp/1.0"],
+    ]) {
+      const r = await fetch(base + path, { headers: { cookie, "user-agent": ua } });
+      const text = await r.text();
+      assert.equal(r.status, 200, path);
+      assert.equal(leaks(text), false, `${path} (${ua}) nao entrega usuario/senha`);
+      const [first] = JSON.parse(text);
+      assert.match(first.src, /^\/api\/player\/proxy\?/);
+      assert.match(plain(first.src), /\/TiaX\/Sen%401\//, `o servidor ainda sabe abrir o link (${path}: ${plain(first.src)})`);
+      assert.equal(first.fallback, "");
+    }
+
+    // Historico antigo (de quando o app tocava direto): sai do banco com o link do servidor de video.
+    const raw = `http://127.0.0.1:${port}/live/TiaX/Sen%401/1.ts`;
+    const item = { id: "h1", name: "ESPN", group: "Esportes", logo: "https://img.example/a.png", src: raw, type: "mpegts", kind: "live", epg_id: "xt:1", playlist_id: "own", alt: "http://outro.tv/live/a/b/1.m3u8", alt_type: "hls" };
+    const put = (await call("PUT", "/api/player/sync", { history: [item] })).body;
+    assert.match(put.history[0].src, /^\/api\/player\/proxy\?/);
+    assert.equal(plain(put.history[0].src), raw);
+    assert.equal(put.history[0].alt, "", "link com senha de outro servidor e descartado (nao vira proxy aberto)");
+    assert.equal(put.history[0].logo, "https://img.example/a.png");
+    assert.equal(leaks(JSON.stringify((await call("GET", "/api/player/sync")).body)), false);
+
+    const { urls } = (await call("POST", "/api/player/resign", { urls: [raw, "http://outro.tv/movie/a/b/2.mp4"] })).body;
+    assert.match(urls[0], /^\/api\/player\/proxy\?/);
+    assert.equal(urls[1], "");
+  } finally {
+    cookie = "";
+    await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+    await call("PUT", "/api/admin/security", { hide_links: false });
+    delete process.env.PROXY_SECRET;
+  }
+});
+
 // Por ultimo: depois deste teste o endereco local fica bloqueado para login de admin por 15 minutos.
 test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
   cookie = "";
@@ -1400,4 +1458,6 @@ test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
   const blocked = await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
   assert.equal(blocked.status, 429);
   assert.match(blocked.body.error, /Aguarde/);
+  const locks = (await (await import("./store/index.js")).getStore().config.list()).filter((d) => String(d.id).startsWith("lock_"));
+  assert.ok(locks.some((d) => d.count >= 8), "erros guardados no banco (valem em todas as instancias da Vercel)");
 });

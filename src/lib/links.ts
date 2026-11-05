@@ -5,8 +5,12 @@ import { api, type Channel } from "@/lib/api";
 const PROXY = /\/api\/player\/proxy\?/;
 const FIELDS = ["src", "alt", "fallback", "logo", "cover"] as const;
 
+// Link do fornecedor guardado de quando o app tocava direto (com usuario/senha): o servidor troca pelo link
+// do servidor de video quando os links blindados estao ligados (desligados, devolve o mesmo link).
+const CRED = /\/(live|movie|series|timeshift)\/[^/?#]+\/[^/?#]+\/|[?&](username|password)=/i;
+
 function expiresSoon(url: string) {
-  if (!PROXY.test(url)) return false;
+  if (!PROXY.test(url)) return /^https?:\/\//i.test(url) && CRED.test(url);
   try {
     const e = Number(new URL(url, location.origin).searchParams.get("e"));
     return !e || e * 1000 < Date.now() + 3600_000;
