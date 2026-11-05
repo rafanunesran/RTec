@@ -6,6 +6,7 @@ import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 import Clients from "@/pages/Clients";
 import Settings from "@/pages/Settings";
+import Servers from "@/pages/Servers";
 import Player from "@/pages/Player";
 import Install from "@/pages/Install";
 
@@ -29,6 +30,7 @@ function Admin() {
         <Route element={<Protected />}>
           <Route index element={<Dashboard />} />
           <Route path="clientes" element={<Clients />} />
+          <Route path="servidores" element={<Servers />} />
           <Route path="configuracoes" element={<Settings />} />
         </Route>
         <Route path="*" element={<Navigate to="/admin" replace />} />

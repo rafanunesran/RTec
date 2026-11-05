@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Activity, ListVideo, UserCheck, UserX, Users } from "lucide-react";
+import { Activity, ChevronRight, ListVideo, ServerCrash, UserCheck, UserX, Users } from "lucide-react";
 import { api, type Stats } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Card, Skeleton, StatCard } from "@/components/ui";
@@ -19,9 +19,15 @@ const steps: [string, ReactNode][] = [
 
 export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [down, setDown] = useState<string[]>([]);
 
   useEffect(() => {
     api.get<Stats>("/api/stats").then(setStats).catch(() => {});
+    // Aviso de servidor fora do ar (teste em Servidores).
+    api
+      .get<{ servers: { host: string; state: string }[] }>("/api/servers/status")
+      .then((m) => setDown(m.servers.filter((s) => s.state === "offline").map((s) => s.host)))
+      .catch(() => {});
   }, []);
 
   const cards = [
@@ -34,6 +40,18 @@ export default function Dashboard() {
   return (
     <>
       <PageHeader title="Painel" description="Visão geral do seu serviço IPTV" />
+      {down.length > 0 && (
+        <Link
+          to="/admin/servidores"
+          className="mb-6 flex items-center gap-3 rounded-2xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive hover:bg-destructive/15"
+        >
+          <ServerCrash className="h-5 w-5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <strong>{down.length === 1 ? "Servidor fora do ar:" : `${down.length} servidores fora do ar:`}</strong> {down.join(", ")}
+          </span>
+          <ChevronRight className="h-4 w-4 shrink-0" />
+        </Link>
+      )}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {cards.map(({ label, value, icon, to, tone }) => (
           <Link key={label} to={to}>

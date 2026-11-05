@@ -6,6 +6,7 @@ process.env.ADMIN_PASSWORD = "secret123";
 process.env.RTEC_NO_ONLINE_INFO = "1"; // ficha dos titulos: sem buscar na internet durante os testes
 process.env.PROXY_CHUNK_MB = "1"; // testa a entrega de filmes em pedacos (como na Vercel)
 process.env.PROXY_SECRET = "teste-proxy";
+process.env.SERVER_CHECK_TIMEOUT_SECONDS = "2"; // monitor dos servidores: links de exemplo nao respondem
 
 const { setStore } = await import("./store/index.js");
 const { createMemoryStore } = await import("./store/memory.js");
@@ -1262,6 +1263,43 @@ test("trocar servidor: os clientes marcados passam para o servidor novo e mantem
   assert.deepEqual(live.map((x) => x.name), ["ESPN", "Canal +18"], "catalogo vem do servidor novo");
 });
 
+test("servidores: monitor testa os servidores das listas; link assinado para o teste automatico", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const port = source.address().port;
+  await call("POST", "/api/clients", {
+    username: "monitor1",
+    password: "m1",
+    source: { kind: "xtream", xtream_server: `http://127.0.0.1:${port}`, xtream_username: "TiaX", xtream_password: "Sen@1" },
+  });
+  const r = await call("POST", "/api/servers/check");
+  assert.equal(r.status, 200);
+  const local = r.body.servers.find((s) => s.host === `127.0.0.1:${port}`);
+  assert.ok(r.body.servers.length > 0);
+  assert.ok(r.body.servers.every((s) => ["online", "slow", "problem", "offline"].includes(s.state)), "todos testados");
+  assert.ok(r.body.servers.every((s) => s.clients.length > 0 && s.history.length >= 1));
+  assert.ok(local, "servidor do fornecedor falso aparece");
+  assert.equal(local.state, "online", "fornecedor falso esta no ar");
+  // Logo depois, sem forcar: usa o resultado guardado (nao testa de novo).
+  const again = (await call("GET", "/api/servers/status")).body.servers.find((s) => s.host === local.host);
+  assert.equal(again.history.length, local.history.length);
+
+  const crypto = await import("node:crypto");
+  const e = Math.ceil(Date.now() / 1000) + 60;
+  const prevSecret = process.env.PROXY_SECRET;
+  process.env.PROXY_SECRET = "segredo-monitor"; // o mesmo do servidor de video
+  const s = crypto.createHmac("sha256", "segredo-monitor").update(`monitor|${e}|servers`).digest("base64url").slice(0, 32);
+  cookie = "";
+  assert.equal((await call("GET", `/api/servers/monitor?c=monitor&e=${e}&s=errado`)).status, 403);
+  assert.equal((await call("GET", "/api/servers/status")).status, 401, "tela so para o admin");
+  const m = await call("GET", `/api/servers/monitor?c=monitor&e=${e}&s=${s}`);
+  assert.equal(m.status, 200);
+  assert.equal(m.body.ok, true);
+  assert.equal(m.body.servers, r.body.servers.length);
+  if (prevSecret === undefined) delete process.env.PROXY_SECRET;
+  else process.env.PROXY_SECRET = prevSecret;
+});
+
 test("sessoes: cookie do cliente nao abre o painel; trocar a senha do admin derruba as outras sessoes", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
@@ -1325,4 +1363,3 @@ test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
   assert.equal(blocked.status, 429);
   assert.match(blocked.body.error, /Aguarde/);
 });
-

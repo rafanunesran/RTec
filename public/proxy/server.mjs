@@ -409,6 +409,7 @@ async function statusRoute(url, res) {
     aac: aacRunning,
     marks: { queue: markQueue.length, busy: markBusy, ...markStats },
     update_log: updateLog(),
+    monitor: { panel: PANEL_URL, ...monitor },
   });
 }
 
@@ -466,4 +467,28 @@ const server = http.createServer(async (req, res) => {
   Readable.fromWeb(upstream.body).on("error", () => res.end()).pipe(res);
 });
 
-if (isMain) server.listen(PORT, HOST, () => console.log(`[proxy] RTec video rodando na porta ${PORT}`));
+// Monitor dos servidores (Admin > Servidores): a cada 5 min pede ao painel para testar os servidores das
+// listas, assim o historico continua mesmo com a tela fechada. RTEC_PANEL_URL="" desliga.
+const PANEL_URL = (process.env.RTEC_PANEL_URL ?? "https://r-tec-pink.vercel.app").replace(/\/+$/, "");
+const MONITOR_EVERY_MS = 5 * 60_000;
+const monitor = { last_ok_at: "", last_error: "" };
+async function pingMonitor() {
+  const e = Math.ceil(Date.now() / 1000) + 120;
+  const q = new URLSearchParams({ c: "monitor", e: String(e), s: sign("monitor", e, "servers") });
+  try {
+    const r = await fetch(`${PANEL_URL}/api/servers/monitor?${q}`, { signal: AbortSignal.timeout(55_000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    monitor.last_ok_at = new Date().toISOString();
+    monitor.last_error = "";
+  } catch (err) {
+    monitor.last_error = `${new Date().toISOString()} ${err.message}`;
+  }
+}
+
+if (isMain) {
+  server.listen(PORT, HOST, () => console.log(`[proxy] RTec video rodando na porta ${PORT}`));
+  if (PANEL_URL) {
+    setTimeout(pingMonitor, 20_000);
+    setInterval(pingMonitor, MONITOR_EVERY_MS).unref();
+  }
+}

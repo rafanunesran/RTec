@@ -17,6 +17,7 @@ import { createCatalog, sourceKey } from "./merge.js";
 import { hasDataKey, needsSeal, openUrl, sealUrl } from "./seal.js";
 import { getAgenda, leagueList, matchGames } from "./games.js";
 import { MARKS_V, RETRY_FAILED_MS, cleanMarks, markKey, neighbors, theIntroDb } from "./marks.js";
+import { MONITOR_EVERY_MS, SLOW_MS, checkAll, recordResults, serverTargets, summarize } from "./servermon.js";
 import { CHECK_EVERY_MS, alertList, alertTargets, checkAlerts, cleanSeries, markSeen, readSnap, setAlert } from "./epalerts.js";
 
 const COOKIE = "rtec_session";
@@ -1161,6 +1162,89 @@ export function createApp() {
       }
       console.log(`[rtec] Servidor trocado para ${to} em ${clients} cliente(s)`);
       res.json({ to, clients });
+    }),
+  );
+
+  // ---------- Monitor dos servidores (Admin > Servidores) ----------
+  // Testa os servidores das listas e guarda o resultado (config "server_monitor"). Roda quando a tela esta
+  // aberta e, a cada 5 min, quando o servidor de video (Oracle) chama /api/servers/monitor.
+  let monitorRun = null;
+  async function runMonitor({ by = "admin", force = false } = {}) {
+    if (monitorRun) return monitorRun;
+    monitorRun = (async () => {
+      const doc = (await db().config.get("server_monitor")) || {};
+      const age = Date.now() - Date.parse(doc.checked_at || 0);
+      const targets = serverTargets(await db().clients.list());
+      const known = targets.every((t) => doc.servers?.[t.server]);
+      // Botao "Testar agora": no maximo a cada 15 s; automatico: a cada 5 min (ou se apareceu servidor novo).
+      if (age < (force ? 15_000 : MONITOR_EVERY_MS - 30_000) && known) {
+        // A tela aberta ja testou: so anota que o teste automatico continua chegando.
+        if (by === "monitor" && Date.now() - Date.parse(doc.monitor_at || 0) > 10 * 60_000) {
+          doc.monitor_at = nowIso();
+          await db().config.set("server_monitor", doc);
+        }
+        return { doc, targets };
+      }
+      const next = recordResults(doc, await checkAll(targets), { by });
+      await db().config.set("server_monitor", next);
+      return { doc: next, targets };
+    })().finally(() => {
+      monitorRun = null;
+    });
+    return monitorRun;
+  }
+
+  const monitorResponse = ({ doc, targets }) => ({
+    checked_at: doc.checked_at || null,
+    monitor_at: doc.monitor_at || null,
+    every_seconds: MONITOR_EVERY_MS / 1000,
+    slow_ms: SLOW_MS,
+    servers: targets.map((t) => {
+      const e = doc.servers?.[t.server] || null;
+      return {
+        server: t.server,
+        host: new URL(t.server).host,
+        clients: t.clients,
+        state: e?.state || "unknown",
+        ms: e?.ms ?? null,
+        http: e?.http || 0,
+        reason: e?.reason || "",
+        checked_at: e?.checked_at || null,
+        since: e?.since || null,
+        last_ok_at: e?.last_ok_at || null,
+        last_down_at: e?.last_down_at || null,
+        history: e?.history || [],
+        ...summarize(e),
+      };
+    }),
+  });
+
+  app.get(
+    "/api/servers/status",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json(monitorResponse(await runMonitor()));
+    }),
+  );
+
+  app.post(
+    "/api/servers/check",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      res.json(monitorResponse(await runMonitor({ force: true })));
+    }),
+  );
+
+  // Chamado pelo servidor de video a cada 5 min (link assinado com o PROXY_SECRET), sem login de admin.
+  app.get(
+    "/api/servers/monitor",
+    wrap(async (req, res) => {
+      const { c, e, s } = req.query;
+      if (c !== "monitor" || !verifySignature("monitor", e, "servers", s)) throw new HttpError(403, "Link invalido ou expirado");
+      const { doc, targets } = await runMonitor({ by: "monitor" });
+      const states = targets.map((t) => doc.servers?.[t.server]?.state || "unknown");
+      res.json({ ok: true, servers: targets.length, offline: states.filter((x) => x === "offline").length });
     }),
   );
 
