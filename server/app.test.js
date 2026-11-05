@@ -1405,6 +1405,9 @@ test("links blindados: nenhum aparelho recebe o link do fornecedor (usuario/senh
   assert.equal((await call("PUT", "/api/admin/security", { hide_links: "sim" })).status, 400);
   const on = await call("PUT", "/api/admin/security", { hide_links: true });
   assert.equal(on.body.hide_links, true);
+  assert.equal(on.body.active, false, "sem servidor de video fica em espera (o video nao passa pela Vercel)");
+  process.env.STREAM_PROXY_URL = "https://video.exemplo.com";
+  assert.equal((await call("GET", "/api/admin/security")).body.active, true);
   assert.equal(on.body.sealed, true, "link do fornecedor sempre cifrado dentro do link do proxy");
   try {
     cookie = "";
@@ -1423,7 +1426,7 @@ test("links blindados: nenhum aparelho recebe o link do fornecedor (usuario/senh
       assert.equal(r.status, 200, path);
       assert.equal(leaks(text), false, `${path} (${ua}) nao entrega usuario/senha`);
       const [first] = JSON.parse(text);
-      assert.match(first.src, /^\/api\/player\/proxy\?/);
+      assert.match(first.src, /^https:\/\/video\.exemplo\.com\/api\/player\/proxy\?/, "o video vai pela Oracle, nunca pela Vercel");
       assert.match(plain(first.src), /\/TiaX\/Sen%401\//, `o servidor ainda sabe abrir o link (${path}: ${plain(first.src)})`);
       assert.equal(first.fallback, "");
     }
@@ -1432,20 +1435,24 @@ test("links blindados: nenhum aparelho recebe o link do fornecedor (usuario/senh
     const raw = `http://127.0.0.1:${port}/live/TiaX/Sen%401/1.ts`;
     const item = { id: "h1", name: "ESPN", group: "Esportes", logo: "https://img.example/a.png", src: raw, type: "mpegts", kind: "live", epg_id: "xt:1", playlist_id: "own", alt: "http://outro.tv/live/a/b/1.m3u8", alt_type: "hls" };
     const put = (await call("PUT", "/api/player/sync", { history: [item] })).body;
-    assert.match(put.history[0].src, /^\/api\/player\/proxy\?/);
+    assert.match(put.history[0].src, /^https:\/\/video\.exemplo\.com\/api\/player\/proxy\?/);
     assert.equal(plain(put.history[0].src), raw);
     assert.equal(put.history[0].alt, "", "link com senha de outro servidor e descartado (nao vira proxy aberto)");
     assert.equal(put.history[0].logo, "https://img.example/a.png");
     assert.equal(leaks(JSON.stringify((await call("GET", "/api/player/sync")).body)), false);
 
     const { urls } = (await call("POST", "/api/player/resign", { urls: [raw, "http://outro.tv/movie/a/b/2.mp4"] })).body;
-    assert.match(urls[0], /^\/api\/player\/proxy\?/);
+    assert.match(urls[0], /^https:\/\/video\.exemplo\.com\/api\/player\/proxy\?/);
+    delete process.env.STREAM_PROXY_URL;
+    const off = (await call("GET", "/api/player/xtream/items?section=live")).body[0];
+    assert.doesNotMatch(off.src, /video\.exemplo/, "sem servidor de video volta ao modo de antes");
     assert.equal(urls[1], "");
   } finally {
     cookie = "";
     await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
     await call("PUT", "/api/admin/security", { hide_links: false });
     delete process.env.PROXY_SECRET;
+    delete process.env.STREAM_PROXY_URL;
   }
 });
 

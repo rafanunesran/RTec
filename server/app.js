@@ -434,6 +434,13 @@ async function securitySettings() {
   return value;
 }
 
+/**
+ * Blindagem em uso de verdade: so com o servidor de video (Oracle, STREAM_PROXY_URL). Sem ele o video teria de
+ * passar pela Vercel, que estoura o limite gratuito de transferencia (100 GB/mes); entao fica em espera e os
+ * aparelhos tocam como antes, ate o servidor de video voltar a estar configurado.
+ */
+const linksHidden = async () => (await securitySettings()).hide_links && !!proxyBase();
+
 /** Link com usuario/senha de lista (Xtream /live/U/S/1.ts, get.php?username=...). */
 const CRED_LINK = /\/(live|movie|series|timeshift)\/[^/?#]+\/[^/?#]+\/|[?&](username|password)=/i;
 const isOurLink = (url) => /\/api\/player\/(proxy|aac)\?/.test(url);
@@ -1120,7 +1127,7 @@ export function createApp() {
   app.use(
     "/api/player",
     wrap(async (req, _res, next) => {
-      req.hideLinks = (await securitySettings()).hide_links;
+      req.hideLinks = await linksHidden();
       next();
     }),
   );
@@ -1186,7 +1193,7 @@ export function createApp() {
     requireAdmin,
     wrap(async (_req, res) => {
       res.setHeader("Cache-Control", "no-store");
-      res.json({ ...(await securitySettings()), video_server: !!proxyBase(), sealed: sealLinks() });
+      res.json({ ...(await securitySettings()), active: await linksHidden(), video_server: !!proxyBase(), sealed: sealLinks() });
     }),
   );
 
@@ -1199,7 +1206,7 @@ export function createApp() {
       await db().config.set("security", { ...doc, hide_links: req.body.hide_links, updated_at: nowIso(), updated_by: req.admin.username });
       securityCache = null;
       console.log(`[rtec] Links blindados ${req.body.hide_links ? "ligados" : "desligados"} por ${req.admin.username}.`);
-      res.json({ ...(await securitySettings()), video_server: !!proxyBase(), sealed: sealLinks() });
+      res.json({ ...(await securitySettings()), active: await linksHidden(), video_server: !!proxyBase(), sealed: sealLinks() });
     }),
   );
 
