@@ -28,7 +28,7 @@ export function sourceOrigin(p) {
  * Servidores em uso: cada um com os clientes que dependem dele e uma lista para testar
  * (de preferencia de um cliente com a lista valendo, para o teste nao esbarrar numa conta vencida).
  */
-export function serverTargets(clients) {
+export function serverTargets(clients, groups = []) {
   const map = new Map();
   for (const c of clients) {
     const states = c.list_status?.sources || {};
@@ -40,6 +40,15 @@ export function serverTargets(clients) {
       if (!t.clients.some((x) => x.id === c.id)) t.clients.push({ id: c.id, name: c.name || c.username, username: c.username });
       const expired = c.list_status?.state === "expired" || Object.values(states).some((s) => s?.state === "expired");
       t.candidates.push({ p, score: (c.active === false ? 0 : 2) + (expired ? 0 : 1) });
+    }
+  }
+  // Irmaos sem cliente proprio: testados com os logins do grupo (os usuarios valem nos dois).
+  for (const g of groups) {
+    const pool = g.flatMap((s) => map.get(s)?.candidates || []);
+    for (const s of g) {
+      let t = map.get(s);
+      if (!t) map.set(s, (t = { server: s, clients: [], candidates: [] }));
+      if (!t.candidates.length) t.candidates = pool.map((x) => ({ ...x, p: moveToSibling(x.p, s) }));
     }
   }
   return [...map.values()]
@@ -179,4 +188,80 @@ export async function checkAll(targets, opts = {}) {
     }),
   );
   return out;
+}
+
+// ---------- Servidores irmaos (mesmo painel do fornecedor, enderecos diferentes) ----------
+
+/** Endereco normalizado ("http://srv:8080") de um link ou endereco colado; "" se nao for valido. */
+export function originOf(link) {
+  let s = String(link || "").trim();
+  if (s && !/^https?:\/\//i.test(s)) s = `http://${s}`;
+  try {
+    const u = new URL(s);
+    return /^https?:$/.test(u.protocol) && u.hostname ? u.origin.toLowerCase() : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Grupos limpos: enderecos validos, sem repetir, cada servidor em um grupo so, grupos com 2 ou mais. */
+export function cleanGroups(groups) {
+  const seen = new Set();
+  const out = [];
+  for (const g of Array.isArray(groups) ? groups : []) {
+    const list = [];
+    for (const s of Array.isArray(g) ? g : g?.servers || []) {
+      const o = originOf(s);
+      if (o && !seen.has(o)) {
+        seen.add(o);
+        list.push(o);
+      }
+    }
+    if (list.length >= 2) out.push(list.slice(0, 8));
+  }
+  return out;
+}
+
+export const siblingsOf = (groups, server) => (groups.find((g) => g.includes(server)) || []).filter((s) => s !== server);
+
+/**
+ * Troca automatica: servidor fora do ar -> irmao que esta no ar (o mais rapido; lento so se nao houver outro).
+ * Sem teste do irmao ainda, nao troca (melhor ficar no servidor conhecido).
+ */
+export function failoverMap(groups, servers = {}) {
+  const map = new Map();
+  for (const g of groups) {
+    for (const s of g) {
+      if (servers[s]?.state !== "offline") continue;
+      const ok = g
+        .filter((x) => x !== s && ["online", "slow"].includes(servers[x]?.state))
+        .sort((a, b) => (servers[a].state === "online" ? 0 : 1) - (servers[b].state === "online" ? 0 : 1) || (servers[a].ms ?? 1e9) - (servers[b].ms ?? 1e9));
+      if (ok.length) map.set(s, ok[0]);
+    }
+  }
+  return map;
+}
+
+/** Troca so o servidor de um link, mantendo caminho, usuario e senha. */
+export function swapOrigin(link, to) {
+  try {
+    const u = new URL(link);
+    const t = new URL(to);
+    u.protocol = t.protocol;
+    u.hostname = t.hostname;
+    u.port = t.port;
+    return u.toString();
+  } catch {
+    return link;
+  }
+}
+
+/** Lista com o endereco trocado para o irmao (xtream_server, url e guia). */
+export function moveToSibling(p, to) {
+  const from = sourceOrigin(p);
+  const mv = (link) => (link && originOf(link) === from ? swapOrigin(link, to) : link);
+  const next = { ...p, epg_url: mv(p.epg_url) };
+  if (p.kind === "xtream") next.xtream_server = mv(p.xtream_server).replace(/\/+$/, "");
+  else next.url = mv(p.url);
+  return next;
 }

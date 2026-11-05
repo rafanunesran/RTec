@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, CheckCircle2, Clock, Loader2, RefreshCw, Server, Users, XCircle } from "lucide-react";
+import { Activity, ArrowRightLeft, CheckCircle2, Clock, Link2, Loader2, Plus, RefreshCw, Server, Users, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Badge, Button, Card, EmptyState, Skeleton, StatCard } from "@/components/ui";
+import { Badge, Button, Card, Dialog, EmptyState, Input, Skeleton, StatCard } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
 
 type State = "online" | "slow" | "problem" | "offline" | "unknown";
@@ -24,6 +24,10 @@ type ServerRow = {
   uptime: number | null;
   avg_ms: number | null;
   checks: number;
+  /** Servidores irmaos (mesmo painel, outro endereco). */
+  siblings: string[];
+  /** Fora do ar: os clientes estao usando este irmao. */
+  failover_to: string | null;
 };
 
 type Monitor = { checked_at: string | null; monitor_at: string | null; every_seconds: number; slow_ms: number; servers: ServerRow[] };
@@ -43,6 +47,8 @@ function ago(iso: string | null, now: number) {
   if (h < 48) return `há ${h} h`;
   return `há ${Math.round(h / 24)} dias`;
 }
+
+const hostOf = (origin: string) => origin.replace(/^https?:\/\//, "");
 
 const secs = (ms: number | null) => (ms == null || ms < 0 ? "—" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
 
@@ -78,7 +84,7 @@ function Timeline({ history, now }: { history: ServerRow["history"]; now: number
   );
 }
 
-function ServerCard({ s, now }: { s: ServerRow; now: number }) {
+function ServerCard({ s, now, onSiblings }: { s: ServerRow; now: number; onSiblings: () => void }) {
   const [open, setOpen] = useState(false);
   return (
     <Card className="p-5">
@@ -98,6 +104,13 @@ function ServerCard({ s, now }: { s: ServerRow; now: number }) {
           {s.reason && <p className={cn("mt-1 text-xs", s.state === "offline" ? "text-destructive" : "text-warning")}>{s.reason}</p>}
         </div>
       </div>
+
+      {s.failover_to && (
+        <p className="mt-3 flex items-center gap-2 rounded-xl border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+          <ArrowRightLeft className="h-3.5 w-3.5 shrink-0" />
+          Clientes passaram sozinhos para o irmão {hostOf(s.failover_to)}
+        </p>
+      )}
 
       <div className="mt-4 grid grid-cols-3 gap-3 text-center">
         <div className="rounded-xl bg-muted/50 p-2">
@@ -121,12 +134,16 @@ function ServerCard({ s, now }: { s: ServerRow; now: number }) {
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <button type="button" className="flex items-center gap-1.5 hover:text-foreground" onClick={() => setOpen((v) => !v)}>
           <Users className="h-3.5 w-3.5" />
-          {s.clients.length} {s.clients.length === 1 ? "cliente" : "clientes"} {open ? "▴" : "▾"}
+          {s.clients.length ? `${s.clients.length} ${s.clients.length === 1 ? "cliente" : "clientes"} ${open ? "▴" : "▾"}` : "Só irmão (sem cliente)"}
+        </button>
+        <button type="button" className="flex items-center gap-1.5 hover:text-foreground" onClick={onSiblings}>
+          <Link2 className="h-3.5 w-3.5" />
+          {s.siblings.length ? `Irmãos: ${s.siblings.map(hostOf).join(", ")}` : "Ligar irmão"}
         </button>
         {s.last_down_at && s.state !== "offline" && <span>Última queda {ago(s.last_down_at, now)}</span>}
         {s.state === "offline" && s.last_ok_at && <span>Último teste bom {ago(s.last_ok_at, now)}</span>}
       </div>
-      {open && (
+      {open && s.clients.length > 0 && (
         <ul className="mt-2 flex flex-wrap gap-1.5">
           {s.clients.map((c) => (
             <li key={c.id} className="rounded-full bg-secondary px-2.5 py-0.5 text-xs">
@@ -139,10 +156,85 @@ function ServerCard({ s, now }: { s: ServerRow; now: number }) {
   );
 }
 
+/** Escolhe os irmaos de um servidor: outros servidores da lista ou um endereco novo colado. */
+function SiblingsDialog({ server, all, onClose, onSave }: { server: ServerRow | null; all: ServerRow[]; onClose: () => void; onSave: (server: string, siblings: string[]) => Promise<void> }) {
+  const [picked, setPicked] = useState<string[]>([]);
+  const [link, setLink] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    setPicked(server?.siblings || []);
+    setLink("");
+  }, [server]);
+  if (!server) return null;
+  const others = [...new Set([...all.map((x) => x.server).filter((x) => x !== server.server), ...picked])];
+  const toggle = (o: string) => setPicked((p) => (p.includes(o) ? p.filter((x) => x !== o) : [...p, o]));
+  const add = () => {
+    let raw = link.trim();
+    if (!raw) return;
+    if (!/^https?:\/\//i.test(raw)) raw = `http://${raw}`;
+    try {
+      const o = new URL(raw).origin.toLowerCase();
+      if (o === server.server) return toast.error("Esse é o próprio servidor");
+      setPicked((p) => (p.includes(o) ? p : [...p, o]));
+      setLink("");
+    } catch {
+      toast.error("Endereço inválido. Ex.: http://servidor2.com:8080");
+    }
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSave(server.server, picked);
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={`Irmãos de ${server.host}`}
+      description="Servidores irmãos são o mesmo painel do fornecedor em outro endereço: os usuários funcionam em todos. Se este cair, os clientes passam sozinhos para um irmão que esteja no ar, e o vídeo que falhar já tenta o irmão na hora."
+      icon={<Link2 className="h-6 w-6 text-primary" />}
+    >
+      <div className="space-y-2">
+        {others.length === 0 && <p className="text-sm text-muted-foreground">Nenhum outro servidor ainda. Cole o endereço do irmão abaixo.</p>}
+        {others.map((o) => {
+          const row = all.find((x) => x.server === o);
+          return (
+            <label key={o} className="flex cursor-pointer items-center gap-3 rounded-xl border p-3 text-sm hover:bg-muted/40">
+              <input type="checkbox" className="h-4 w-4 accent-[hsl(var(--primary))]" checked={picked.includes(o)} onChange={() => toggle(o)} />
+              <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", DOT[row?.state || "unknown"])} />
+              <span className="min-w-0 flex-1 truncate font-medium">{hostOf(o)}</span>
+              {row && <span className="text-xs text-muted-foreground">{row.clients.length} cliente(s)</span>}
+            </label>
+          );
+        })}
+      </div>
+      <div className="mt-4 flex gap-2">
+        <Input placeholder="Endereço do irmão (http://servidor2.com:8080)" value={link} onChange={(e) => setLink(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+        <Button variant="outline" onClick={add} aria-label="Adicionar endereço">
+          <Plus />
+        </Button>
+      </div>
+      <div className="mt-6 flex justify-end gap-2">
+        <Button variant="ghost" onClick={onClose}>
+          Cancelar
+        </Button>
+        <Button onClick={save} disabled={saving}>
+          {saving && <Loader2 className="animate-spin" />} Salvar
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
 export default function Servers() {
   const [data, setData] = useState<Monitor | null>(null);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [editing, setEditing] = useState<ServerRow | null>(null);
 
   const load = useCallback(async (force = false) => {
     setBusy(true);
@@ -166,6 +258,31 @@ export default function Servers() {
       clearInterval(tick);
     };
   }, [load]);
+
+  // Grupo novo = este servidor + os irmaos marcados; quem entrou sai do grupo antigo.
+  const saveSiblings = async (server: string, siblings: string[]) => {
+    const list = data?.servers || [];
+    const groups: string[][] = [];
+    const seen = new Set<string>();
+    for (const r of list) {
+      if (seen.has(r.server) || !r.siblings.length) continue;
+      const g = [r.server, ...r.siblings];
+      g.forEach((x) => seen.add(x));
+      groups.push(g);
+    }
+    const mine = [server, ...siblings];
+    const old = list.find((r) => r.server === server)?.siblings || [];
+    const next = groups.map((g) => g.filter((x) => !mine.includes(x) && !(old.includes(x) && g.includes(server)))).filter((g) => g.length >= 2);
+    if (siblings.length) next.push(mine);
+    try {
+      setData(await api.put<Monitor>("/api/servers/groups", { groups: next }));
+      setNow(Date.now());
+      toast.success(siblings.length ? "Irmãos salvos e testados" : "Irmãos removidos");
+    } catch (err) {
+      toast.error((err as Error).message);
+      throw err;
+    }
+  };
 
   const list = data?.servers || [];
   const count = (st: State[]) => list.filter((s) => st.includes(s.state)).length;
@@ -211,7 +328,7 @@ export default function Servers() {
             </Card>
           ))
         ) : list.length ? (
-          list.map((s) => <ServerCard key={s.server} s={s} now={now} />)
+          list.map((s) => <ServerCard key={s.server} s={s} now={now} onSiblings={() => setEditing(s)} />)
         ) : (
           <div className="md:col-span-2 xl:col-span-3">
             <EmptyState
@@ -222,6 +339,7 @@ export default function Servers() {
           </div>
         )}
       </div>
+      <SiblingsDialog server={editing} all={list} onClose={() => setEditing(null)} onSave={saveSiblings} />
     </>
   );
 }

@@ -17,7 +17,7 @@ import { createCatalog, sourceKey } from "./merge.js";
 import { hasDataKey, needsSeal, openUrl, sealUrl } from "./seal.js";
 import { getAgenda, leagueList, matchGames } from "./games.js";
 import { MARKS_V, RETRY_FAILED_MS, cleanMarks, markKey, neighbors, theIntroDb } from "./marks.js";
-import { MONITOR_EVERY_MS, SLOW_MS, checkAll, recordResults, serverTargets, summarize } from "./servermon.js";
+import { MONITOR_EVERY_MS, SLOW_MS, checkAll, cleanGroups, failoverMap, moveToSibling, originOf, swapOrigin, recordResults, serverTargets, siblingsOf, summarize } from "./servermon.js";
 import { CHECK_EVERY_MS, alertList, alertTargets, checkAlerts, cleanSeries, markSeen, readSnap, setAlert } from "./epalerts.js";
 
 const COOKIE = "rtec_session";
@@ -158,7 +158,34 @@ function init() {
 const CLIENT_TTL_MS = 30_000;
 const clientCache = new Map();
 
+// ---------- Servidores irmaos: troca automatica quando o servidor da lista cai ----------
+// Grupos em config "server_groups"; estado dos servidores em "server_monitor" (Admin > Servidores).
+// Cada instancia relê no maximo a cada 60 s (2 leituras por minuto, so com clientes usando).
+const FAILOVER_TTL_MS = 60_000;
+let failover = { at: 0, groups: [], map: new Map() };
+let failoverLoading = null;
+
+async function loadFailover(force = false) {
+  if (!force && Date.now() - failover.at < FAILOVER_TTL_MS) return failover;
+  failoverLoading ||= (async () => {
+    try {
+      const db = getStore();
+      const [g, m] = await Promise.all([db.config.get("server_groups"), db.config.get("server_monitor")]);
+      const groups = cleanGroups(g?.groups || []);
+      failover = { at: Date.now(), groups, map: failoverMap(groups, m?.servers || {}) };
+    } catch (err) {
+      console.warn("[rtec] Servidores irmaos:", err.message);
+      failover.at = Date.now();
+    } finally {
+      failoverLoading = null;
+    }
+    return failover;
+  })();
+  return failoverLoading;
+}
+
 async function getClient(id) {
+  await loadFailover();
   const hit = clientCache.get(id);
   if (hit && Date.now() - hit.at < CLIENT_TTL_MS) return hit.client;
   const client = await getStore().clients.get(id);
@@ -302,7 +329,12 @@ function activeSources(c) {
   const all = allSources(c);
   const states = c.list_status?.sources || {};
   const ok = all.filter((p) => states[sourceKey(p)] !== "expired");
-  return ok.length ? ok : all;
+  // Servidor fora do ar com irmao no ar: usa o irmao (mesmo usuario e senha). A chave da lista nao muda,
+  // para os ids dos titulos (favoritos, historico) continuarem os mesmos.
+  return (ok.length ? ok : all).map((p) => {
+    const to = failover.map.get(sourceServer(p));
+    return to ? { ...moveToSibling(p, to), key: p.key || sourceKey(p) } : p;
+  });
 }
 
 /** Catalogo no formato Xtream (lista principal Xtream), juntando as listas extras. null: lista M3U comum. */
@@ -581,7 +613,7 @@ const requireOwner = (req, _res, next) => {
 
 async function clientPlaylists(c) {
   const db = getStore();
-  const own = activeSources(c).map((p, i) => ({ ...p, id: i ? `own-${c.id}-${sourceKey(p)}` : `own-${c.id}`, name: c.name || c.username, active: true }));
+  const own = activeSources(c).map((p, i) => ({ ...p, id: i ? `own-${c.id}-${p.key || sourceKey(p)}` : `own-${c.id}`, name: c.name || c.username, active: true }));
   const shared = await Promise.all((c.playlist_ids || []).map((id) => db.playlists.get(id)));
   return [...own, ...shared.filter((p) => p && p.active).sort(byName)];
 }
@@ -744,6 +776,14 @@ function playLinks(c, item, p, app) {
 
 const MAX_MORE = 4;
 
+/** Servidores irmaos: o mesmo video no outro endereco, tentado primeiro se este nao tocar. */
+function siblingLinks(c, item, p, app) {
+  if (!item?.url || !failover.groups.length) return [];
+  return siblingsOf(failover.groups, originOf(item.url))
+    .slice(0, 2)
+    .map((to) => playLinks(c, { ...item, url: swapOrigin(item.url, to), alt_url: item.alt_url ? swapOrigin(item.alt_url, to) : "" }, p, app));
+}
+
 /**
  * Converte um item do catalogo no formato de canal usado pelo reprodutor. srcs: listas do catalogo (o item diz
  * de qual veio em _i). "more": o mesmo titulo nas outras listas do cliente, tentado se este nao tocar.
@@ -760,7 +800,8 @@ function xtreamChannel(c, item, group, app = false, srcs = [c.source]) {
   // Versao "cinema" so toca se for escolhida: com outra versao, a outra e a padrao.
   const main = versions && isCinema(item._tag) ? versions.find((v) => !isCinema(v.tag)) : null;
   const tag = main ? main.tag : item._tag || "|";
-  const more = main ? main.more || [] : (versions ? alts.filter((a) => (a._tag || "|") === tag) : alts).slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app));
+  const others = main ? main.more || [] : (versions ? alts.filter((a) => (a._tag || "|") === tag) : alts).slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app));
+  const more = main ? others : [...siblingLinks(c, item, p, app), ...others];
   return {
     id: i ? hashId(c.id, p.key, item.kind, item.stream_id) : hashId(c.id, item.kind, item.stream_id),
     name: item.name,
@@ -807,7 +848,7 @@ function versionsOf(c, item, alts, srcs, app) {
   const quals = new Set(tags.map((t) => t.split("|")[1])).size > 1;
   return tags.map((tag) => {
     const [first, ...rest] = all.filter((a) => (a._tag || "|") === tag);
-    const more = rest.slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app));
+    const more = [...siblingLinks(c, first, srcs[first._i], app), ...rest.slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app))];
     return { tag, label: versionLabel(tag, langs, quals), ...playLinks(c, first, srcs[first._i], app), ...(more.length ? { more } : {}) };
   });
 }
@@ -1174,7 +1215,8 @@ export function createApp() {
     monitorRun = (async () => {
       const doc = (await db().config.get("server_monitor")) || {};
       const age = Date.now() - Date.parse(doc.checked_at || 0);
-      const targets = serverTargets(await db().clients.list());
+      const groups = cleanGroups((await db().config.get("server_groups"))?.groups || []);
+      const targets = serverTargets(await db().clients.list(), groups);
       const known = targets.every((t) => doc.servers?.[t.server]);
       // Botao "Testar agora": no maximo a cada 15 s; automatico: a cada 5 min (ou se apareceu servidor novo).
       if (age < (force ? 15_000 : MONITOR_EVERY_MS - 30_000) && known) {
@@ -1183,18 +1225,19 @@ export function createApp() {
           doc.monitor_at = nowIso();
           await db().config.set("server_monitor", doc);
         }
-        return { doc, targets };
+        return { doc, targets, groups };
       }
       const next = recordResults(doc, await checkAll(targets), { by });
       await db().config.set("server_monitor", next);
-      return { doc: next, targets };
+      failover = { at: Date.now(), groups, map: failoverMap(groups, next.servers) };
+      return { doc: next, targets, groups };
     })().finally(() => {
       monitorRun = null;
     });
     return monitorRun;
   }
 
-  const monitorResponse = ({ doc, targets }) => ({
+  const monitorResponse = ({ doc, targets, groups = [] }) => ({
     checked_at: doc.checked_at || null,
     monitor_at: doc.monitor_at || null,
     every_seconds: MONITOR_EVERY_MS / 1000,
@@ -1215,6 +1258,8 @@ export function createApp() {
         last_down_at: e?.last_down_at || null,
         history: e?.history || [],
         ...summarize(e),
+        siblings: siblingsOf(groups, t.server),
+        failover_to: failoverMap(groups, doc.servers || {}).get(t.server) || null,
       };
     }),
   });
@@ -1232,6 +1277,19 @@ export function createApp() {
     "/api/servers/check",
     requireAdmin,
     wrap(async (_req, res) => {
+      res.json(monitorResponse(await runMonitor({ force: true })));
+    }),
+  );
+
+  // Servidores irmaos: o mesmo painel em enderecos diferentes (os usuarios valem em todos).
+  app.put(
+    "/api/servers/groups",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const groups = cleanGroups(req.body?.groups);
+      // Firestore nao aceita lista dentro de lista: cada grupo vira { servers: [...] }.
+      await db().config.set("server_groups", { groups: groups.map((servers) => ({ servers })), updated_at: nowIso() });
+      failover.at = 0;
       res.json(monitorResponse(await runMonitor({ force: true })));
     }),
   );

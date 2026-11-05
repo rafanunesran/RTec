@@ -87,3 +87,22 @@ test("servidores: historico guarda desde quando esta no estado e calcula as 24 h
   doc = recordResults(doc, { a: { state: "online", ms: 100 } }, { now: t0 + 25 * 3600_000 });
   assert.equal(doc.servers.a.history.length, 1);
 });
+
+test("irmaos: grupos limpos, troca so para irmao no ar e irmao sem cliente e testado com login do grupo", async () => {
+  const { cleanGroups, failoverMap, moveToSibling, originOf } = await import("./servermon.js");
+  assert.equal(originOf("srv2.com:8080/get.php?x=1"), "http://srv2.com:8080");
+  assert.deepEqual(cleanGroups([{ servers: ["http://A:80", "b.com"] }, ["http://a", "http://c"], ["lixo"]]), [["http://a", "http://b.com"]]);
+  const groups = [["http://a", "http://b", "http://c"]];
+  const servers = { "http://a": { state: "offline" }, "http://b": { state: "slow", ms: 5000 }, "http://c": { state: "online", ms: 300 } };
+  assert.equal(failoverMap(groups, servers).get("http://a"), "http://c", "prefere o que esta no ar e rapido");
+  assert.equal(failoverMap(groups, servers).has("http://c"), false);
+  assert.equal(failoverMap(groups, { "http://a": { state: "offline" }, "http://b": { state: "offline" } }).size, 0, "sem irmao no ar, fica");
+  const moved = moveToSibling({ kind: "xtream", xtream_server: "http://a/", xtream_username: "u", xtream_password: "p", epg_url: "http://a/xmltv.php?username=u" }, "http://c:8080");
+  assert.equal(moved.xtream_server, "http://c:8080");
+  assert.equal(moved.epg_url, "http://c:8080/xmltv.php?username=u");
+  const t = serverTargets([{ id: "1", username: "ana", source: xt("http://a", "ana") }], [["http://a", "http://novo:81"]]);
+  const novo = t.find((x) => x.server === "http://novo:81");
+  assert.equal(novo.clients.length, 0);
+  assert.equal(novo.probes[0].xtream_server, "http://novo:81");
+  assert.equal(novo.probes[0].xtream_username, "ana");
+});

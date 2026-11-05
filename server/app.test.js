@@ -1300,6 +1300,44 @@ test("servidores: monitor testa os servidores das listas; link assinado para o t
   else process.env.PROXY_SECRET = prevSecret;
 });
 
+test("irmaos: servidor fora do ar passa sozinho para o irmao; o video tambem tenta o irmao", async () => {
+  const prevSecret = process.env.PROXY_SECRET;
+  process.env.PROXY_SECRET = "teste-proxy"; // para abrir os links do proxy no teste
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const port = source.address().port;
+  const vivo = `http://127.0.0.1:${port}`;
+  const morto = "http://127.0.0.1:9"; // ninguem escuta
+  await call("POST", "/api/clients", {
+    username: "irmao1",
+    password: "i1",
+    source: { kind: "xtream", xtream_server: morto, xtream_username: "TiaX", xtream_password: "Sen@1" },
+  });
+  const r = await call("PUT", "/api/servers/groups", { groups: [[morto, `127.0.0.1:${port}`]] });
+  assert.equal(r.status, 200);
+  const dead = r.body.servers.find((s) => s.server === morto);
+  assert.equal(dead.state, "offline");
+  assert.deepEqual(dead.siblings, [vivo]);
+  assert.equal(dead.failover_to, vivo);
+  assert.equal(r.body.servers.find((s) => s.server === vivo).state, "online");
+
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "irmao1", password: "i1" });
+  const live = (await call("GET", "/api/player/xtream/items?section=live")).body;
+  assert.deepEqual(live.map((x) => x.name), ["ESPN", "Canal +18"], "catalogo vem do irmao");
+  assert.ok(plain(live[0].src).startsWith(`${vivo}/`), "video vem do irmao");
+  assert.ok(plain(live[0].more[0].src).startsWith(`${morto}/`), "reserva: o mesmo video no outro irmao");
+
+  // Admin desfaz os irmaos: volta ao normal.
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const off = await call("PUT", "/api/servers/groups", { groups: [] });
+  assert.ok(off.body.servers.every((s) => !s.siblings.length && !s.failover_to));
+  if (prevSecret === undefined) delete process.env.PROXY_SECRET;
+  else process.env.PROXY_SECRET = prevSecret;
+});
+
+
 test("sessoes: cookie do cliente nao abre o painel; trocar a senha do admin derruba as outras sessoes", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
