@@ -31,6 +31,18 @@ let items: EpAlert[] = [];
 let off = new Set<string>(); // desligados neste aparelho antes da resposta do servidor
 let loadedAt = 0;
 let loading: Promise<void> | null = null;
+let owner = ""; // perfil dono dos alertas guardados aqui (outro perfil nunca ve os alertas dele)
+let loadingFor = "";
+
+/** Trocou de perfil: os alertas guardados eram do anterior, entao comeca do zero. */
+function own() {
+  const p = currentProfile();
+  if (owner === p) return;
+  owner = p;
+  items = [];
+  off = new Set();
+  loadedAt = 0;
+}
 
 const emit = () => window.dispatchEvent(new Event(CHANGED));
 const q = () => `?profile=${encodeURIComponent(currentProfile())}`;
@@ -51,13 +63,15 @@ function newCount(base: Snap | null, cur: Snap) {
  * (serie sem comparacao guardada ganha a de agora, sem avisar).
  */
 export function loadEpAlerts(episodesOf: (a: EpAlert) => { season?: number; episode?: number }[] | null, force = false): Promise<void> {
-  if (loading) return loading;
-  if (!force && Date.now() - loadedAt < RECHECK_MS && loadedAt) return Promise.resolve();
+  own();
   const profile = currentProfile();
-  loading = api
+  if (loading && loadingFor === profile) return loading;
+  if (!force && Date.now() - loadedAt < RECHECK_MS && loadedAt) return Promise.resolve();
+  loadingFor = profile;
+  const req: Promise<void> = api
     .get<Response>(`/api/player/alerts${q()}`)
     .then((r) => {
-      if (profile !== currentProfile()) return;
+      if (profile !== currentProfile() || owner !== profile) return;
       let list = r.items;
       if (r.mode === "m3u") {
         list = list.map((a) => {
@@ -77,25 +91,30 @@ export function loadEpAlerts(episodesOf: (a: EpAlert) => { season?: number; epis
       /* sem rede: tenta na proxima vez */
     })
     .finally(() => {
-      loading = null;
+      if (loading === req) loading = null;
     });
-  return loading;
+  loading = req;
+  return req;
 }
 
 /** Troca de perfil ou de conta: esquece os alertas do anterior. */
 export function resetEpAlerts() {
+  owner = currentProfile();
+  loading = null;
   items = [];
   off = new Set();
   loadedAt = 0;
   emit();
 }
 
-export const epAlerts = () => items;
-export const withNew = () => items.filter((a) => a.new > 0);
-export const alertOn = (id: string) => items.some((a) => a.id === id);
+const mine = () => (own(), items);
+export const epAlerts = () => mine();
+export const withNew = () => mine().filter((a) => a.new > 0);
+export const alertOn = (id: string) => mine().some((a) => a.id === id);
 
 /** Liga ou desliga o sino da serie (episodes: os que estao na tela agora, viram os "ja vistos"). */
 export async function setEpAlert(s: SeriesRef, on: boolean, episodes?: { season?: number; episode?: number }[] | null) {
+  own();
   const snap = episodes?.length ? snapshot(episodes) : null;
   if (on) {
     off.delete(s.id);
@@ -110,6 +129,7 @@ export async function setEpAlert(s: SeriesRef, on: boolean, episodes?: { season?
 
 /** Favoritou a serie: o alerta liga sozinho (o servidor segue os favoritos). */
 export function favoriteAdded(s: SeriesRef, episodes?: { season?: number; episode?: number }[] | null) {
+  own();
   const snap = episodes?.length ? snapshot(episodes) : null;
   off.delete(s.id);
   if (!alertOn(s.id)) items = [...items, { id: s.id, name: s.name, logo: s.logo, series_id: s.series_id || "", fav: true, base: snap, new: 0, season: 0, episode: 0 }];
@@ -118,6 +138,7 @@ export function favoriteAdded(s: SeriesRef, episodes?: { season?: number; episod
   void api.put(`/api/player/alerts${q()}`, { ...s, series_id: s.series_id || "", on: null, ...(snap ?? {}) }).catch(() => {});
 }
 export function favoriteRemoved(id: string) {
+  own();
   if (!items.some((a) => a.id === id && a.fav)) return;
   items = items.filter((a) => a.id !== id);
   emit();
@@ -125,6 +146,7 @@ export function favoriteRemoved(id: string) {
 
 /** O cliente abriu a serie com alerta: os episodios de agora passam a ser os "ja vistos". */
 export async function markSeen(s: SeriesRef, episodes: { season?: number; episode?: number }[]) {
+  own();
   if (!episodes.length) return;
   const snap = snapshot(episodes);
   const a = items.find((x) => x.id === s.id);
@@ -161,9 +183,9 @@ export const epLabel = (a: EpAlert) => (a.new > 1 ? `${a.new} episÃ³dios novos Â
 
 /** Le de novo quando os alertas mudam. */
 export function useEpAlerts() {
-  const [v, setV] = useState(items);
+  const [v, setV] = useState(mine);
   useEffect(() => {
-    const on = () => setV(items);
+    const on = () => setV(mine());
     window.addEventListener(CHANGED, on);
     on();
     return () => window.removeEventListener(CHANGED, on);
