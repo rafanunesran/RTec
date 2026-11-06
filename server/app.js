@@ -2160,7 +2160,7 @@ export function createApp() {
       const ep = episodes[i];
       const key = markKey(ep.url);
       const saved = key ? await db().marks.get(key) : null;
-      // Analises antigas (v < 2) so olhavam o 1o quarto do episodio: as que nao acharam abertura sao refeitas.
+      // Analises antigas (v < MARKS_V: so o 1o quarto do EP, abertura de 15 s ou mais) que nao acharam abertura sao refeitas.
       if (saved?.done && (saved.v >= MARKS_V || saved.intro)) return res.json({ marks: cleanMarks(saved) });
 
       const dur = Number(req.query.dur) || 0;
@@ -2176,12 +2176,12 @@ export function createApp() {
         const list = [ep, ...nbs];
         let mine = cleanMarks(audio.eps[0]);
         if (!mine) mine = await publicMarks();
-        await db().marks.set(key, { ...(mine || { intro: null, credits: null, post: false }), done: true, v: MARKS_V, src: cleanMarks(audio.eps[0]) ? "audio" : mine ? "tidb" : "none", at: nowIso() });
+        await db().marks.set(key, { ...(mine || { intro: null, credits: null, post: false }), done: true, v: Number(audio.v) || 1, src: cleanMarks(audio.eps[0]) ? "audio" : mine ? "tidb" : "none", at: nowIso() });
         // O vizinho tambem saiu da comparacao: ja fica pronto (so se achou algo; senao tenta com outro vizinho depois).
         for (let k = 1; k < list.length; k++) {
           const m = cleanMarks(audio.eps[k]);
           const nk = markKey(list[k].url);
-          if (m && nk && nk !== key) await db().marks.set(nk, { ...m, done: true, v: MARKS_V, src: "audio", at: nowIso() });
+          if (m && nk && nk !== key) await db().marks.set(nk, { ...m, done: true, v: Number(audio.v) || 1, src: "audio", at: nowIso() });
         }
         return res.json({ marks: mine });
       }

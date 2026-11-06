@@ -137,7 +137,10 @@ function aac(u, req, res) {
 const FP_STEP = 0.1238; // segundos por ponto do chromaprint
 const FP_BITS = 6; // dois pontos "tocam igual" com ate 6 bits diferentes (de 32)
 const FP_GAP = 3.5; // buraco tolerado dentro do mesmo trecho (s)
-const INTRO_MIN = 15;
+// Comedias tem abertura curta (Brooklyn Nine-Nine ~10-15 s, Modern Family ~10 s): 8 s ja vale.
+const INTRO_MIN = 8;
+// Versao da analise: o painel refaz episodios guardados sem abertura por versoes antigas.
+export const ANALYSIS_V = 3;
 const INTRO_MAX = 180;
 const CREDITS_MIN = 15;
 // Sobra depois dos creditos maior que isso: cena pos-creditos (o botao Proximo EP nao aparece nos creditos).
@@ -354,7 +357,7 @@ function marksRoute(url, res) {
     markQueue.push({ urls, state });
     pumpMarks();
   }
-  json(res, 200, { status: state.status, ...(state.eps ? { eps: state.eps } : {}), ...(state.error ? { error: state.error } : {}) });
+  json(res, 200, { status: state.status, v: ANALYSIS_V, ...(state.eps ? { eps: state.eps } : {}), ...(state.error ? { error: state.error } : {}) });
 }
 
 // ---------- Situacao do servidor (aparece no painel admin, em Configuracoes) ----------
