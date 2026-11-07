@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, ArrowRightLeft, CheckCircle2, Clock, Link2, Loader2, Plus, RefreshCw, Server, Users, XCircle } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRightLeft, CheckCircle2, Clock, Link2, Loader2, MoveRight, Plus, RefreshCw, Server, Users, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { serverLabel } from "@/lib/servers";
 import { Badge, Button, Card, Dialog, EmptyState, Input, Skeleton, StatCard } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
 
@@ -28,6 +29,8 @@ type ServerRow = {
   siblings: string[];
   /** Fora do ar: os clientes estao usando este irmao. */
   failover_to: string | null;
+  /** Outros servidores com o mesmo nome (ex.: http e https do mesmo endereco). */
+  same_name?: string[];
 };
 
 type Monitor = { checked_at: string | null; monitor_at: string | null; every_seconds: number; slow_ms: number; servers: ServerRow[] };
@@ -48,7 +51,7 @@ function ago(iso: string | null, now: number) {
   return `há ${Math.round(h / 24)} dias`;
 }
 
-const hostOf = (origin: string) => origin.replace(/^https?:\/\//, "");
+const hostOf = serverLabel;
 
 const secs = (ms: number | null) => (ms == null || ms < 0 ? "—" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
 
@@ -84,7 +87,7 @@ function Timeline({ history, now }: { history: ServerRow["history"]; now: number
   );
 }
 
-function ServerCard({ s, now, onSiblings }: { s: ServerRow; now: number; onSiblings: () => void }) {
+function ServerCard({ s, now, onSiblings, onMove }: { s: ServerRow; now: number; onSiblings: () => void; onMove: () => void }) {
   const [open, setOpen] = useState(false);
   return (
     <Card className="p-5">
@@ -95,7 +98,7 @@ function ServerCard({ s, now, onSiblings }: { s: ServerRow; now: number; onSibli
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="truncate font-semibold">{s.host}</h3>
+            <h3 className="truncate font-semibold">{hostOf(s.server)}</h3>
             <Badge variant={VARIANT[s.state]}>{LABEL[s.state]}</Badge>
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
@@ -104,6 +107,17 @@ function ServerCard({ s, now, onSiblings }: { s: ServerRow; now: number; onSibli
           {s.reason && <p className={cn("mt-1 text-xs", s.state === "offline" ? "text-destructive" : "text-warning")}>{s.reason}</p>}
         </div>
       </div>
+
+      {!!s.same_name?.length && (
+        <div className="mt-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+          <p className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Servidor repetido: {s.same_name.map(hostOf).join(", ")} tem o mesmo nome. Se for o mesmo servidor, mova os clientes para o que está no ar.
+            </span>
+          </p>
+        </div>
+      )}
 
       {s.failover_to && (
         <p className="mt-3 flex items-center gap-2 rounded-xl border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
@@ -136,6 +150,12 @@ function ServerCard({ s, now, onSiblings }: { s: ServerRow; now: number; onSibli
           <Users className="h-3.5 w-3.5" />
           {s.clients.length ? `${s.clients.length} ${s.clients.length === 1 ? "cliente" : "clientes"} ${open ? "▴" : "▾"}` : "Só irmão (sem cliente)"}
         </button>
+        {s.clients.length > 0 && (
+          <button type="button" className="flex items-center gap-1.5 hover:text-foreground" onClick={onMove}>
+            <MoveRight className="h-3.5 w-3.5" />
+            Mover clientes
+          </button>
+        )}
         <button type="button" className="flex items-center gap-1.5 hover:text-foreground" onClick={onSiblings}>
           <Link2 className="h-3.5 w-3.5" />
           {s.siblings.length ? `Irmãos: ${s.siblings.map(hostOf).join(", ")}` : "Ligar irmão"}
@@ -230,11 +250,95 @@ function SiblingsDialog({ server, all, onClose, onSave }: { server: ServerRow | 
   );
 }
 
+/** Mover clientes: todos os clientes deste servidor passam para outro (usuario e senha continuam os mesmos). */
+function MoveDialog({ server, all, onClose, onDone }: { server: ServerRow | null; all: ServerRow[]; onClose: () => void; onDone: (m: Monitor) => void }) {
+  const [to, setTo] = useState("");
+  const [link, setLink] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    // Sugestao: o servidor com o mesmo nome que esta no ar, senao o irmao no ar.
+    const ok = (x: string) => ["online", "slow"].includes(all.find((r) => r.server === x)?.state || "");
+    setTo(server?.same_name?.find(ok) || server?.siblings.find(ok) || "");
+    setLink("");
+  }, [server]); // eslint-disable-line react-hooks/exhaustive-deps -- so ao abrir (a lista se atualiza a cada minuto)
+  if (!server) return null;
+  const others = all.filter((x) => x.server !== server.server);
+  const typed = (() => {
+    let raw = link.trim();
+    if (!raw) return "";
+    if (!/^https?:\/\//i.test(raw)) raw = `http://${raw}`;
+    try {
+      return new URL(raw).origin.toLowerCase();
+    } catch {
+      return "";
+    }
+  })();
+  const dest = typed || to;
+  const destRow = all.find((x) => x.server === dest);
+  const joinsGroup = server.siblings.length > 0 && !destRow?.siblings.length && !server.siblings.includes(dest);
+  const save = async () => {
+    if (!dest || dest === server.server) return toast.error("Escolha outro servidor de destino");
+    setSaving(true);
+    try {
+      const r = await api.post<Monitor & { moved: string[] }>("/api/servers/move", { from: server.server, to: dest });
+      toast.success(`${r.moved.length} cliente(s) agora usam ${hostOf(dest)}`);
+      onDone(r);
+      onClose();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={`Mover clientes de ${hostOf(server.server)}`}
+      description="Todos os clientes deste servidor passam para o servidor escolhido. Só o endereço muda: usuário e senha de cada um continuam os mesmos. Nenhum cliente é apagado."
+      icon={<MoveRight className="h-6 w-6 text-primary" />}
+    >
+      <div className="space-y-2">
+        {others.map((o) => (
+          <label key={o.server} className="flex cursor-pointer items-center gap-3 rounded-xl border p-3 text-sm hover:bg-muted/40">
+            <input type="radio" name="move-to" className="h-4 w-4 accent-[hsl(var(--primary))]" checked={!typed && to === o.server} onChange={() => (setTo(o.server), setLink(""))} />
+            <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", DOT[o.state])} />
+            <span className="min-w-0 flex-1 truncate font-medium">{hostOf(o.server)}</span>
+            <span className="text-xs text-muted-foreground">
+              {LABEL[o.state]}
+              {server.same_name?.includes(o.server) ? " · mesmo nome" : server.siblings.includes(o.server) ? " · irmão" : ""}
+            </span>
+          </label>
+        ))}
+      </div>
+      <Input className="mt-3" placeholder="Ou cole outro endereço (https://servidor.com:8080)" value={link} onChange={(e) => setLink(e.target.value)} />
+
+      <div className="mt-4 rounded-xl bg-muted/50 p-3 text-xs">
+        <p className="font-medium">
+          Vão para {dest ? hostOf(dest) : "…"} ({server.clients.length} cliente{server.clients.length === 1 ? "" : "s"}):
+        </p>
+        <p className="mt-1 text-muted-foreground">{server.clients.map((c) => c.name).join(", ")}</p>
+        {joinsGroup && dest && <p className="mt-2 text-muted-foreground">O destino entra no lugar deste servidor entre os irmãos ({server.siblings.map(hostOf).join(", ")}).</p>}
+      </div>
+
+      <div className="mt-6 flex justify-end gap-2">
+        <Button variant="ghost" onClick={onClose}>
+          Cancelar
+        </Button>
+        <Button onClick={save} disabled={saving || !dest}>
+          {saving && <Loader2 className="animate-spin" />} Mover clientes
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
 export default function Servers() {
   const [data, setData] = useState<Monitor | null>(null);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [editing, setEditing] = useState<ServerRow | null>(null);
+  const [moving, setMoving] = useState<ServerRow | null>(null);
 
   const load = useCallback(async (force = false) => {
     setBusy(true);
@@ -328,7 +432,7 @@ export default function Servers() {
             </Card>
           ))
         ) : list.length ? (
-          list.map((s) => <ServerCard key={s.server} s={s} now={now} onSiblings={() => setEditing(s)} />)
+          list.map((s) => <ServerCard key={s.server} s={s} now={now} onSiblings={() => setEditing(s)} onMove={() => setMoving(s)} />)
         ) : (
           <div className="md:col-span-2 xl:col-span-3">
             <EmptyState
@@ -340,6 +444,15 @@ export default function Servers() {
         )}
       </div>
       <SiblingsDialog server={editing} all={list} onClose={() => setEditing(null)} onSave={saveSiblings} />
+      <MoveDialog
+        server={moving}
+        all={list}
+        onClose={() => setMoving(null)}
+        onDone={(m) => {
+          setData(m);
+          setNow(Date.now());
+        }}
+      />
     </>
   );
 }

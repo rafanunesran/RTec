@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { probeServer, recordResults, serverTargets, summarize } from "./servermon.js";
+import { probeServer, recordResults, sameNameServers, serverName, serverTargets, summarize } from "./servermon.js";
 
 function fakeServer(handler) {
   return new Promise((resolve) => {
@@ -105,4 +105,16 @@ test("irmaos: grupos limpos, troca so para irmao no ar e irmao sem cliente e tes
   assert.equal(novo.clients.length, 0);
   assert.equal(novo.probes[0].xtream_server, "http://novo:81");
   assert.equal(novo.probes[0].xtream_username, "ana");
+});
+
+test("servidor repetido: http/https e www. sao o mesmo nome; outra porta nao", () => {
+  assert.equal(serverName("http://SRV.com"), "srv.com");
+  assert.equal(serverName("https://www.srv.com/get.php?x=1"), "srv.com");
+  assert.equal(serverName("srv.com:8080"), "srv.com:8080");
+  assert.equal(serverName("nao e link"), "");
+  const known = ["http://srv.com", "http://srv.com:8080", "http://outro.com"];
+  assert.deepEqual(sameNameServers("https://srv.com", known), ["http://srv.com"]);
+  assert.deepEqual(sameNameServers("http://www.srv.com:8080", known), ["http://srv.com:8080"]);
+  assert.deepEqual(sameNameServers("http://srv.com", known), [], "o proprio endereco nao conta");
+  assert.deepEqual(sameNameServers("http://srv.com:9000", known), []);
 });

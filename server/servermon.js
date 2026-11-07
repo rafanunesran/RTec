@@ -265,3 +265,25 @@ export function moveToSibling(p, to) {
   else next.url = mv(p.url);
   return next;
 }
+
+// ---------- Servidores repetidos (o mesmo nome com endereco diferente) ----------
+
+/**
+ * "Nome" de um servidor como o painel mostra: host e porta, sem http/https e sem "www.".
+ * http://srv.com e https://srv.com viram o mesmo nome ("srv.com"); srv.com:8080 e srv.com:8081 nao.
+ */
+export function serverName(link) {
+  const o = originOf(link);
+  if (!o) return "";
+  const u = new URL(o);
+  const host = u.hostname.replace(/\.$/, "").replace(/^www\./, "");
+  return u.port ? `${host}:${u.port}` : host;
+}
+
+/** Servidores ja usados com o mesmo nome e outro endereco (o que viraria um servidor repetido). */
+export function sameNameServers(origin, known) {
+  const name = serverName(origin);
+  const o = originOf(origin);
+  if (!name) return [];
+  return [...new Set(known)].filter((k) => k && k !== o && serverName(k) === name);
+}

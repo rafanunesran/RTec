@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ArrowLeftRight, Link2, Loader2, MessageSquareText, Pencil, Plus, Search, ShieldCheck, Trash2, Users, Wand2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Client, type Source } from "@/lib/api";
+import { serverLabel, withDuplicateCheck } from "@/lib/servers";
 import { copy, formatDate } from "@/lib/utils";
 import { Badge, Button, Card, Dialog, EmptyState, Field, Input, Skeleton, Switch, Textarea } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
@@ -142,9 +143,11 @@ export default function Clients() {
     try {
       const { extra, ...rest } = form;
       const body = { ...rest, source: isBlank(form.source) ? null : form.source, extra_sources: extra.filter((x) => !isBlank(x)) };
-      const saved = editing
-        ? await api.put<Client>(`/api/clients/${editing.id}`, body)
-        : await api.post<Client>("/api/clients", body);
+      const saved = await withDuplicateCheck((allow) => {
+        const b = { ...body, allow_new_server: allow };
+        return editing ? api.put<Client>(`/api/clients/${editing.id}`, b) : api.post<Client>("/api/clients", b);
+      });
+      if (!saved) return;
       toast.success(editing ? "Cliente atualizado" : "Cliente criado");
       setFormOpen(false);
       await load();
@@ -160,7 +163,8 @@ export default function Clients() {
     e.preventDefault();
     setBusy(true);
     try {
-      const created = await api.post<Client>("/api/clients/quick", { link: quick.link, name: quick.name });
+      const created = await withDuplicateCheck((allow) => api.post<Client>("/api/clients/quick", { link: quick.link, name: quick.name, allow_new_server: allow }));
+      if (!created) return;
       toast.success(`Cliente ${created.username} criado`);
       setQuickOpen(false);
       setQuick({ link: "", name: "" });
@@ -272,7 +276,7 @@ export default function Clients() {
     if (!window.confirm(`Passar ${c.username} para o servidor ${server}? Usuário e senha continuam os mesmos.`)) return;
     try {
       await api.post("/api/servers/replace", { link: server, client_ids: [c.id] });
-      toast.success(`${c.username} agora usa ${server.replace(/^https?:\/\//, "")}`);
+      toast.success(`${c.username} agora usa ${serverLabel(server)}`);
       await load();
     } catch (err) {
       toast.error((err as Error).message);
@@ -285,7 +289,7 @@ export default function Clients() {
     return (
       <label className="relative mt-1 inline-flex max-w-full cursor-pointer items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-foreground" title="Trocar o servidor deste cliente">
         <ArrowLeftRight className="h-3 w-3 shrink-0" />
-        <span className="truncate font-mono">{current.replace(/^https?:\/\//, "")}</span>
+        <span className="truncate font-mono">{serverLabel(current)}</span>
         <select
           aria-label={`Servidor de ${c.username}`}
           className="absolute inset-0 cursor-pointer opacity-0"
@@ -294,7 +298,7 @@ export default function Clients() {
         >
           {serverCounts.map(([server, n]) => (
             <option key={server} value={server}>
-              {server.replace(/^https?:\/\//, "")} ({n} cliente{n > 1 ? "s" : ""})
+              {serverLabel(server)} ({n} cliente{n > 1 ? "s" : ""})
             </option>
           ))}
         </select>
@@ -510,7 +514,7 @@ export default function Clients() {
                   <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">
                     {serverCounts.map(([server, n]) => (
                       <button key={server} type="button" className="break-all text-left text-primary hover:underline" onClick={() => pickServer(server)}>
-                        + todos de {server.replace(/^https?:\/\//, "")} ({n})
+                        + todos de {serverLabel(server)} ({n})
                       </button>
                     ))}
                   </div>

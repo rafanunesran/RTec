@@ -1343,6 +1343,59 @@ test("irmaos: servidor fora do ar passa sozinho para o irmao; o video tambem ten
 });
 
 
+test("servidor repetido: mesmo nome com outro endereco pede confirmacao; mover clientes junta os dois", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const velho = "http://dup.example:8080";
+  const novo = "https://dup.example:8080";
+  const xt = (server) => ({ kind: "xtream", xtream_server: server, xtream_username: "U1", xtream_password: "P1" });
+  const a = (await call("POST", "/api/clients", { username: "dupA", password: "d1", source: xt(velho) })).body;
+
+  // Cliente novo com o mesmo servidor em https: avisa em vez de criar outro servidor com o mesmo nome.
+  const blocked = await call("POST", "/api/clients", { username: "dupB", password: "d2", source: xt(novo) });
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.code, "server_duplicate");
+  assert.match(blocked.body.error, /http:\/\/dup\.example:8080/);
+  assert.match(blocked.body.error, /1 cliente\b/);
+  // www. tambem conta como o mesmo nome; mesmo endereco exato nao avisa; outra porta e outro servidor.
+  assert.equal((await call("POST", "/api/clients", { username: "dupW", password: "d", source: xt("http://www.dup.example:8080") })).status, 409);
+  const same = await call("POST", "/api/clients", { username: "dupS", password: "d", source: xt(`${velho}/`) });
+  assert.equal(same.status, 201);
+  assert.equal((await call("DELETE", `/api/clients/${same.body.id}`)).status < 300, true);
+  const port = await call("POST", "/api/clients", { username: "dupP", password: "d", source: xt("http://dup.example:8081") });
+  assert.equal(port.status, 201);
+  await call("DELETE", `/api/clients/${port.body.id}`);
+  // Editar o cliente sem mudar a lista nao avisa; o link rapido tambem confere.
+  assert.equal((await call("PUT", `/api/clients/${a.id}`, { name: "Dup A" })).status, 200);
+  assert.equal((await call("POST", "/api/clients/quick", { link: `${novo}/get.php?username=U9&password=P9` })).body.code, "server_duplicate");
+
+  // Confirmado: cria mesmo assim e a tela de servidores mostra o aviso nos dois.
+  const b = await call("POST", "/api/clients", { username: "dupB", password: "d2", source: xt(novo), allow_new_server: true });
+  assert.equal(b.status, 201);
+  await call("PUT", "/api/servers/groups", { groups: [[velho, "http://127.0.0.7:1"]] });
+  const st = (await call("GET", "/api/servers/status")).body.servers;
+  assert.deepEqual(st.find((s) => s.server === velho).same_name, [novo]);
+  assert.deepEqual(st.find((s) => s.server === novo).same_name, [velho]);
+
+  // Mover clientes: todos de http passam para https; o https entra no lugar dele no grupo de irmaos.
+  assert.equal((await call("POST", "/api/servers/move", { from: velho, to: velho })).status, 400);
+  const mv = await call("POST", "/api/servers/move", { from: velho, to: novo });
+  assert.equal(mv.status, 200);
+  assert.deepEqual(mv.body.moved, ["Dup A"]);
+  const after = mv.body.servers;
+  assert.ok(!after.some((s) => s.server === velho), "servidor velho sumiu");
+  const dest = after.find((s) => s.server === novo);
+  assert.deepEqual(dest.clients.map((c) => c.username).sort(), ["dupA", "dupB"]);
+  assert.deepEqual(dest.same_name, []);
+  assert.deepEqual(dest.siblings, ["http://127.0.0.7:1"]);
+  const moved = (await call("GET", "/api/clients")).body.find((c) => c.id === a.id);
+  assert.equal(moved.source.xtream_server, novo);
+  assert.equal(moved.source.xtream_username, "U1", "usuario continua o mesmo");
+
+  await call("PUT", "/api/servers/groups", { groups: [] });
+  for (const c of (await call("GET", "/api/clients")).body.filter((c) => c.username.startsWith("dup"))) await call("DELETE", `/api/clients/${c.id}`);
+});
+
 test("sessoes: cookie do cliente nao abre o painel; trocar a senha do admin derruba as outras sessoes", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });

@@ -17,7 +17,7 @@ import { createCatalog, sourceKey } from "./merge.js";
 import { hasDataKey, needsSeal, openUrl, sealUrl } from "./seal.js";
 import { getAgenda, leagueList, matchGames } from "./games.js";
 import { MARKS_V, RETRY_FAILED_MS, cleanMarks, markKey, neighbors, theIntroDb } from "./marks.js";
-import { MONITOR_EVERY_MS, SLOW_MS, checkAll, cleanGroups, failoverMap, moveToSibling, originOf, swapOrigin, recordResults, serverTargets, siblingsOf, summarize } from "./servermon.js";
+import { MONITOR_EVERY_MS, SLOW_MS, checkAll, cleanGroups, failoverMap, moveToSibling, originOf, swapOrigin, recordResults, sameNameServers, serverTargets, siblingsOf, summarize } from "./servermon.js";
 import { CHECK_EVERY_MS, alertList, alertTargets, checkAlerts, cleanSeries, markSeen, readSnap, setAlert } from "./epalerts.js";
 
 const COOKIE = "rtec_session";
@@ -1263,6 +1263,36 @@ export function createApp() {
     }),
   );
 
+  // Servidor repetido: o cliente novo (ou a lista trocada) usa um endereco que tem o mesmo nome de um servidor
+  // que ja existe (ex.: https://srv.com com http://srv.com ja cadastrado). Sem aviso isso cria um segundo
+  // card em Servidores com o mesmo nome, com teste, historico e irmaos separados.
+  const STATE_LABEL = { online: "no ar", slow: "lento", problem: "com problema", offline: "fora do ar" };
+  async function assertNoDuplicateServer(sources, { existing = null, allow = false } = {}) {
+    if (allow) return;
+    const before = new Set(existing ? allSources(existing).map(sourceServer) : []);
+    const mine = [...new Set(sources.filter((p) => p?.kind).map(sourceServer))].filter((o) => o && !before.has(o));
+    if (!mine.length) return;
+    const others = (await db().clients.list()).filter((c) => !existing || String(c.id) !== String(existing.id));
+    const known = new Set(others.flatMap((c) => allSources(c).map(sourceServer)).filter(Boolean));
+    for (const g of cleanGroups((await db().config.get("server_groups"))?.groups || [])) g.forEach((s) => known.add(s));
+    for (const o of mine) {
+      if (known.has(o)) continue;
+      const same = sameNameServers(o, known);
+      if (!same.length) continue;
+      const mon = (await db().config.get("server_monitor"))?.servers || {};
+      const ex = same[0];
+      const n = others.filter((c) => allSources(c).some((p) => sourceServer(p) === ex)).length;
+      const state = STATE_LABEL[mon[ex]?.state] || "ainda nao testado";
+      throw new HttpError(
+        409,
+        `Servidor repetido: esta lista usa ${o}, mas ja existe o servidor ${ex} (${state}, ${n} cliente${n === 1 ? "" : "s"}) com o mesmo nome. ` +
+          `Salvando assim, o painel passa a ter dois servidores com o mesmo nome. Se for o mesmo servidor, use o endereco ${ex} ` +
+          `(ou, se ${ex} parou, passe os clientes dele para o endereco novo em Servidores > Mover clientes).`,
+        "server_duplicate",
+      );
+    }
+  }
+
   async function readClientBody(body, existing) {
     const username = str(body.username ?? existing?.username, "usuario", { required: true, max: 64 });
     if (!/^[A-Za-z0-9._-]+$/.test(username)) throw new HttpError(400, "Usuario deve conter apenas letras, numeros, ponto, _ ou -");
@@ -1302,6 +1332,7 @@ export function createApp() {
     requireAdmin,
     wrap(async (req, res) => {
       const data = await readClientBody(req.body || {});
+      await assertNoDuplicateServer([data.source, ...data.extra_sources], { allow: !!req.body?.allow_new_server });
       const c = await unique(() =>
         db().clients.create({ ...data, expires_at: null, list_status: null, last_access_at: null, parental_pin_hash: "", locked_groups: [] }),
       );
@@ -1396,6 +1427,8 @@ export function createApp() {
         history: e?.history || [],
         ...summarize(e),
         siblings: siblingsOf(groups, t.server),
+        // Outros servidores com o mesmo nome (ex.: http e https do mesmo endereco): aviso de repetido.
+        same_name: sameNameServers(t.server, targets.map((x) => x.server)),
         failover_to: failoverMap(groups, doc.servers || {}).get(t.server) || null,
       };
     }),
@@ -1431,6 +1464,41 @@ export function createApp() {
     }),
   );
 
+  // Mover clientes: todos os clientes de um servidor (lista principal e extras dele) passam para outro,
+  // mantendo usuario e senha. Serve para juntar servidores repetidos ou tirar todo mundo de um servidor parado.
+  // Se o servidor de origem tinha irmaos e o destino ainda nao tem grupo, o destino entra no lugar dele.
+  app.post(
+    "/api/servers/move",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const from = originOf(req.body?.from);
+      const to = originOf(req.body?.to);
+      if (!from || !to) throw new HttpError(400, "Informe o servidor de origem e o de destino");
+      if (from === to) throw new HttpError(400, "Origem e destino sao o mesmo servidor");
+      const moved = [];
+      for (const c of await db().clients.list()) {
+        if (!allSources(c).some((p) => sourceServer(p) === from)) continue;
+        const source = moveSource(c.source, from, to);
+        const seen = new Set(source?.kind ? [sourceKey(source)] : []);
+        // Se o cliente ja tinha a mesma lista no destino, a copia nao fica repetida.
+        const extra = (c.extra_sources || []).map((p) => moveSource(p, from, to)).filter((p) => !seen.has(sourceKey(p)) && seen.add(sourceKey(p)));
+        await db().clients.update(c.id, { source, extra_sources: extra });
+        forgetClient(c.id);
+        listChecks.delete(c.id);
+        moved.push(c.name || c.username);
+      }
+      let groups = cleanGroups((await db().config.get("server_groups"))?.groups || []);
+      if (groups.some((g) => g.includes(from))) {
+        const free = !groups.some((g) => g.includes(to));
+        groups = cleanGroups(groups.map((g) => (g.includes(from) ? g.map((s) => (s === from ? (free ? to : null) : s)).filter(Boolean) : g)));
+        await db().config.set("server_groups", { groups: groups.map((servers) => ({ servers })), updated_at: nowIso() });
+        failover.at = 0;
+      }
+      console.log(`[rtec] Clientes movidos de ${from} para ${to}: ${moved.length}`);
+      res.json({ ...monitorResponse(await runMonitor({ force: true })), moved });
+    }),
+  );
+
   // Chamado pelo servidor de video a cada 5 min (link assinado com o PROXY_SECRET), sem login de admin.
   app.get(
     "/api/servers/monitor",
@@ -1451,6 +1519,8 @@ export function createApp() {
       const link = String(req.body?.link || "").trim();
       const creds = xtream.parseXtreamLink(link);
       if (!creds) throw new HttpError(400, "Cole um link no formato http://servidor/get.php?username=...&password=...");
+      // Antes de ir ao fornecedor: o servidor do link nao pode repetir o nome de um que ja existe.
+      await assertNoDuplicateServer([{ kind: "xtream", xtream_server: creds.server }], { allow: !!req.body?.allow_new_server });
       let account = null;
       try {
         account = await xtream.accountInfo(creds);
@@ -1488,6 +1558,7 @@ export function createApp() {
       const existing = await db().clients.get(req.params.id);
       if (!existing) throw new HttpError(404, "Cliente nao encontrado");
       const patch = await readClientBody(req.body || {}, existing);
+      await assertNoDuplicateServer([patch.source, ...patch.extra_sources], { existing, allow: !!req.body?.allow_new_server });
       // O revendedor pode voltar o PIN parental para o padrao (0000) quando o cliente esquecer.
       if (req.body?.reset_pin) patch.parental_pin_hash = "";
       const c = await unique(() => db().clients.update(existing.id, patch));
