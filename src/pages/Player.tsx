@@ -27,6 +27,8 @@ import GamesPage, { GameAlerts } from "@/components/player/Games";
 import { alertOn, epLabel, favoriteAdded, favoriteRemoved, loadEpAlerts, markSeen, markShown, resetEpAlerts, setEpAlert, shouldShow, useEpAlerts, type EpAlert } from "@/lib/epalerts";
 import Screensaver, { saverItem, type SaverItem } from "@/components/player/Screensaver";
 import { tvScreenOn } from "@/lib/tvnav";
+import { ForYou, RecSetupDialog, type ForYouRow } from "@/components/player/ForYou";
+import { loadRecPrefs, saveRecPrefs, type RecKind } from "@/lib/recprefs";
 import { castControl, castPlay, castTarget, knownDevices, onCastPlay, setCastNow, setCastTarget, startCast, useCast, type CastPlay } from "@/lib/cast";
 import { CastBar, CastButton, CastDialog, CastRemote, WhereDialog } from "@/components/player/Cast";
 import { MAIN_PROFILE, fetchProfiles, lastProfile, rememberProfile, scoped, setStorageProfile, type ProfilesResponse, type Viewer } from "@/lib/profiles";
@@ -507,6 +509,9 @@ function Watch({
   const [sorts, setSorts] = useState<Record<string, string>>(() => load("rtec:sort", {}));
   const [filtersBy, setFiltersBy] = useState<Record<string, Filters>>(() => load("rtec:filters", {}));
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // Recomendacoes da primeira pagina de Filmes/Series: popup de generos (abre sozinho na 1a vez) e versao salva.
+  const [recSetup, setRecSetup] = useState<RecKind | null>(null);
+  const [recTick, setRecTick] = useState(0);
   const [section, setSection] = useState<Section>("live");
   const [queue, setQueue] = useState<Channel[] | null>(null); // episodios da serie em reproducao (para "proximo")
   const [allQuery, setAllQuery] = useState("");
@@ -1140,6 +1145,7 @@ function Watch({
   const openItem = (c: Channel) =>
     c.kind === "series" && (c.series_id || c.id.startsWith("serie:")) ? openSeriesFrom(c) : c.kind === "movie" ? openMovie(c) : play(c, null);
 
+
   // Favoritar um episodio = favoritar a serie dele (abre a serie com as temporadas).
   const seriesCard = (key: string, name: string, logo: string): Channel => ({
     id: xt ? `s${key}` : `serie:${name}`,
@@ -1164,6 +1170,69 @@ function Watch({
     return seriesCard(xt ? c.parent_series! : name, name, logo);
   };
   const isFavorite = (id: string) => favorites.some((f) => f.id === id);
+
+  // --- Para voce (primeira pagina de Filmes e Series) ---
+  const recKind: RecKind | null = section === "movie" || section === "series" ? section : null;
+  const hasKind = (k: RecKind) => (xt ? !!catalog?.sections?.[k]?.length : channels.some((c) => c.kind === k));
+  // Primeira vez que o perfil entra em Filmes ou Series: abre a configuracao das recomendacoes.
+  useEffect(() => {
+    if (page !== "section" || !recKind || !catalog || (!xt && data === null) || !hasKind(recKind)) return;
+    if (!loadRecPrefs(recKind).done) setRecSetup(recKind);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, recKind, catalog, data]);
+  const recPrefs = useMemo(() => (recKind ? loadRecPrefs(recKind) : null), [recKind, recTick]);
+  const loadRecGenres = (k: RecKind) =>
+    xt
+      ? api.get<Facets>(`/api/player/xtream/facets?${new URLSearchParams({ section: k, category: "", skip: lockedIds(k) })}`).then((f) => f.genres)
+      : Promise.resolve(localFacets(channels.filter((c) => c.kind === k && !isLocked(c.group))).genres);
+  /** M3U: episodios viram o card da serie (como na busca). */
+  const asSeriesCards = (list: Channel[]) => {
+    const seen = new Map<string, Channel>();
+    for (const c of list) {
+      const name = episodeInfo(c.name).series;
+      if (!seen.has(name)) seen.set(name, { ...c, name, id: `serie:${name}` });
+    }
+    return [...seen.values()];
+  };
+  const forYouRows = useMemo((): ForYouRow[] => {
+    if (!recKind || !recPrefs) return [];
+    const k = recKind;
+    const rows: ForYouRow[] = [];
+    const ok = (c: Channel) => !isLocked(c.group) && !ADULT.test(c.group) && !ADULT.test(c.name);
+    // Porque voce assistiu: semelhantes ao ultimo titulo da secao no historico (so Xtream, a conta e no servidor).
+    const last = xt ? shownHistory.map(favItem).find((c) => c.kind === k && (k === "movie" ? c.xt_id : c.series_id) && ok(c)) : undefined;
+    if (last) {
+      const id = (k === "movie" ? last.xt_id : last.series_id)!;
+      rows.push({
+        key: `${k}|because|${id}|${lockedIds(k)}`,
+        title: `Porque você assistiu ${last.name}`,
+        load: () =>
+          api.get<Channel[]>(`/api/player/recommend?${new URLSearchParams({ kind: k, id, name: last.name, skip: lockedIds(k), ...(last.year ? { year: String(last.year) } : {}) })}`),
+      });
+    }
+    for (const g of recPrefs.genres.slice(0, 8)) {
+      rows.push({
+        key: `${k}|g|${fold(g)}|${lockedIds(k)}|${xt ? "x" : channels.length}`,
+        title: g,
+        sub: "Os mais bem avaliados do gênero",
+        load: xt
+          ? () =>
+              api
+                .get<{ items: Channel[] }>(`/api/player/xtream/items?${new URLSearchParams({ section: k, limit: "24", offset: "0", sort: "rating", skip: lockedIds(k), g })}`)
+                .then((r) => r.items.filter(ok))
+          : () => {
+              const list = sortList(
+                channels.filter((c) => c.kind === k && ok(c) && genresOf(c).some((x) => fold(x) === fold(g))),
+                "rating",
+              );
+              return Promise.resolve((k === "series" ? asSeriesCards(list) : list).slice(0, 24));
+            },
+      });
+    }
+    return rows;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recKind, recPrefs, xt, catalog, channels, shownHistory, isLocked]);
+  const showForYou = page === "section" && !!recKind && !series && !group && !query.trim() && !filterCount(filters) && !sort && hasKind(recKind);
   const isFav = (c: Channel) => isFavorite(favItem(c).id);
   const toggleFavorite = (c: Channel) => {
     const item = favItem(c);
@@ -1565,6 +1634,9 @@ function Watch({
           )}
 
           <div>
+            {showForYou && recKind && recPrefs && !loading && (
+              <ForYou kind={recKind} rows={forYouRows} configured={recPrefs.done && !!recPrefs.genres.length} onOpen={openItem} onEdit={() => setRecSetup(recKind)} />
+            )}
             {loading ? (
               <ul className="space-y-1">
                 {Array.from({ length: 7 }).map((_, i) => (
@@ -1784,6 +1856,26 @@ function Watch({
         >
           {castFromPlayer && castDialog}
         </PlayerOverlay>
+      )}
+
+      {recSetup && (
+        <RecSetupDialog
+          key={recSetup}
+          kind={recSetup}
+          initial={loadRecPrefs(recSetup).genres}
+          loadGenres={() => loadRecGenres(recSetup)}
+          onSave={(genres) => {
+            saveRecPrefs(recSetup, { genres, done: true });
+            setRecSetup(null);
+            setRecTick((t) => t + 1);
+            if (genres.length) toast.success("Recomendações salvas");
+          }}
+          onSkip={() => {
+            saveRecPrefs(recSetup, { ...loadRecPrefs(recSetup), done: true });
+            setRecSetup(null);
+            setRecTick((t) => t + 1);
+          }}
+        />
       )}
 
       {filtersOpen && (
