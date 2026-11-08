@@ -1,8 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Activity, ChevronRight, ListVideo, ServerCrash, UserCheck, UserX, Users } from "lucide-react";
+import { Activity, BellRing, ChevronRight, ListVideo, ServerCrash, UserCheck, UserX, Users } from "lucide-react";
 import { api, type Stats } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
+import { daysUntil } from "@/lib/payments";
 import { Card, Skeleton, StatCard } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
 
@@ -52,6 +53,28 @@ export default function Dashboard() {
           <ChevronRight className="h-4 w-4 shrink-0" />
         </Link>
       )}
+      {(() => {
+        // Pagamentos previstos para hoje ou atrasados (lembrete de cobranca).
+        const due = (stats?.payments ?? []).filter((p) => daysUntil(p.payment_due) <= 0).sort((x, y) => x.payment_due.localeCompare(y.payment_due));
+        if (!due.length) return null;
+        const late = due.filter((p) => daysUntil(p.payment_due) < 0).length;
+        return (
+          <Link
+            to="/admin/clientes"
+            className="mb-6 flex items-center gap-3 rounded-2xl border border-warning/40 bg-warning/10 p-4 text-sm text-warning hover:bg-warning/15"
+          >
+            <BellRing className="h-5 w-5 shrink-0" />
+            <span className="min-w-0 flex-1">
+              <strong>
+                {due.length === 1 ? "1 cliente para cobrar" : `${due.length} clientes para cobrar`}
+                {late ? ` (${late} atrasado${late > 1 ? "s" : ""})` : " hoje"}:
+              </strong>{" "}
+              {due.map((p) => p.name || p.username).join(", ")}
+            </span>
+            <ChevronRight className="h-4 w-4 shrink-0" />
+          </Link>
+        );
+      })()}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {cards.map(({ label, value, icon, to, tone }) => (
           <Link key={label} to={to}>

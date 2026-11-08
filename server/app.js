@@ -696,6 +696,26 @@ function serializeClient(c) {
   return { ...rest, playlist_ids: c.playlist_ids || [], valid: isClientValid(c), custom_pin: !!parental_pin_hash };
 }
 
+/** Pagamento previsto (data AAAA-MM-DD) e o dia do mes combinado com o cliente. Vazio tira o lembrete. */
+function readPayment(body, existing) {
+  if (body.payment_due === undefined) return { payment_due: existing?.payment_due ?? null, payment_day: existing?.payment_day ?? null };
+  const due = String(body.payment_due || "").trim();
+  if (!due) return { payment_due: null, payment_day: null };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(due) || Number.isNaN(Date.parse(`${due}T00:00:00Z`))) throw new HttpError(400, "Data do pagamento previsto invalida");
+  // O dia combinado vem da data escolhida (31 continua 31 mesmo depois de passar por fevereiro).
+  return { payment_due: due, payment_day: Number(due.slice(8, 10)) };
+}
+
+/** Mesmo dia no mes seguinte; em mes mais curto fica no ultimo dia (31/01 -> 28/02 -> 31/03). */
+export function nextPaymentDue(due, day) {
+  let [y, m] = due.split("-").map(Number);
+  m += 1;
+  if (m > 12) [y, m] = [y + 1, 1];
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const d = Math.min(Number(day) || Number(due.slice(8, 10)), last);
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
 function str(v, field, { required = false, max = 2000 } = {}) {
   const s = v == null ? "" : String(v).trim();
   if (required && !s) throw new HttpError(400, `Campo obrigatorio: ${field}`);
@@ -1247,6 +1267,8 @@ export function createApp() {
           .sort((a, b) => b.last_access_at.localeCompare(a.last_access_at))
           .slice(0, 8)
           .map(({ id, name, username, last_access_at }) => ({ id, name, username, last_access_at })),
+        // Pagamentos previstos: o painel separa quem cobrar hoje (pela data do aparelho do admin).
+        payments: clients.filter((c) => c.payment_due).map(({ id, name, username, payment_due }) => ({ id, name, username, payment_due })),
       });
     }),
   );
@@ -1324,6 +1346,7 @@ export function createApp() {
       active: !!(body.active ?? existing?.active ?? true),
       notes: str(body.notes ?? existing?.notes, "observacoes"),
       playlist_ids: playlistIds,
+      ...readPayment(body, existing),
     };
   }
 
@@ -1548,6 +1571,22 @@ export function createApp() {
         `Ja existe um cliente com o usuario "${username}"`,
       );
       res.status(201).json(clientResponse(req, c));
+    }),
+  );
+
+  // Pagamento recebido: o proximo pagamento previsto passa para o mes seguinte, no mesmo dia combinado.
+  app.post(
+    "/api/clients/:id/paid",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const existing = await db().clients.get(req.params.id);
+      if (!existing) throw new HttpError(404, "Cliente nao encontrado");
+      if (!existing.payment_due) throw new HttpError(400, "Este cliente nao tem pagamento previsto");
+      const c = await db().clients.update(existing.id, {
+        payment_due: nextPaymentDue(existing.payment_due, existing.payment_day),
+        last_paid_at: nowIso(),
+      });
+      res.json(clientResponse(req, c));
     }),
   );
 

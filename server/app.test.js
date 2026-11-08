@@ -1509,6 +1509,32 @@ test("links blindados: nenhum aparelho recebe o link do fornecedor (usuario/senh
   }
 });
 
+test("pagamento previsto: marca a data, aparece no painel e Recebido passa para o mes seguinte", async () => {
+  const { nextPaymentDue } = await import("./app.js");
+  assert.equal(nextPaymentDue("2026-01-31", 31), "2026-02-28");
+  assert.equal(nextPaymentDue("2026-02-28", 31), "2026-03-31", "volta para o dia combinado");
+  assert.equal(nextPaymentDue("2026-12-10", 10), "2027-01-10");
+
+  const c = await call("POST", "/api/clients", { username: "pagador", password: "1234", payment_due: "2026-11-08" });
+  assert.equal(c.status, 201);
+  assert.equal(c.body.payment_due, "2026-11-08");
+  assert.equal(c.body.payment_day, 8);
+  assert.equal((await call("PUT", `/api/clients/${c.body.id}`, { payment_due: "08/11/2026" })).status, 400);
+  // Editar outra coisa nao apaga o pagamento previsto.
+  assert.equal((await call("PUT", `/api/clients/${c.body.id}`, { notes: "paga no pix" })).body.payment_due, "2026-11-08");
+  const stats = await call("GET", "/api/stats");
+  assert.ok(stats.body.payments.some((p) => p.username === "pagador" && p.payment_due === "2026-11-08"));
+
+  const paid = await call("POST", `/api/clients/${c.body.id}/paid`);
+  assert.equal(paid.body.payment_due, "2026-12-08");
+  assert.ok(paid.body.last_paid_at);
+  // Data vazia tira o lembrete.
+  const off = await call("PUT", `/api/clients/${c.body.id}`, { payment_due: "" });
+  assert.equal(off.body.payment_due, null);
+  assert.equal((await call("POST", `/api/clients/${c.body.id}/paid`)).status, 400);
+  await call("DELETE", `/api/clients/${c.body.id}`);
+});
+
 // Por ultimo: depois deste teste o endereco local fica bloqueado para login de admin por 15 minutos.
 test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
   cookie = "";

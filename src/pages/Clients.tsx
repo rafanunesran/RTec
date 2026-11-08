@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { ArrowLeftRight, Link2, Loader2, MessageSquareText, Pencil, Plus, Search, ShieldCheck, Trash2, Users, Wand2, Zap } from "lucide-react";
+import { ArrowLeftRight, BellRing, Check, Copy, Link2, Loader2, MessageSquareText, Pencil, Plus, Search, ShieldCheck, Trash2, Users, Wand2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Client, type Source } from "@/lib/api";
 import { serverLabel, withDuplicateCheck } from "@/lib/servers";
 import { copy, formatDate } from "@/lib/utils";
+import { SOON_DAYS, daysUntil, dueLabel, shortDate, todayStr } from "@/lib/payments";
 import { Badge, Button, Card, Dialog, EmptyState, Field, Input, Skeleton, Switch, Textarea } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
 import SourceEditor, { emptySource, sourceLabel } from "@/components/SourceEditor";
@@ -17,6 +18,8 @@ type Form = {
   source: Source;
   /** Listas extras: completam a principal (o cliente ve um catalogo so). */
   extra: Source[];
+  /** Pagamento previsto (AAAA-MM-DD) ou vazio. */
+  payment_due: string;
 };
 
 const MAX_EXTRA = 4;
@@ -29,6 +32,7 @@ const emptyForm = (): Form => ({
   notes: "",
   source: emptySource(),
   extra: [],
+  payment_due: "",
 });
 
 /** Lista deixada em branco no formulario (nao vai para o servidor). */
@@ -62,6 +66,24 @@ function status(c: Client) {
 
 /** Vencimento que o fornecedor informa (listas Xtream). */
 const expiry = (c: Client) => (c.expires_at ? formatDate(c.expires_at) : c.list_status?.state === "active" ? "Lista ativa" : "—");
+
+/** Selo do pagamento previsto: "Cobrar hoje", "Atrasado 2 dias", "Em 3 dias" ou a data. */
+function paymentBadge(c: Client) {
+  if (!c.payment_due) return <span className="text-muted-foreground">—</span>;
+  const { text, tone } = dueLabel(c.payment_due);
+  return (
+    <span title={`Pagamento previsto em ${shortDate(c.payment_due, "")}${c.last_paid_at ? ` · último recebido em ${formatDate(c.last_paid_at)}` : ""}`}>
+      <Badge variant={tone}>{text}</Badge>
+    </span>
+  );
+}
+
+/** Lembrete pronto para mandar ao cliente no WhatsApp. */
+function chargeMessage(c: Client) {
+  const n = daysUntil(c.payment_due!);
+  const when = n === 0 ? "vence hoje" : n < 0 ? `venceu em ${shortDate(c.payment_due!)}` : n === 1 ? "vence amanhã" : `vence em ${shortDate(c.payment_due!)}`;
+  return `Olá${c.name ? ` ${c.name.split(" ")[0]}` : ""}! Passando para lembrar que o pagamento do seu IPTV ${when}. Qualquer dúvida, é só chamar.`;
+}
 
 /** Link curto do APK (is.gd -> /apk -> /download/rtec-tv.apk), facil de digitar no navegador da TV. */
 const APK_SHORT_URL = "https://is.gd/rtecapk";
@@ -133,6 +155,7 @@ export default function Clients() {
       notes: c.notes,
       source: c.source ? { ...emptySource(), ...c.source } : emptySource(),
       extra: (c.extra_sources ?? []).map((x) => ({ ...emptySource(), ...x })),
+      payment_due: c.payment_due ?? "",
     });
     setFormOpen(true);
   };
@@ -206,6 +229,25 @@ export default function Clients() {
       toast.error((err as Error).message);
     } finally {
       setCheckingId("");
+    }
+  };
+
+  // A cobrar: atrasados, hoje e os proximos dias (pela data deste aparelho).
+  const toCharge = useMemo(
+    () => clients.filter((c) => c.payment_due && daysUntil(c.payment_due) <= SOON_DAYS).sort((a, b) => a.payment_due!.localeCompare(b.payment_due!)),
+    [clients],
+  );
+  const [payingId, setPayingId] = useState("");
+  const markPaid = async (c: Client) => {
+    setPayingId(c.id);
+    try {
+      const updated = await api.post<Client>(`/api/clients/${c.id}/paid`);
+      setClients((list) => list.map((x) => (x.id === c.id ? { ...x, ...updated } : x)));
+      toast.success(`Recebido de ${c.name || c.username}. Próximo pagamento: ${shortDate(updated.payment_due!)}`);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setPayingId("");
     }
   };
 
@@ -347,6 +389,44 @@ export default function Clients() {
         }
       />
 
+      {toCharge.length > 0 && (
+        <Card className="mb-4 border-warning/40 p-4">
+          <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold">
+            <BellRing className="h-4 w-4 text-warning" /> A cobrar
+            <span className="font-normal text-muted-foreground">
+              {(() => {
+                const today = toCharge.filter((c) => daysUntil(c.payment_due!) === 0).length;
+                const late = toCharge.filter((c) => daysUntil(c.payment_due!) < 0).length;
+                return [today && `${today} hoje`, late && `${late} atrasado(s)`, `próximos ${SOON_DAYS} dias`].filter(Boolean).join(" · ");
+              })()}
+            </span>
+          </h2>
+          <ul className="divide-y">
+            {toCharge.map((c) => (
+              <li key={c.id} className="py-2 sm:flex sm:items-center sm:gap-3">
+                <div className="flex min-w-0 flex-1 items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold">{c.name || c.username}</div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      @{c.username} · previsto {shortDate(c.payment_due!)}
+                    </div>
+                  </div>
+                  {paymentBadge(c)}
+                </div>
+                <div className="mt-2 flex justify-end gap-1 sm:mt-0">
+                  <Button size="sm" variant="ghost" title="Copiar lembrete para o cliente" onClick={() => copy(chargeMessage(c), "Lembrete copiado")}>
+                    <Copy /> Lembrete
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={payingId === c.id} title="Pagamento recebido: o próximo fica para o mês seguinte" onClick={() => markPaid(c)}>
+                    {payingId === c.id ? <Loader2 className="animate-spin" /> : <Check />} Recebido
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
       {clients.length > 0 && (
         <div className="relative mb-4 max-w-sm">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -388,6 +468,7 @@ export default function Clients() {
                   <th className="px-4 py-3 font-semibold">Senha</th>
                   <th className="px-4 py-3 font-semibold">Status</th>
                   <th className="px-4 py-3 font-semibold">Vencimento</th>
+                  <th className="px-4 py-3 font-semibold">Pagamento</th>
                   <th className="px-4 py-3 font-semibold">Lista</th>
                   <th className="hidden px-4 py-3 font-semibold lg:table-cell">Último acesso</th>
                   <th className="px-4 py-3" />
@@ -406,6 +487,7 @@ export default function Clients() {
                       <div>{serverPicker(c)}</div>
                     </td>
                     <td className="px-4 py-3 tabular-nums text-muted-foreground">{expiry(c)}</td>
+                    <td className="px-4 py-3">{paymentBadge(c)}</td>
                     <td className="px-4 py-3">{sourceBadge(c)}</td>
                     <td className="hidden px-4 py-3 text-muted-foreground lg:table-cell">{formatDate(c.last_access_at)}</td>
                     <td className="px-4 py-3">{actions(c)}</td>
@@ -441,6 +523,12 @@ export default function Clients() {
                     {sourceBadge(c)}
                   </div>
                 </div>
+                {c.payment_due && (
+                  <div className="mt-2 flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Pagamento</span>
+                    {paymentBadge(c)}
+                  </div>
+                )}
                 <div className="mt-3 border-t pt-2">{actions(c)}</div>
               </Card>
             ))}
@@ -571,6 +659,26 @@ export default function Clients() {
               </div>
               <Switch label="Acesso liberado" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
             </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label="Pagamento previsto (opcional)"
+              hint={
+                form.payment_due
+                  ? `O painel avisa em Clientes e no Painel no dia ${Number(form.payment_due.slice(8, 10))}. Ao marcar Recebido, passa para o mês seguinte.`
+                  : "Data que o cliente combinou de pagar. O painel lembra no dia de cobrar."
+              }
+            >
+              <div className="flex gap-2">
+                <Input type="date" aria-label="Pagamento previsto" value={form.payment_due} min={editing ? undefined : todayStr()} onChange={(e) => setForm({ ...form, payment_due: e.target.value })} />
+                {form.payment_due && (
+                  <Button type="button" variant="outline" size="icon" title="Tirar lembrete" aria-label="Tirar lembrete" onClick={() => setForm({ ...form, payment_due: "" })}>
+                    <Trash2 />
+                  </Button>
+                )}
+              </div>
+            </Field>
           </div>
 
           <div className="space-y-2">

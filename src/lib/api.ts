@@ -34,6 +34,10 @@ export type Client = {
   extra_sources?: Source[];
   custom_pin: boolean;
   links: Links;
+  /** Pagamento previsto combinado com o cliente (AAAA-MM-DD); o painel lembra no dia de cobrar. */
+  payment_due?: string | null;
+  payment_day?: number | null;
+  last_paid_at?: string | null;
 };
 
 /** Resultado da conferencia automatica da lista no fornecedor. */
@@ -72,6 +76,7 @@ export type Stats = {
   expired_clients: number;
   playlists: number;
   recent: { id: string; name: string; username: string; last_access_at: string }[];
+  payments?: { id: string; name: string; username: string; payment_due: string }[];
 };
 
 export type Preview = {
