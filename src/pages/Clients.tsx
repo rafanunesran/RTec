@@ -41,6 +41,26 @@ const isBlank = (src: Source) =>
   (src.kind === "xtream" && !src.xtream_server.trim() && !src.xtream_username.trim()) ||
   (src.kind === "manual" && !/#EXTINF/i.test(src.content));
 
+/** Listas desligadas no painel (continuam salvas). */
+const offCount = (c: Client) => [c.source, ...(c.extra_sources ?? [])].filter((p) => p?.disabled).length;
+
+/** Chave de ligar/desligar uma lista do cliente sem apagar. */
+function ListSwitch({ src, onChange }: { src: Source; onChange: (s: Source) => void }) {
+  const on = !src.disabled;
+  return (
+    <div className="flex items-center gap-2 text-xs text-muted-foreground" title={on ? "Desligue para tirar esta lista do cliente sem apagar" : "Ligue para a lista voltar para o cliente"}>
+      <span className={on ? "text-emerald-500" : ""}>{on ? "Ligada" : "Desligada"}</span>
+      <Switch label={on ? "Desligar lista" : "Ligar lista"} checked={on} onChange={(v) => onChange({ ...src, disabled: !v })} />
+    </div>
+  );
+}
+
+const OffNote = () => (
+  <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+    Lista desligada: fica salva aqui, mas o cliente não vê nem toca nada dela. Ligue de novo quando quiser.
+  </p>
+);
+
 function randomPass() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -273,6 +293,7 @@ export default function Clients() {
       <Badge variant="info">
         {sourceLabel(c.source)}
         {c.extra_sources?.length ? ` +${c.extra_sources.length}` : ""}
+        {offCount(c) ? ` · ${offCount(c)} desligada${offCount(c) > 1 ? "s" : ""}` : ""}
       </Badge>
     ) : (
       <Badge variant="muted">Sem lista</Badge>
@@ -682,8 +703,12 @@ export default function Clients() {
           </div>
 
           <div className="space-y-2">
-            <div className="text-sm font-medium">Lista do cliente</div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-medium">Lista do cliente</div>
+              {(form.extra.length > 0 || form.source.disabled) && <ListSwitch src={form.source} onChange={(source) => setForm({ ...form, source })} />}
+            </div>
             <p className="text-xs text-muted-foreground">Cole o link ou o login do fornecedor deste cliente. É só isso que ele vai ver no reprodutor.</p>
+            {form.source.disabled && <OffNote />}
             <SourceEditor value={form.source} onChange={(source) => setForm({ ...form, source })} />
           </div>
 
@@ -691,10 +716,14 @@ export default function Clients() {
             <div key={i} className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-medium">Lista extra {i + 1}</div>
-                <Button type="button" variant="ghost" size="sm" className="hover:text-destructive" onClick={() => setExtra(i, null)}>
-                  <Trash2 /> Remover
-                </Button>
+                <div className="flex items-center gap-1">
+                  <ListSwitch src={src} onChange={(next) => setExtra(i, next)} />
+                  <Button type="button" variant="ghost" size="sm" className="hover:text-destructive" title="Apagar esta lista" onClick={() => setExtra(i, null)}>
+                    <Trash2 /> Remover
+                  </Button>
+                </div>
               </div>
+              {src.disabled && <OffNote />}
               <SourceEditor value={src} onChange={(next) => setExtra(i, next)} />
             </div>
           ))}

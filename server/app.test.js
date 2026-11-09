@@ -842,6 +842,26 @@ test("varias listas no mesmo cliente: um catalogo so, sem repetir titulos, com a
   assert.equal(upd.body.list_status.state, "active");
   assert.deepEqual(Object.values(upd.body.list_status.sources).sort(), ["active", "active", "expired"]);
   renova = "active";
+
+  // Chave do painel: lista desligada fica salva, mas sai do catalogo do cliente; religada, volta.
+  const extraM3u = { kind: "m3u_url", url: `${server}/get.php?username=Extra&password=E1&type=m3u_plus`, playback: "direct" };
+  const off = await call("PUT", `/api/clients/${id}`, { extra_sources: [{ ...extraM3u, disabled: true }] });
+  assert.equal(off.status, 200);
+  assert.equal(off.body.extra_sources.length, 1, "lista desligada continua salva");
+  assert.equal(off.body.extra_sources[0].disabled, true);
+  assert.equal(off.body.list_status.sources, undefined, "so a principal e conferida");
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "duas_listas", password: "x1" });
+  const offLive = (await call("GET", "/api/player/xtream/items?section=live")).body;
+  assert.deepEqual(offLive.map((c) => c.name), ["ESPN", "Canal +18"], "Globo (so da lista desligada) some");
+  assert.equal(offLive[0].more, undefined, "lista desligada nao vira reserva");
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const on = await call("PUT", `/api/clients/${id}`, { extra_sources: [extraM3u] });
+  assert.equal(on.body.extra_sources[0].disabled, undefined);
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "duas_listas", password: "x1" });
+  assert.deepEqual((await call("GET", "/api/player/xtream/items?section=live")).body.map((c) => c.name), ["ESPN", "Canal +18", "Globo"]);
 });
 
 test("radios em lista M3U: grupo Radios, radio=\"true\" e audio direto", async () => {

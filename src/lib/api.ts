@@ -13,6 +13,8 @@ export type Source = {
   content: string;
   epg_url: string;
   playback: PlaybackMode;
+  /** Lista desligada no painel: fica salva, mas o cliente nao ve nem toca. */
+  disabled?: boolean;
 };
 
 export type Client = {

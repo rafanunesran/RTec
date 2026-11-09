@@ -225,7 +225,7 @@ async function refreshListStatus(c, { force = false } = {}) {
   const last = listChecks.get(c.id);
   if (!force && last && Date.now() - last.at < LIST_CHECK_TTL_MS) return last.promise;
   const promise = (async () => {
-    const list = allSources(c);
+    const list = enabledSources(c);
     const results = await Promise.all(list.map((p) => checkSource(p).catch((err) => ({ state: "unknown", reason: err.message }))));
     const result = combineChecks(results);
     const prev = c.list_status || null;
@@ -330,9 +330,14 @@ function allSources(c) {
   return [c.source, ...(c.extra_sources || [])].filter((p) => p?.kind);
 }
 
+/** Listas ligadas: a chave "desativada" no painel tira a lista do cliente sem apagar (continua salva para religar). */
+function enabledSources(c) {
+  return allSources(c).filter((p) => !p.disabled);
+}
+
 /** Listas em uso: as que o fornecedor deu como vencidas saem (se ainda sobrar alguma). */
 function activeSources(c) {
-  const all = allSources(c);
+  const all = enabledSources(c);
   const states = c.list_status?.sources || {};
   const ok = all.filter((p) => states[sourceKey(p)] !== "expired");
   // Servidor fora do ar com irmao no ar: usa o irmao (mesmo usuario e senha). A chave da lista nao muda,
@@ -448,7 +453,7 @@ const isOurLink = (url) => /\/api\/player\/(proxy|aac)\?/.test(url);
 /** Servidores (origin) das listas do cliente, inclusive as listas do painel ligadas a ele. */
 async function clientServers(c) {
   const out = new Set();
-  for (const p of await clientPlaylists(c).catch(() => allSources(c))) {
+  for (const p of await clientPlaylists(c).catch(() => enabledSources(c))) {
     const o = sourceServer(p);
     if (o) out.add(o);
   }
@@ -1326,11 +1331,13 @@ export function createApp() {
       playlistIds = ids.filter((_id, i) => found[i]);
     }
     let source = existing?.source ?? null;
-    if (body.source !== undefined) source = body.source && body.source.kind ? readSource(body.source) : null;
+    // disabled: lista desligada pelo painel (fica salva, mas o cliente nao ve nem toca).
+    const withSwitch = (p) => (p.disabled ? { ...readSource(p), disabled: true } : readSource(p));
+    if (body.source !== undefined) source = body.source && body.source.kind ? withSwitch(body.source) : null;
     // Listas extras: completam a principal (mesmo login; titulos repetidos aparecem uma vez so).
     let extra = existing?.extra_sources || [];
     if (Array.isArray(body.extra_sources)) {
-      extra = body.extra_sources.filter((p) => p && p.kind).map((p) => readSource(p));
+      extra = body.extra_sources.filter((p) => p && p.kind).map(withSwitch);
       const seen = new Set(source ? [sourceKey(source)] : []);
       extra = extra.filter((p) => !seen.has(sourceKey(p)) && seen.add(sourceKey(p)));
       if (extra.length > MAX_LISTS - 1) throw new HttpError(400, `No maximo ${MAX_LISTS} listas por cliente`);
