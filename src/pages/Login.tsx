@@ -56,6 +56,11 @@ export default function Login() {
             Abrir o reprodutor
           </a>
         </p>
+        <p className="mt-3 text-center text-xs text-muted-foreground">
+          <a href="/privacidade" className="hover:text-foreground">
+            Política de Privacidade
+          </a>
+        </p>
       </div>
     </div>
   );

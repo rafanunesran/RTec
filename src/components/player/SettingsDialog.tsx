@@ -1,12 +1,16 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   CalendarClock,
+  Download,
+  FileText,
   Link2,
   Lock,
   LogOut,
   MonitorSmartphone,
   ShieldCheck,
+  Trash2,
   User,
+  UserX,
   Users,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -53,6 +57,31 @@ export default function SettingsDialog({
       setCurrent("");
       setNext("");
       onSettings({ ...settings, custom_pin: true });
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  };
+
+  // LGPD: apagar o uso (favoritos, historico, ponto onde parou) e pedir a exclusao da conta.
+  const eraseUsage = async () => {
+    if (!window.confirm("Apagar favoritos, histórico, ponto onde parou e alertas de todos os perfis, e desconectar os outros aparelhos? Não dá para desfazer.")) return;
+    try {
+      const res = await api.post<{ devices: number }>("/api/player/privacy/erase");
+      for (const k of Object.keys(localStorage)) {
+        if (/^rtec:(history|favs|progress|sync|ep-alerts|seasons|rec-prefs|channel|back-home|games-store)/.test(k)) localStorage.removeItem(k);
+      }
+      toast.success(res.devices ? `Dados de uso apagados e ${res.devices} aparelho(s) desconectado(s)` : "Dados de uso apagados");
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  };
+
+  const askDelete = async () => {
+    if (!window.confirm("Pedir a exclusão da conta e de todos os seus dados? O revendedor recebe o pedido e a conta deixa de funcionar quando for excluída.")) return;
+    try {
+      await api.post("/api/player/privacy/request", { kind: "delete" });
+      toast.success("Pedido enviado. O revendedor vai excluir a conta e avisar você.");
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -212,6 +241,33 @@ export default function SettingsDialog({
               >
                 Salvar bloqueios
               </Button>
+            </div>
+          </section>
+
+          <section className="rounded-xl border p-4">
+            <h3 className="mb-1 flex items-center gap-2 text-sm font-semibold">
+              <FileText className="h-4 w-4 text-primary" /> Privacidade
+            </h3>
+            <p className="mb-3 text-sm text-muted-foreground">
+              Veja como seus dados são usados e exerça seus direitos da LGPD. Para corrigir nome ou outro dado da conta, fale com o revendedor.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => window.open("/privacidade", "_blank")}>
+                <FileText /> Política de Privacidade
+              </Button>
+              {!guest && (
+                <>
+                  <Button variant="outline" onClick={() => (window.location.href = "/api/player/privacy/export")}>
+                    <Download /> Baixar meus dados
+                  </Button>
+                  <Button variant="outline" onClick={eraseUsage}>
+                    <Trash2 /> Apagar histórico e uso
+                  </Button>
+                  <Button variant="outline" className="text-destructive" onClick={askDelete}>
+                    <UserX /> Pedir exclusão da conta
+                  </Button>
+                </>
+              )}
             </div>
           </section>
 

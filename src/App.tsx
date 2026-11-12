@@ -9,6 +9,7 @@ import Settings from "@/pages/Settings";
 import Servers from "@/pages/Servers";
 import Player from "@/pages/Player";
 import Install from "@/pages/Install";
+import { PrivacyPolicy, TermsOfUse } from "@/pages/Privacy";
 
 function Protected() {
   const { admin, loading } = useAuth();
@@ -46,6 +47,8 @@ export default function App() {
       {/* Link de conexao direta (Configuracoes > Conexoes): a TV abre e ja entra na conta. */}
       <Route path="/c/:token" element={<Player />} />
       <Route path="/instalar" element={<Install />} />
+      <Route path="/privacidade" element={<PrivacyPolicy />} />
+      <Route path="/termos" element={<TermsOfUse />} />
       <Route path="/admin/*" element={<Admin />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

@@ -79,6 +79,8 @@ export type Stats = {
   playlists: number;
   recent: { id: string; name: string; username: string; last_access_at: string }[];
   payments?: { id: string; name: string; username: string; payment_due: string }[];
+  /** Pedidos de privacidade (LGPD) ainda nao atendidos. */
+  privacy_requests?: number;
 };
 
 export type Preview = {
@@ -199,6 +201,30 @@ export type PlayerLink = {
   device: PlayerDevice | null;
   url: string | null;
   short: string | null;
+};
+
+/** Dados do controlador mostrados na Politica de Privacidade (Admin > Configuracoes > Privacidade). */
+export type PrivacyInfo = {
+  controller: string;
+  document: string;
+  email: string;
+  whatsapp: string;
+  dpo: string;
+  address: string;
+  reviewed: boolean;
+  updated_at: string | null;
+};
+
+export type PrivacyRequest = {
+  id: string;
+  client_id: string;
+  username: string;
+  name: string;
+  kind: "delete" | "correct" | "other";
+  message: string;
+  created_at: string;
+  done_at?: string;
+  done_by?: string;
 };
 
 export class ApiError extends Error {

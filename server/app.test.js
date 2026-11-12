@@ -1555,6 +1555,66 @@ test("pagamento previsto: marca a data, aparece no painel e Recebido passa para 
   await call("DELETE", `/api/clients/${c.body.id}`);
 });
 
+test("LGPD: dados do controlador, exportar, apagar uso, pedido de exclusao e limpeza automatica", async () => {
+  const { privacyCleanup, DEVICE_KEEP_DAYS } = await import("./app.js");
+  const store = (await import("./store/index.js")).getStore();
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  assert.equal((await call("PUT", "/api/admin/privacy", { controller: "Loja Teste", email: "nao-e-email" })).status, 400);
+  const saved = await call("PUT", "/api/admin/privacy", { controller: "Loja Teste", email: "contato@loja.test", whatsapp: "(11) 90000-0000" });
+  assert.equal(saved.status, 200);
+  const c = await call("POST", "/api/clients", { username: "titular", password: "pw12", name: "Titular", notes: "cliente desde 2020" });
+  const adminCookie = cookie;
+
+  cookie = "";
+  const pub = await call("GET", "/api/privacy");
+  assert.equal(pub.body.controller, "Loja Teste");
+  assert.equal(pub.body.email, "contato@loja.test");
+  assert.equal(pub.body.requests, undefined, "pedidos nao sao publicos");
+  assert.equal((await call("GET", "/api/player/privacy/export")).status, 401);
+
+  await call("POST", "/api/player/login", { username: "titular", password: "pw12" });
+  await call("PUT", "/api/player/sync", { favorites: [{ id: "x1", name: "Canal Fav", kind: "live", src: "http://srv.com/live/u/senha/1.ts" }] });
+  const exp = await call("GET", "/api/player/privacy/export");
+  assert.equal(exp.status, 200);
+  assert.equal(exp.body.conta.usuario, "titular");
+  assert.equal(exp.body.conta.observacoes_do_revendedor, "cliente desde 2020");
+  assert.equal(exp.body.perfis[0].favoritos[0].name, "Canal Fav");
+  assert.equal(exp.body.perfis[0].favoritos[0].src, undefined, "sem link da lista na exportacao");
+  assert.ok(!JSON.stringify(exp.body).includes("pw12"), "sem a senha");
+  assert.equal(exp.body.dispositivos.length, 1);
+
+  const r1 = await call("POST", "/api/player/privacy/request", { kind: "delete", message: "quero sair" });
+  assert.equal(r1.status, 201);
+  const r2 = await call("POST", "/api/player/privacy/request", { kind: "delete" });
+  assert.equal(r2.body.id, r1.body.id, "pedido aberto nao se repete");
+  assert.equal((await call("POST", "/api/player/privacy/request", { kind: "x" })).status, 400);
+
+  const erased = await call("POST", "/api/player/privacy/erase");
+  assert.equal(erased.status, 200);
+  assert.deepEqual((await call("GET", "/api/player/sync")).body.favorites, []);
+  assert.equal((await call("GET", "/api/player/me")).status, 200, "o aparelho atual continua conectado");
+
+  cookie = adminCookie;
+  const adm = await call("GET", "/api/admin/privacy");
+  const reqItem = adm.body.requests.find((r) => r.id === r1.body.id);
+  assert.equal(reqItem.username, "titular");
+  assert.ok((await call("GET", "/api/stats")).body.privacy_requests >= 1);
+  assert.ok((await call("POST", `/api/admin/privacy/requests/${r1.body.id}/done`)).body.done_at);
+  const admExp = await call("GET", `/api/clients/${c.body.id}/export`);
+  assert.equal(admExp.body.conta.usuario, "titular");
+
+  // Limpeza: aparelho parado alem do prazo e registro de senha errada antigo somem.
+  const [dev] = await store.devices.where("client_id", "==", c.body.id);
+  await store.devices.update(dev.id, { last_seen_at: new Date(Date.now() - (DEVICE_KEEP_DAYS + 1) * 864e5).toISOString() });
+  await store.config.set("lock_velho", { at: Date.now() - 2 * 864e5, count: 3 });
+  const out = await privacyCleanup({ force: true });
+  assert.ok(out.devices >= 1 && out.locks >= 1);
+  assert.equal((await store.devices.where("client_id", "==", c.body.id)).length, 0);
+  assert.equal(await store.config.get("lock_velho"), null);
+  await call("DELETE", `/api/clients/${c.body.id}`);
+});
+
 // Por ultimo: depois deste teste o endereco local fica bloqueado para login de admin por 15 minutos.
 test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
   cookie = "";

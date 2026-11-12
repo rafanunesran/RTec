@@ -167,7 +167,8 @@
       '<label>Usuario</label><input class="f" id="u" type="text" autocomplete="off">' +
       '<label>Senha</label><input class="f" id="p" type="password">' +
       '<a href="#" class="f big" id="go" style="width:300px;margin-top:24px">Entrar</a>' +
-      '<div class="hint">Setas para escolher &middot; OK no campo para digitar</div>';
+      '<div class="hint">Setas para escolher &middot; OK no campo para digitar</div>' +
+      '<div class="hint">Ao entrar, voce concorda com os Termos e a Politica de Privacidade: ' + esc(location.host) + '/privacidade</div>';
     document.getElementById("u").value = store("rtec:lite:user") || "";
     document.getElementById("go").onclick = function () {
       var u = document.getElementById("u").value, p = document.getElementById("p").value;

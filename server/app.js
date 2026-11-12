@@ -701,6 +701,122 @@ function serializeClient(c) {
   return { ...rest, playlist_ids: c.playlist_ids || [], valid: isClientValid(c), custom_pin: !!parental_pin_hash };
 }
 
+// ---------- Privacidade (LGPD) ----------
+// Dados do controlador mostrados na Politica de Privacidade (Admin > Configuracoes > Privacidade).
+const PRIVACY_FIELDS = ["controller", "document", "email", "whatsapp", "dpo", "address"];
+const publicPrivacy = (doc) => {
+  const out = {};
+  for (const f of PRIVACY_FIELDS) out[f] = String(doc?.[f] || "");
+  // Texto revisado por advogado: sem isso a pagina mostra o aviso de versao preliminar.
+  out.reviewed = !!doc?.reviewed;
+  out.updated_at = doc?.updated_at || null;
+  return out;
+};
+
+// Itens de favoritos/historico na exportacao: sem links de video (podem levar usuario e senha da lista).
+const LINK_KEY = /^(src|url|alt|alt_type|fallback|type|logo|poster|cover|stream_url)$/;
+const exportItem = (it) => (it && typeof it === "object" ? Object.fromEntries(Object.entries(it).filter(([k]) => !LINK_KEY.test(k))) : it);
+
+/** Tudo o que o RTec guarda sobre a conta do cliente (direito de acesso e portabilidade, art. 18 da LGPD). */
+export async function exportClientData(c) {
+  const db = getStore();
+  const profiles = await loadProfiles(c);
+  const perfis = [];
+  for (const p of profiles) {
+    const docId = syncDocId(c.id, p.id);
+    const [s, a] = await Promise.all([db.sync.get(docId), db.alerts.get(docId)]);
+    perfis.push({
+      nome: p.name,
+      infantil: !!p.kids,
+      favoritos: (s?.favorites || []).map(exportItem),
+      historico: (s?.history || []).map(exportItem),
+      progresso: s?.progress || {},
+      alertas_de_series: Object.entries(a?.series || {}).map(([id, e]) => ({ id, nome: e.name || "", ligado: e.on ?? null })),
+    });
+  }
+  const devices = await db.devices.where("client_id", "==", c.id);
+  const links = await db.links.where("client_id", "==", c.id);
+  const requests = ((await db.config.get("privacy_requests"))?.items || []).filter((r) => r.client_id === c.id);
+  return {
+    gerado_em: nowIso(),
+    aviso:
+      "Dados pessoais guardados pelo RTec sobre esta conta. Senhas, PIN e os links/credenciais das listas do fornecedor nao sao incluidos por seguranca; peca ao revendedor se precisar deles.",
+    conta: {
+      nome: c.name || "",
+      usuario: c.username,
+      ativa: c.active !== false,
+      criada_em: c.created_at || null,
+      validade: c.expires_at || null,
+      ultimo_acesso: c.last_access_at || null,
+      pagamento_previsto: c.payment_due || null,
+      ultimo_pagamento: c.last_paid_at || null,
+      observacoes_do_revendedor: c.notes || "",
+      quantidade_de_listas: allSources(c).length,
+      pin_parental_personalizado: !!c.parental_pin_hash,
+      grupos_bloqueados: c.locked_groups || [],
+    },
+    perfis,
+    dispositivos: devices.map((d) => ({
+      nome: d.name,
+      tipo: d.kind || "",
+      navegador: d.ua || "",
+      ip: d.ip || "",
+      conectado_em: d.created_at || null,
+      ultimo_uso: d.last_seen_at || null,
+      por_link: !!d.guest,
+    })),
+    conexoes: links.map((l) => ({ nome: l.label || "", criada_em: l.created_at || null, usada_em: l.used_at || null })),
+    pedidos_de_privacidade: requests,
+  };
+}
+
+function sendExport(res, data) {
+  const name = `rtec-meus-dados-${String(data.conta.usuario).replace(/[^\w.-]/g, "_")}.json`;
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Content-Disposition", `attachment; filename="${name}"`);
+  res.json(data);
+}
+
+// Retencao: apaga sozinho, uma vez por dia, o que ja nao serve para nada.
+// - aparelhos sem uso ha 60 dias (a sessao ja morreu aos 30): levam junto IP e navegador;
+// - registros de senha errada (guardam o IP cifrado em hash) com mais de 1 dia;
+// - links de conexao que venceram sem ser abertos.
+const PRIVACY_CLEANUP_EVERY_MS = 24 * 3600 * 1000;
+export const DEVICE_KEEP_DAYS = 60;
+let privacyCleanupRun = null;
+export function privacyCleanup({ force = false } = {}) {
+  if (privacyCleanupRun) return privacyCleanupRun;
+  privacyCleanupRun = (async () => {
+    const db = getStore();
+    const last = await db.config.get("privacy_cleanup");
+    if (!force && last && Date.now() - Date.parse(last.at || 0) < PRIVACY_CLEANUP_EVERY_MS) return last;
+    const now = Date.now();
+    const out = { at: nowIso(), devices: 0, locks: 0, links: 0 };
+    const deviceLimit = new Date(now - DEVICE_KEEP_DAYS * 24 * 3600 * 1000).toISOString();
+    for (const d of await db.devices.where("last_seen_at", "<", deviceLimit)) {
+      await dropDevice(d);
+      out.devices++;
+    }
+    for (const l of await db.config.list()) {
+      if (String(l.id).startsWith("lock_") && now - Number(l.at || 0) > 24 * 3600 * 1000) {
+        await db.config.delete(l.id);
+        out.locks++;
+      }
+    }
+    for (const l of await db.links.where("open_until", "<", nowIso())) {
+      if (l.device_id) continue;
+      await db.links.delete(l.id);
+      out.links++;
+    }
+    await db.config.set("privacy_cleanup", out);
+    if (out.devices || out.locks || out.links) console.log(`[rtec] Limpeza (LGPD): ${out.devices} aparelho(s), ${out.locks} registro(s) de login, ${out.links} link(s).`);
+    return out;
+  })().finally(() => {
+    privacyCleanupRun = null;
+  });
+  return privacyCleanupRun;
+}
+
 /** Pagamento previsto (data AAAA-MM-DD) e o dia do mes combinado com o cliente. Vazio tira o lembrete. */
 function readPayment(body, existing) {
   if (body.payment_due === undefined) return { payment_due: existing?.payment_due ?? null, payment_day: existing?.payment_day ?? null };
@@ -1262,7 +1378,11 @@ export function createApp() {
     requireAdmin,
     wrap(async (_req, res) => {
       const [clients, playlists] = await Promise.all([db().clients.list(), db().playlists.list()]);
+      // Sem o servidor de video chamando o monitor, a limpeza diaria roda quando o painel abre.
+      await privacyCleanup().catch((err) => console.warn(`[rtec] Limpeza (LGPD) falhou: ${err.message}`));
+      const privacyOpen = ((await db().config.get("privacy_requests"))?.items || []).filter((r) => !r.done_at).length;
       res.json({
+        privacy_requests: privacyOpen,
         clients: clients.length,
         active_clients: clients.filter(isClientValid).length,
         expired_clients: clients.filter(isListExpired).length,
@@ -1536,6 +1656,8 @@ export function createApp() {
       const { c, e, s } = req.query;
       if (c !== "monitor" || !verifySignature("monitor", e, "servers", s)) throw new HttpError(403, "Link invalido ou expirado");
       const { doc, targets } = await runMonitor({ by: "monitor" });
+      // Limpeza diaria dos dados antigos (retencao da LGPD) aproveita o teste automatico.
+      await privacyCleanup().catch((err) => console.warn(`[rtec] Limpeza (LGPD) falhou: ${err.message}`));
       const states = targets.map((t) => doc.servers?.[t.server]?.state || "unknown");
       res.json({ ok: true, servers: targets.length, offline: states.filter((x) => x === "offline").length });
     }),
@@ -2613,6 +2735,117 @@ export function createApp() {
       await db().sync.delete(syncDocId(req.client.id, req.params.pid));
       await db().alerts.delete(syncDocId(req.client.id, req.params.pid));
       res.json({ ok: true });
+    }),
+  );
+
+  // ---------- Privacidade (LGPD) ----------
+  // Dados do controlador (preenchidos pelo admin em Configuracoes) aparecem na Politica de Privacidade.
+  // O titular baixa os proprios dados, apaga o historico de uso e pede exclusao/correcao da conta.
+  app.get(
+    "/api/privacy",
+    wrap(async (_req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json(publicPrivacy(await db().config.get("privacy")));
+    }),
+  );
+
+  app.get(
+    "/api/admin/privacy",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      const doc = (await db().config.get("privacy")) || {};
+      const reqs = (await db().config.get("privacy_requests"))?.items || [];
+      res.json({ ...publicPrivacy(doc), requests: reqs, cleanup: (await db().config.get("privacy_cleanup")) || null });
+    }),
+  );
+
+  app.put(
+    "/api/admin/privacy",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const body = req.body || {};
+      const doc = { updated_at: nowIso(), updated_by: req.admin.username };
+      for (const f of PRIVACY_FIELDS) doc[f] = str(body[f], f, { max: 300 });
+      doc.reviewed = !!body.reviewed;
+      if (doc.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(doc.email)) throw new HttpError(400, "E-mail de contato invalido");
+      await db().config.set("privacy", doc);
+      res.json(publicPrivacy(doc));
+    }),
+  );
+
+  // Pedido atendido (ou cancelado) pelo admin: fica guardado como prova de atendimento.
+  app.post(
+    "/api/admin/privacy/requests/:id/done",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const doc = (await db().config.get("privacy_requests")) || { items: [] };
+      const item = doc.items.find((r) => r.id === req.params.id);
+      if (!item) throw new HttpError(404, "Pedido nao encontrado");
+      item.done_at = nowIso();
+      item.done_by = req.admin.username;
+      await db().config.set("privacy_requests", doc);
+      res.json(item);
+    }),
+  );
+
+  // Exportar os dados de um cliente (pedido recebido por WhatsApp/e-mail).
+  app.get(
+    "/api/clients/:id/export",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const c = await db().clients.get(req.params.id);
+      if (!c) throw new HttpError(404, "Cliente nao encontrado");
+      sendExport(res, await exportClientData(c));
+    }),
+  );
+
+  app.get(
+    "/api/player/privacy/export",
+    requireClient,
+    requireOwner,
+    wrap(async (req, res) => sendExport(res, await exportClientData(req.client))),
+  );
+
+  // Apaga favoritos, historico, progresso e alertas de todos os perfis e desconecta os outros aparelhos.
+  // A conta (usuario, senha e listas) continua: quem cuida dela e o revendedor.
+  app.post(
+    "/api/player/privacy/erase",
+    requireClient,
+    requireOwner,
+    wrap(async (req, res) => {
+      const c = req.client;
+      for (const p of await loadProfiles(c)) {
+        await db().sync.delete(syncDocId(c.id, p.id));
+        await db().alerts.delete(syncDocId(c.id, p.id));
+      }
+      let devices = 0;
+      for (const d of await db().devices.where("client_id", "==", c.id)) {
+        if (d.id === req.device?.id) continue;
+        await dropDevice(d);
+        devices++;
+      }
+      await db().links.deleteWhere("client_id", "==", c.id);
+      console.log(`[rtec] Privacidade: cliente "${c.username}" apagou os dados de uso.`);
+      res.json({ ok: true, devices });
+    }),
+  );
+
+  app.post(
+    "/api/player/privacy/request",
+    requireClient,
+    requireOwner,
+    wrap(async (req, res) => {
+      const kind = ["delete", "correct", "other"].includes(req.body?.kind) ? req.body.kind : null;
+      if (!kind) throw new HttpError(400, "Tipo de pedido invalido");
+      const message = str(req.body?.message, "mensagem", { max: 1000 });
+      const doc = (await db().config.get("privacy_requests")) || { items: [] };
+      const open = doc.items.find((r) => r.client_id === req.client.id && r.kind === kind && !r.done_at);
+      if (open) return res.json(open);
+      const item = { id: randomToken().slice(0, 12), client_id: req.client.id, username: req.client.username, name: req.client.name || "", kind, message, created_at: nowIso() };
+      // Guarda os 200 mais recentes (os atendidos mais antigos saem primeiro).
+      doc.items = [item, ...doc.items].slice(0, 200);
+      await db().config.set("privacy_requests", doc);
+      res.status(201).json(item);
     }),
   );
 

@@ -75,6 +75,20 @@ export default function Dashboard() {
           </Link>
         );
       })()}
+      {!!stats?.privacy_requests && (
+        // Pedidos de privacidade (LGPD): a lei da 15 dias para responder.
+        <Link
+          to="/admin/configuracoes"
+          className="mb-6 flex items-center gap-3 rounded-2xl border border-warning/40 bg-warning/10 p-4 text-sm text-warning hover:bg-warning/15"
+        >
+          <BellRing className="h-5 w-5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <strong>{stats.privacy_requests === 1 ? "1 pedido de privacidade" : `${stats.privacy_requests} pedidos de privacidade`}</strong> de clientes
+            (LGPD) esperando resposta. Veja em Configurações.
+          </span>
+          <ChevronRight className="h-4 w-4 shrink-0" />
+        </Link>
+      )}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {cards.map(({ label, value, icon, to, tone }) => (
           <Link key={label} to={to}>

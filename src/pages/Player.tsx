@@ -400,6 +400,17 @@ function PlayerLogin({ notice, onLogin, onExpired }: { notice?: string; onLogin:
             </Button>
           </form>
         </div>
+        <p className="mt-4 text-center text-xs text-muted-foreground">
+          Ao entrar, você concorda com os{" "}
+          <a href="/termos" className="underline hover:text-foreground">
+            Termos de Uso
+          </a>{" "}
+          e a{" "}
+          <a href="/privacidade" className="underline hover:text-foreground">
+            Política de Privacidade
+          </a>
+          . Usamos só cookies essenciais para manter você conectado.
+        </p>
         <div className="mt-6 flex justify-center">
           <InstallButton />
         </div>
