@@ -31,6 +31,8 @@ import { ForYou, RecSetupDialog, type ForYouRow } from "@/components/player/ForY
 import { loadRecPrefs, saveRecPrefs, type RecKind } from "@/lib/recprefs";
 import { castControl, castPlay, castTarget, knownDevices, onCastPlay, setCastNow, setCastTarget, startCast, useCast, type CastPlay } from "@/lib/cast";
 import { CastBar, CastButton, CastDialog, CastRemote, WhereDialog } from "@/components/player/Cast";
+import { DownloadButton, DownloadsDialog, OfflinePage } from "@/components/player/Downloads";
+import { deleteDownloads, downloadsCount, loadDownloadConfig, loadDownloads, renewDownloads, useDownloads, useDownloadsEnabled } from "@/lib/downloads";
 import { MAIN_PROFILE, fetchProfiles, lastProfile, rememberProfile, scoped, setStorageProfile, type ProfilesResponse, type Viewer } from "@/lib/profiles";
 
 const FAVORITES = "__favoritos__";
@@ -178,6 +180,8 @@ export default function Player() {
 
   // Aviso na tela de entrar (aparelho desconectado, conexao por link que acabou, link invalido).
   const [notice, setNotice] = useState("");
+  // Sem internet ao abrir, com filmes/episodios baixados: mostra so os downloads.
+  const [offline, setOffline] = useState(false);
 
   useEffect(() => {
     const me = () => api.get<ClientProfile>("/api/player/me");
@@ -200,7 +204,11 @@ export default function Player() {
     } else open = me();
     open
       .then(setProfile)
-      .catch((err) => {
+      .catch(async (err) => {
+        if (!(err instanceof ApiError)) {
+          await loadDownloads();
+          if (downloadsCount() > 0) return setOffline(true);
+        }
         setProfile(null);
         setExpired(isListExpired(err));
         if (err instanceof ApiError && (link || err.code === "disconnected" || err.code === "connection_ended")) setNotice(err.message);
@@ -298,6 +306,8 @@ export default function Player() {
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
       </div>
     );
+
+  if (offline) return <OfflinePage onRetry={() => location.reload()} />;
 
   if (expired)
     return (
@@ -1292,8 +1302,19 @@ function Watch({
 
   const logout = async () => {
     await api.post("/api/player/logout").catch(() => {});
+    // Saiu da conta: os downloads deste aparelho sao apagados.
+    await deleteDownloads().catch(() => {});
     onLogout();
   };
+
+  // Downloads offline: a chave do revendedor e a validade dos que ja estao no aparelho.
+  const [downloadsOpen, setDownloadsOpen] = useState(false);
+  const downloadsOn = useDownloadsEnabled();
+  const myDownloads = useDownloads(profile.username).items;
+  useEffect(() => {
+    void loadDownloadConfig();
+    void renewDownloads(profile.username);
+  }, [profile.username]);
 
   const nowPlaying = current?.epg_id ? epg[current.epg_id]?.[0] : undefined;
   const upNext = current?.epg_id ? epg[current.epg_id]?.slice(1, 3) : undefined;
@@ -1442,6 +1463,12 @@ function Watch({
               {notifyCount ? <BellRing className="!size-5" /> : <Bell className="!size-5" />}
               <CountBadge count={notifyCount} className="right-0.5 top-0.5" />
             </Button>
+            {(downloadsOn || myDownloads.length > 0) && (
+              <Button variant="ghost" size="icon" onClick={() => setDownloadsOpen(true)} title="Downloads" aria-label="Downloads" className="relative">
+                <Download className="!size-5" />
+                <CountBadge count={myDownloads.filter((d) => d.status === "downloading" || d.status === "queued").length} className="right-0.5 top-0.5" />
+              </Button>
+            )}
             <Button variant="ghost" size="icon" onClick={() => setSettingsOpen(true)} title="Configurações" aria-label="Configurações">
               <Settings className="!size-5" />
             </Button>
@@ -1729,6 +1756,7 @@ function Watch({
                     seriesKey={xt ? series.key : undefined}
                     currentId={current?.id}
                     xt={xt}
+                    account={profile.username}
                     onPlay={(e) => play({ ...e, group: series.name }, series.episodes!.map((x) => ({ ...x, group: series.name })))}
                   />
                 )}
@@ -1834,6 +1862,7 @@ function Watch({
           onFavorite={() => toggleFavorite(movie)}
           onPlay={() => play(movie, null)}
           onClose={() => window.history.back()}
+          download={<DownloadButton account={profile.username} item={movie} title={movie.name} />}
         />
       )}
 
@@ -1961,6 +1990,7 @@ function Watch({
           setPinFor(null);
         }}
       />
+      <DownloadsDialog open={downloadsOpen} onClose={() => setDownloadsOpen(false)} account={profile.username} />
       <SettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
@@ -2076,6 +2106,7 @@ function ChannelRow({
   sub,
   onFocus,
   onRemove,
+  extra,
 }: {
   channel: Channel;
   label?: string;
@@ -2090,6 +2121,8 @@ function ChannelRow({
   onFocus?: () => void;
   /** Historico: tira o item da lista. */
   onRemove?: () => void;
+  /** Botao a mais na linha (ex: baixar o episodio). */
+  extra?: ReactNode;
 }) {
   return (
     <li className={cn("flex items-center rounded-xl transition-colors", active ? "bg-primary/10 ring-1 ring-primary/40" : "hover:bg-accent")}>
@@ -2105,6 +2138,7 @@ function ChannelRow({
         </div>
         {active && <Play className="ml-auto h-3.5 w-3.5 shrink-0 fill-primary text-primary" />}
       </button>
+      {extra}
       {onFavorite && (
         <button onClick={onFavorite} className="rounded-lg p-3 text-muted-foreground transition-colors hover:text-destructive" aria-label="Favorito">
           <Heart className={cn("h-4 w-4", favorite && "fill-destructive text-destructive")} />
@@ -2325,6 +2359,7 @@ function EpisodeList({
   seriesKey,
   currentId,
   xt,
+  account,
   onPlay,
 }: {
   episodes: Episode[];
@@ -2332,6 +2367,7 @@ function EpisodeList({
   seriesKey?: string;
   currentId?: string;
   xt: boolean;
+  account?: string;
   onPlay: (e: Episode) => void;
 }) {
   // Ultimo episodio mexido = onde o cliente parou ("Continuar").
@@ -2424,6 +2460,7 @@ function EpisodeList({
               label={e.episode ? `Episódio ${e.episode}${xt && e.name ? ` · ${e.name}` : ""}` : e.name}
               active={playing}
               onPlay={() => onPlay(e)}
+              extra={account && <DownloadButton compact account={account} item={{ ...e, group: seriesName }} title={`${seriesName} · T${e.season} E${e.episode}`} />}
               progress={f}
               sub={watched ? "Assistido" : f > 0 ? `${Math.round(f * 100)}% assistido` : "Não assistido"}
               badge={

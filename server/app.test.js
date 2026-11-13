@@ -1093,6 +1093,57 @@ test("renova links expirados do historico, so os do proprio cliente", async () =
   assert.equal((await call("POST", "/api/player/resign", { urls: [old] })).body.urls[0], "");
 });
 
+test("downloads offline: desligado por padrao, link pelo servidor de video, so arquivos, validade e revogacao", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  const admin = cookie;
+  const first = await call("GET", "/api/admin/downloads");
+  assert.equal(first.body.enabled, false, `comeca desligado ${first.status} ${JSON.stringify(first.body)}`);
+
+  cookie = "";
+  await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
+  const player = cookie;
+  const movie = (await call("GET", "/api/player/xtream/items?section=movie&category=20")).body.find((c) => c.name === "Filme Teste");
+  const live = (await call("GET", "/api/player/xtream/items?section=live")).body[0];
+  assert.equal((await call("POST", "/api/player/downloads/link", { src: movie.src, kind: "movie" })).status, 403, "desligado nao baixa");
+
+  cookie = admin;
+  const saved = await call("PUT", "/api/admin/downloads", { enabled: true, max_items: 3, days: 99 });
+  assert.equal(saved.body.enabled, true);
+  assert.equal(saved.body.days, 30, "validade limitada a 30 dias");
+
+  cookie = player;
+  // Sem servidor de video (Oracle) os downloads nao passam pela Vercel.
+  assert.equal((await call("GET", "/api/player/downloads/config")).body.enabled, false);
+  assert.equal((await call("POST", "/api/player/downloads/link", { src: movie.src, kind: "movie" })).status, 503);
+
+  process.env.STREAM_PROXY_URL = base;
+  try {
+    assert.equal((await call("GET", "/api/player/downloads/config")).body.enabled, true);
+    const r = await call("POST", "/api/player/downloads/link", { src: movie.src, kind: "movie" });
+    assert.equal(r.status, 200);
+    assert.ok(r.body.url.startsWith(`${base}/api/player/proxy?`), "baixa pelo servidor de video");
+    assert.doesNotMatch(r.body.url, /TiaX|Sen/, "link do fornecedor vai cifrado");
+    assert.ok(Date.parse(r.body.valid_until) > Date.now() + 29 * 86400_000);
+    const part = await fetch(r.body.url, { headers: { range: "bytes=0-99" } });
+    assert.equal(part.status, 206);
+    assert.equal((await part.arrayBuffer()).byteLength, 100);
+
+    assert.equal((await call("POST", "/api/player/downloads/link", { src: live.src, kind: "live" })).status, 400, "ao vivo nao baixa");
+    assert.equal((await call("POST", "/api/player/downloads/link", { src: "http://outro.tv/movie/a/b/2.mp4", kind: "movie" })).status, 400, "so servidores da lista do cliente");
+    const bad = movie.src.replace(/([?&]s=)[^&]+/, "$1xxxx");
+    if (bad !== movie.src) assert.equal((await call("POST", "/api/player/downloads/link", { src: bad, kind: "movie" })).status, 400, "link adulterado");
+
+    assert.equal((await call("POST", "/api/player/downloads/renew")).body.revoked, false);
+    cookie = admin;
+    await call("PUT", "/api/admin/downloads", { enabled: false });
+    cookie = player;
+    assert.equal((await call("POST", "/api/player/downloads/renew")).body.revoked, true, "desligar apaga os downloads dos aparelhos");
+  } finally {
+    delete process.env.STREAM_PROXY_URL;
+  }
+});
+
 test("ordenacao do catalogo: alfabetica, adicionados, ano e nota", async () => {
   cookie = "";
   await call("POST", "/api/player/login", { username: "TiaX", password: "Sen@1" });
@@ -1627,3 +1678,4 @@ test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
   const locks = (await (await import("./store/index.js")).getStore().config.list()).filter((d) => String(d.id).startsWith("lock_"));
   assert.ok(locks.some((d) => d.count >= 8), "erros guardados no banco (valem em todas as instancias da Vercel)");
 });
+

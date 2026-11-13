@@ -226,6 +226,7 @@ export function MovieDetails({
   onClose,
   onOpen,
   skip,
+  download,
 }: {
   movie: Channel;
   favorite: boolean;
@@ -234,6 +235,8 @@ export function MovieDetails({
   onClose: () => void;
   onOpen: (c: Channel) => void;
   skip?: string;
+  /** Botao "Baixar" (downloads offline). */
+  download?: ReactNode;
 }) {
   const info = useTitleInfo("movie", movie.xt_id, movie.name, movie.year);
   const f = fraction(movie);
@@ -285,6 +288,7 @@ export function MovieDetails({
               <Button variant={favorite ? "secondary" : "outline"} onClick={onFavorite} aria-pressed={favorite}>
                 <Heart className={cn(favorite && "fill-destructive text-destructive")} /> {favorite ? "Favorito" : "Favoritar"}
               </Button>
+              {download}
               <div className="basis-full pt-1">
                 <VersionPicker items={[movie]} />
               </div>

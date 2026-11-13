@@ -425,6 +425,39 @@ function rewriteHls(text, baseUrl, clientId, base) {
     .join("\n");
 }
 
+
+// ---------- Downloads offline ----------
+// O cliente baixa filmes e episodios no aparelho (celular, PC, app Android) e assiste sem internet. Comeca
+// desligado; o admin liga em Configuracoes. O arquivo vem pelo servidor de video (Oracle) com link cifrado, entao
+// o aparelho nunca ve o link do fornecedor. Cada download vale alguns dias e renova quando o aparelho fica online,
+// enquanto a conta estiver ativa e a lista em dia; fora disso o aparelho apaga.
+const DOWNLOAD_DEFAULTS = { enabled: false, max_items: 5, days: 7 };
+let downloadCache = null;
+async function downloadSettings() {
+  if (downloadCache && Date.now() - downloadCache.at < SECURITY_TTL_MS) return downloadCache.value;
+  const doc = (await getStore().config.get("downloads").catch(() => null)) || {};
+  const value = cleanDownloadSettings({ ...DOWNLOAD_DEFAULTS, ...doc });
+  downloadCache = { at: Date.now(), value };
+  return value;
+}
+function cleanDownloadSettings(d) {
+  const int = (v, min, max, def) => (Number.isFinite(Number(v)) ? Math.min(max, Math.max(min, Math.round(Number(v)))) : def);
+  return {
+    enabled: d.enabled === true,
+    max_items: int(d.max_items, 1, 50, DOWNLOAD_DEFAULTS.max_items),
+    days: int(d.days, 1, 30, DOWNLOAD_DEFAULTS.days),
+  };
+}
+/** Ate quando o download vale offline: os dias da configuracao, sem passar do vencimento do cliente. */
+function downloadValidUntil(c, days) {
+  let exp = Date.now() + days * 86400_000;
+  const end = c.expires_at ? Date.parse(c.expires_at) : NaN;
+  if (Number.isFinite(end)) exp = Math.min(exp, end);
+  return new Date(exp).toISOString();
+}
+/** Formatos que o aparelho guarda como um arquivo so (HLS e ao vivo .ts ficam de fora). */
+const DOWNLOADABLE = /\.(mp4|m4v|mkv|webm|mov|avi)$/i;
+
 // ---------- Links blindados ----------
 // Ligado (padrao), nenhum aparelho recebe o link do fornecedor (com usuario e senha da lista): app Android,
 // TVs e navegador tocam pelo servidor de video, com o link cifrado e assinado. O admin pode desligar em
@@ -1348,6 +1381,29 @@ export function createApp() {
       securityCache = null;
       console.log(`[rtec] Links blindados ${req.body.hide_links ? "ligados" : "desligados"} por ${req.admin.username}.`);
       res.json({ ...(await securitySettings()), active: await linksHidden(), video_server: !!proxyBase(), sealed: sealLinks() });
+    }),
+  );
+
+  // Downloads offline (padrao desligado).
+  app.get(
+    "/api/admin/downloads",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ ...(await downloadSettings()), video_server: !!proxyBase() });
+    }),
+  );
+
+  app.put(
+    "/api/admin/downloads",
+    requireAdmin,
+    wrap(async (req, res) => {
+      const cur = await downloadSettings();
+      const next = cleanDownloadSettings({ ...cur, ...(req.body || {}) });
+      const doc = (await db().config.get("downloads")) || {};
+      await db().config.set("downloads", { ...doc, ...next, updated_at: nowIso(), updated_by: req.admin.username });
+      downloadCache = null;
+      res.json({ ...(await downloadSettings()), video_server: !!proxyBase() });
     }),
   );
 
@@ -2896,6 +2952,62 @@ export function createApp() {
       await db().clients.update(req.client.id, { locked_groups: clean });
       forgetClient(req.client.id);
       res.json({ locked_groups: clean });
+    }),
+  );
+
+  // ---------- Downloads offline ----------
+  app.get(
+    "/api/player/downloads/config",
+    requireClient,
+    wrap(async (_req, res) => {
+      const d = await downloadSettings();
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ ...d, enabled: d.enabled && !!proxyBase() });
+    }),
+  );
+
+  // Link para baixar um filme/episodio: sempre pelo servidor de video, com o link do fornecedor cifrado.
+  app.post(
+    "/api/player/downloads/link",
+    requireClient,
+    wrap(async (req, res) => {
+      const c = req.client;
+      const d = await downloadSettings();
+      if (!d.enabled) throw new HttpError(403, "Downloads desligados pelo revendedor", "downloads_off");
+      if (!proxyBase()) throw new HttpError(503, "Downloads indisponíveis no momento", "no_video_server");
+      const kind = String(req.body?.kind || "");
+      if (kind !== "movie" && kind !== "series") throw new HttpError(400, "Só filmes e episódios podem ser baixados");
+      const raw = String(req.body?.src || "");
+      let target = "";
+      try {
+        const parsed = new URL(raw, "http://local");
+        if (parsed.pathname.endsWith("/api/player/proxy")) {
+          const { u, c: cid, e, s } = Object.fromEntries(parsed.searchParams);
+          target = cid === c.id ? proxyTarget(u, cid, e, s, { allowExpired: true }) : "";
+        } else if (/^https?:\/\//i.test(raw) && (await clientServers(c)).has(parsed.origin.toLowerCase())) {
+          target = raw;
+        }
+      } catch {
+        target = "";
+      }
+      if (!target) throw new HttpError(400, "Link inválido para download");
+      if (!DOWNLOADABLE.test(new URL(target).pathname)) throw new HttpError(415, "Este título não pode ser baixado (formato de transmissão)", "not_file");
+      res.setHeader("Cache-Control", "no-store");
+      const ext = new URL(target).pathname.split(".").pop().toLowerCase();
+      res.json({ url: proxyUrl(c.id, target), ext, valid_until: downloadValidUntil(c, d.days), max_items: d.max_items });
+    }),
+  );
+
+  // Renova a validade dos downloads guardados no aparelho. Conta bloqueada ou lista vencida nao chega aqui
+  // (requireClient responde 403) e o aparelho apaga os downloads.
+  app.post(
+    "/api/player/downloads/renew",
+    requireClient,
+    wrap(async (req, res) => {
+      const d = await downloadSettings();
+      res.setHeader("Cache-Control", "no-store");
+      if (!d.enabled) return res.json({ revoked: true, reason: "Downloads desligados pelo revendedor" });
+      res.json({ revoked: false, valid_until: downloadValidUntil(req.client, d.days), max_items: d.max_items });
     }),
   );
 

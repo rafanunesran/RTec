@@ -7,6 +7,7 @@ import PageHeader from "@/components/PageHeader";
 import VideoServerCard from "@/components/VideoServerCard";
 import SecurityCard from "@/components/SecurityCard";
 import PrivacyCard from "@/components/PrivacyCard";
+import DownloadsCard from "@/components/DownloadsCard";
 
 export default function Settings() {
   const [current, setCurrent] = useState("");
@@ -60,6 +61,9 @@ export default function Settings() {
       </Card>
       <div className="mt-6">
         <SecurityCard />
+      </div>
+      <div className="mt-6">
+        <DownloadsCard />
       </div>
       <div className="mt-6">
         <PrivacyCard />
