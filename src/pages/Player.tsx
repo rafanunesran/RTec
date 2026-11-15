@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, Bell, BellRing, CalendarClock, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, Radio, RotateCw, Search, Settings, Share, SquarePlus, Trash2, Trophy, Tv, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Bell, BellRing, CalendarClock, ArrowUpDown, SlidersHorizontal, Check, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Download, Film, Heart, History, Home, KeyRound, LayoutGrid, Loader2, Lock, Play, QrCode, Radio, RotateCw, Search, Settings, Share, SquarePlus, Trash2, Trophy, Tv, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, isListExpired, type Catalog, type Channel, type ChannelsResponse, type ClientProfile, type PlayerSettings, type Programme } from "@/lib/api";
 import { APK_URL, useApkAvailable, useInstall } from "@/lib/pwa";
@@ -23,6 +23,7 @@ import SettingsDialog from "@/components/player/SettingsDialog";
 import NotificationsPage, { CountBadge, useNotificationCount } from "@/components/player/Notifications";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
 import ListExpired from "@/components/player/ListExpired";
+import { QrLoginPanel } from "@/components/player/QrLogin";
 import GamesPage, { GameAlerts } from "@/components/player/Games";
 import { alertOn, epLabel, favoriteAdded, favoriteRemoved, loadEpAlerts, markSeen, markShown, resetEpAlerts, setEpAlert, shouldShow, useEpAlerts, type EpAlert } from "@/lib/epalerts";
 import Screensaver, { saverItem, type SaverItem } from "@/components/player/Screensaver";
@@ -372,6 +373,8 @@ function PlayerLogin({ notice, onLogin, onExpired }: { notice?: string; onLogin:
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  // QR code: aparece direto na TV e em tela grande; no celular, so se pedir (o celular costuma ser quem le o QR).
+  const [qr, setQr] = useState(() => tvScreenOn() || window.innerWidth >= 768);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -389,12 +392,14 @@ function PlayerLogin({ notice, onLogin, onExpired }: { notice?: string; onLogin:
   return (
     <div className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden px-4 py-10">
       <div className="pointer-events-none absolute inset-0 bg-glow" />
-      <div className="relative w-full max-w-md animate-rise-in">
+      <div className={cn("relative w-full animate-rise-in", qr ? "max-w-md md:max-w-3xl" : "max-w-md")}>
         <div className="mb-8 flex flex-col items-center text-center">
           <Logo className="scale-125" />
           <p className="mt-5 text-sm text-muted-foreground">TV ao vivo, filmes e séries em qualquer tela.</p>
         </div>
-        <div className="rounded-3xl border bg-card/80 p-6 shadow-card backdrop-blur-xl sm:p-8">
+        <div className={cn("rounded-3xl border bg-card/80 p-6 shadow-card backdrop-blur-xl sm:p-8", qr && "md:grid md:grid-cols-2 md:gap-8")}>
+          {qr && <QrLoginPanel onLogin={onLogin} onExpired={onExpired} className="mb-6 border-b pb-6 md:order-2 md:mb-0 md:border-b-0 md:border-l md:pb-0 md:pl-8" />}
+          <div>
           {notice && <p className="mb-4 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-sm font-medium text-warning">{notice}</p>}
           <p className="mb-6 text-sm text-muted-foreground">Entre com o usuário e a senha que você recebeu.</p>
           <form onSubmit={submit} className="space-y-4">
@@ -409,6 +414,12 @@ function PlayerLogin({ notice, onLogin, onExpired }: { notice?: string; onLogin:
               Entrar
             </Button>
           </form>
+          {!qr && (
+            <Button variant="outline" className="mt-3 w-full" type="button" onClick={() => setQr(true)}>
+              <QrCode /> Entrar com QR code
+            </Button>
+          )}
+          </div>
         </div>
         <p className="mt-4 text-center text-xs text-muted-foreground">
           Ao entrar, você concorda com os{" "}

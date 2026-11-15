@@ -86,6 +86,7 @@ export function createMemoryStore() {
     marks: new MemoryCollection(),
     devices: new MemoryCollection(),
     links: new MemoryCollection(),
+    qrlogins: new MemoryCollection(),
     config,
     async getOrCreateSecret(generate) {
       const doc = await config.get("secrets");

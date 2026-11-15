@@ -1,4 +1,5 @@
 import express from "express";
+import qrcode from "qrcode-generator";
 import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -841,6 +842,7 @@ export function privacyCleanup({ force = false } = {}) {
       await db.links.delete(l.id);
       out.links++;
     }
+    for (const q of await db.qrlogins.where("expires_at", "<", nowIso())) await db.qrlogins.delete(q.id);
     await db.config.set("privacy_cleanup", out);
     if (out.devices || out.locks || out.links) console.log(`[rtec] Limpeza (LGPD): ${out.devices} aparelho(s), ${out.locks} registro(s) de login, ${out.links} link(s).`);
     return out;
@@ -2164,6 +2166,139 @@ export function createApp() {
       signClientSession(res, req, c, device);
       assertClientAccess(c);
       res.json(clientProfile(c, device));
+    }),
+  );
+
+  // ---------- Entrar com QR code ----------
+  // A TV (ou o PC) mostra um QR code; o celular ja logado (ou com usuario e senha) aprova, e a TV entra sozinha.
+  // O QR leva so o codigo curto (vale 10 minutos, uso unico); a TV confere com um segredo que so ela tem.
+  const QR_MS = 10 * 60_000;
+  const QR_ABC = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const qrCode = () => Array.from(crypto.randomBytes(8), (b) => QR_ABC[b % QR_ABC.length]).join("");
+  const qrId = (code) => crypto.createHash("sha256").update(`qr|${code}`).digest("hex").slice(0, 40);
+  const qrSecret = (token) => crypto.createHash("sha256").update(`qrpoll|${token}`).digest("hex");
+  const cleanCode = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
+  const qrAlive = (q) => q && Date.parse(q.expires_at) > Date.now();
+
+  app.post(
+    "/api/player/qr",
+    wrap(async (req, res) => {
+      assertLoginAllowed(req, "qr");
+      const ua = String(req.get("user-agent") || "").slice(0, 400);
+      const { name, kind } = describeDevice(ua);
+      const code = qrCode();
+      const token = crypto.randomBytes(24).toString("base64url");
+      const expires_at = new Date(Date.now() + QR_MS).toISOString();
+      await db().qrlogins.set(qrId(code), { state: "waiting", poll: qrSecret(token), name, kind, ip: req.ip || "", expires_at, created_at: nowIso() });
+      const url = `${baseUrl(req)}/q/${code}`;
+      const qr = qrcode(0, "M");
+      qr.addData(url);
+      qr.make();
+      res.json({
+        code,
+        token,
+        url,
+        expires_at,
+        // SVG para o app; GIF para as TVs antigas (tv-antiga.html).
+        svg: qr.createSvgTag({ cellSize: 8, margin: 2, scalable: true }),
+        gif: qr.createDataURL(6, 12),
+      });
+    }),
+  );
+
+  /** A TV pergunta se o celular ja aprovou. Aprovado: entra na conta (uma vez so). */
+  app.post(
+    "/api/player/qr/poll",
+    wrap(async (req, res) => {
+      assertLoginAllowed(req, "qrpoll");
+      const code = cleanCode(req.body?.code);
+      const token = String(req.body?.token || "");
+      const q = code.length === 8 ? await db().qrlogins.get(qrId(code)) : null;
+      if (!q || !sameText(q.poll, qrSecret(token))) {
+        loginFailed(req, "qrpoll");
+        throw new HttpError(404, "Código vencido. Gere um novo QR code.", "qr_expired");
+      }
+      if (!qrAlive(q)) {
+        await db().qrlogins.delete(qrId(code));
+        throw new HttpError(410, "O QR code venceu. Gere um novo.", "qr_expired");
+      }
+      if (q.state === "denied") {
+        await db().qrlogins.delete(qrId(code));
+        throw new HttpError(403, "O acesso foi recusado no celular.", "qr_denied");
+      }
+      if (q.state !== "approved") return res.json({ state: "waiting" });
+      const c = await getClient(q.client_id);
+      if (!c) throw new HttpError(410, "O QR code venceu. Gere um novo.", "qr_expired");
+      if (!c.active) throw new HttpError(403, BLOCKED, "blocked");
+      const before = previousDevice(req);
+      let device;
+      try {
+        // O id do aparelho vem do codigo: duas perguntas ao mesmo tempo, so uma entra.
+        device = await registerDevice(req, c, { by_qr: true }, `qr-${qrId(code).slice(0, 24)}`);
+      } catch (err) {
+        if (err instanceof DuplicateError) throw new HttpError(410, "Este QR code já foi usado. Gere um novo.", "qr_expired");
+        throw err;
+      }
+      await db().qrlogins.delete(qrId(code));
+      // Entrou de novo no mesmo navegador: o aparelho antigo sai da lista.
+      if (before && before.sid !== device.id) {
+        const d = await getDevice(before.sid);
+        if (d && (d.client_id === before.cid || d.client_id === c.id)) await dropDevice(d);
+      }
+      await refreshListStatus(c, { force: true });
+      await touch("clients", c, "last_access_at");
+      signClientSession(res, req, c, device);
+      assertClientAccess(c);
+      res.json({ state: "ok", profile: clientProfile(c, device) });
+    }),
+  );
+
+  /** Celular abriu o QR: mostra qual aparelho esta pedindo para entrar. */
+  async function openQr(req) {
+    await guardLogin(req, "qr");
+    const code = cleanCode(req.body?.code);
+    const q = code.length === 8 ? await db().qrlogins.get(qrId(code)) : null;
+    if (!qrAlive(q) || q.state !== "waiting") {
+      await failLogin(req, "qr");
+      throw new HttpError(404, "Código inválido ou vencido. Gere um novo QR code na TV.", "qr_invalid");
+    }
+    return { code, q };
+  }
+
+  app.post(
+    "/api/player/qr/check",
+    wrap(async (req, res) => {
+      const { q } = await openQr(req);
+      res.json({ name: q.name, kind: q.kind, expires_at: q.expires_at });
+    }),
+  );
+
+  async function approveQr(req, res, c) {
+    const { code } = await openQr(req);
+    if (req.body?.deny) {
+      await db().qrlogins.update(qrId(code), { state: "denied" });
+      return res.json({ ok: true, state: "denied" });
+    }
+    if (!c.active) throw new HttpError(403, BLOCKED, "blocked");
+    await db().qrlogins.update(qrId(code), { state: "approved", client_id: c.id, approved_at: nowIso() });
+    res.json({ ok: true, state: "approved" });
+  }
+
+  // Celular ja logado na conta (nunca uma TV que entrou por link).
+  app.post("/api/player/qr/approve", requireClient, requireOwner, wrap((req, res) => approveQr(req, res, req.client)));
+
+  // Celular sem login: aprova com usuario e senha, sem entrar na conta neste celular.
+  app.post(
+    "/api/player/qr/approve-login",
+    wrap(async (req, res) => {
+      const user = String(req.body?.username || "").slice(0, 200);
+      await guardLogin(req, "player", user);
+      const c = await findClientByLogin(req.body?.username, req.body?.password);
+      if (!c) {
+        await failLogin(req, "player", user);
+        throw new HttpError(401, "Usuario ou senha invalidos");
+      }
+      await approveQr(req, res, c);
     }),
   );
 

@@ -25,7 +25,8 @@
     "cookie-parser": "^1.4.7",
     "express": "^4.22.3",
     "firebase-admin": "^13.10.0",
-    "jsonwebtoken": "^9.0.3"
+    "jsonwebtoken": "^9.0.3",
+    "qrcode-generator": "^1.4.4"
   },
   "devDependencies": {
     "@capacitor/android": "^7.6.9",

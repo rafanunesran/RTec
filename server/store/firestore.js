@@ -128,6 +128,7 @@ export function createFirestoreStore() {
     marks: new FirestoreCollection(db, "episode_marks"),
     devices: new FirestoreCollection(db, "player_devices"),
     links: new FirestoreCollection(db, "player_links"),
+    qrlogins: new FirestoreCollection(db, "player_qr"),
     config: new FirestoreCollection(db, "config"),
     async getOrCreateSecret(generate) {
       return db.runTransaction(async (t) => {

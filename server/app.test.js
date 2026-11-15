@@ -1666,6 +1666,68 @@ test("LGPD: dados do controlador, exportar, apagar uso, pedido de exclusao e lim
   await call("DELETE", `/api/clients/${c.body.id}`);
 });
 
+test("entrar com QR code: celular logado ou com senha aprova, a TV entra uma vez so", async () => {
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  await call("POST", "/api/clients", { username: "qrcasa", password: "pw" });
+  const device = (ua) => {
+    let jar = "";
+    return async (method, url, body) => {
+      const res = await fetch(base + url, { method, headers: { "Content-Type": "application/json", "User-Agent": ua, cookie: jar }, body: body ? JSON.stringify(body) : undefined });
+      const sc = res.headers.get("set-cookie");
+      if (sc) jar = sc.split(";")[0];
+      return { status: res.status, body: await res.json() };
+    };
+  };
+  const celular = device("Mozilla/5.0 (Linux; Android 14; SM-A15) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
+  const tv = device("Mozilla/5.0 (SMART-TV; LINUX; Tizen 7.0) AppleWebKit/537.36 SamsungBrowser/4.0 TV Safari/537.36");
+  const outraTv = device("Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 Chrome/94 Safari/537.36");
+  const amigo = device("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605 Version/17 Mobile Safari/604.1");
+
+  const qr = (await tv("POST", "/api/player/qr")).body;
+  assert.match(qr.code, /^[A-Z2-9]{8}$/);
+  assert.equal(qr.url, `${base}/q/${qr.code}`);
+  assert.match(qr.svg, /^<svg/);
+  assert.match(qr.gif, /^data:image\/gif;base64,/);
+  assert.equal((await tv("POST", "/api/player/qr/poll", { code: qr.code, token: qr.token })).body.state, "waiting");
+  // Sem o segredo da TV, o codigo do QR nao serve para entrar.
+  assert.equal((await outraTv("POST", "/api/player/qr/poll", { code: qr.code, token: "x" })).status, 404);
+
+  // Celular logado ve qual aparelho pede e aprova.
+  const lg = await celular("POST", "/api/player/login", { username: "qrcasa", password: "pw" });
+  assert.equal(lg.status, 200, JSON.stringify(lg));
+  const info = await celular("POST", "/api/player/qr/check", { code: qr.code.toLowerCase().replace(/(....)/, "$1-") });
+  assert.equal(info.body.name, "TV Samsung · Samsung Internet");
+  assert.equal((await celular("POST", "/api/player/qr/check", { code: "ZZZZZZZZ" })).status, 404);
+  const ap = await celular("POST", "/api/player/qr/approve", { code: qr.code });
+  assert.equal(ap.body.state, "approved", JSON.stringify(ap));
+  const entrou = await tv("POST", "/api/player/qr/poll", { code: qr.code, token: qr.token });
+  assert.equal(entrou.status, 200);
+  assert.equal(entrou.body.profile.username, "qrcasa");
+  assert.equal(entrou.body.profile.device.guest, false);
+  assert.equal((await tv("GET", "/api/player/me")).body.username, "qrcasa");
+  // Uso unico.
+  assert.equal((await tv("POST", "/api/player/qr/poll", { code: qr.code, token: qr.token })).status, 404);
+  assert.equal((await celular("POST", "/api/player/qr/approve", { code: qr.code })).status, 404);
+  let list = (await celular("GET", "/api/player/devices")).body.devices;
+  assert.deepEqual(list.map((d) => d.name).sort(), ["Celular Android · Chrome", "TV Samsung · Samsung Internet"]);
+
+  // Celular de outra pessoa, sem login: usuario e senha aprovam sem entrar no celular.
+  const qr2 = (await outraTv("POST", "/api/player/qr")).body;
+  assert.equal((await amigo("POST", "/api/player/qr/approve", { code: qr2.code })).status, 401);
+  assert.equal((await amigo("POST", "/api/player/qr/approve-login", { code: qr2.code, username: "qrcasa", password: "errada" })).status, 401);
+  assert.equal((await amigo("POST", "/api/player/qr/approve-login", { code: qr2.code, username: "qrcasa", password: "pw" })).status, 200);
+  assert.equal((await amigo("GET", "/api/player/me")).status, 401);
+  assert.equal((await outraTv("POST", "/api/player/qr/poll", { code: qr2.code, token: qr2.token })).body.state, "ok");
+
+  // Recusar no celular: a TV fica sabendo.
+  const qr3 = (await amigo("POST", "/api/player/qr")).body;
+  assert.equal((await celular("POST", "/api/player/qr/approve", { code: qr3.code, deny: true })).body.state, "denied");
+  const recusou = await amigo("POST", "/api/player/qr/poll", { code: qr3.code, token: qr3.token });
+  assert.equal(recusou.status, 403);
+  assert.equal(recusou.body.code, "qr_denied");
+});
+
 // Por ultimo: depois deste teste o endereco local fica bloqueado para login de admin por 15 minutos.
 test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
   cookie = "";
@@ -1678,4 +1740,3 @@ test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
   const locks = (await (await import("./store/index.js")).getStore().config.list()).filter((d) => String(d.id).startsWith("lock_"));
   assert.ok(locks.some((d) => d.count >= 8), "erros guardados no banco (valem em todas as instancias da Vercel)");
 });
-

@@ -9,6 +9,7 @@ import Settings from "@/pages/Settings";
 import Servers from "@/pages/Servers";
 import Player from "@/pages/Player";
 import Install from "@/pages/Install";
+import { QrApprovePage } from "@/components/player/QrLogin";
 import { PrivacyPolicy, TermsOfUse } from "@/pages/Privacy";
 
 function Protected() {
@@ -46,6 +47,9 @@ export default function App() {
       <Route path="/" element={<Player />} />
       {/* Link de conexao direta (Configuracoes > Conexoes): a TV abre e ja entra na conta. */}
       <Route path="/c/:token" element={<Player />} />
+      {/* Entrar com QR code: o celular aprova a TV que mostrou o codigo. */}
+      <Route path="/q" element={<QrApprovePage />} />
+      <Route path="/q/:code" element={<QrApprovePage />} />
       <Route path="/instalar" element={<Install />} />
       <Route path="/privacidade" element={<PrivacyPolicy />} />
       <Route path="/termos" element={<TermsOfUse />} />
