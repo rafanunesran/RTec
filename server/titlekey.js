@@ -16,7 +16,7 @@ export function normTitle(name) {
 
 /** "Nome da Serie S01 E02" -> { series: "Nome da Serie", season: 1, episode: 2 } */
 export function episodeInfo(name) {
-  const m = /^(.*?)[\s._-]*S(\d{1,2})\s*E(\d{1,3})\b/i.exec(String(name || ""));
+  const m = /^(.*?)[\s._-]*S(\d{1,2})\s*E(\d{1,4})\b/i.exec(String(name || ""));
   if (!m) return null;
   return { series: m[1].trim() || String(name), season: Number(m[2]), episode: Number(m[3]) };
 }

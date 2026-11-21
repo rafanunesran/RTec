@@ -865,7 +865,7 @@ function Watch({
       .get<Episode[]>(`/api/player/xtream/series/${encodeURIComponent(s.key)}?name=${encodeURIComponent(s.name)}`)
       .then((eps) => setSeries((cur) => (cur?.name === s.name ? { ...cur, episodes: eps } : cur)))
       .catch((err) => {
-        if (!handleAuthError(err)) toast.error("Não foi possível carregar os episódios");
+        if (!handleAuthError(err)) toast.error(`Não foi possível carregar os episódios${err instanceof Error && err.message ? `: ${err.message}` : ""}`);
         setSeries(null);
       });
   };

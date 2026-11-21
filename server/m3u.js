@@ -101,7 +101,7 @@ export function contentKind(url, group = "", name = "", radio = false) {
   if (radio || /\/radio\//.test(path) || /\.(mp3|aac|ogg|oga|opus|m4a)$/.test(path) || RADIO_GROUP.test(group)) return "radio";
   if (/\/live\//.test(path)) return "live";
   if (/\.(mp4|mkv|avi|mov|m4v|webm)$/.test(path)) {
-    return /\bs[eé]ries?\b/i.test(group) || /\bS\d{1,2}\s*E\d{1,3}\b/i.test(name) ? "series" : "movie";
+    return /\bs[eé]ries?\b/i.test(group) || /\bS\d{1,2}\s*E\d{1,4}\b/i.test(name) ? "series" : "movie";
   }
   return "live";
 }

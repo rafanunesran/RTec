@@ -2505,7 +2505,14 @@ export function createApp() {
     wrap(async (req, res) => {
       const c = req.client;
       const cat = requireXtream(c);
-      const episodes = await cat.episodes(req.params.id);
+      let episodes;
+      try {
+        episodes = await cat.episodes(req.params.id);
+      } catch (err) {
+        // Erro do fornecedor (demorou, resposta quebrada): mostra o motivo no aparelho em vez de "Erro interno".
+        console.error(`[rtec] episodios da serie ${req.params.id}:`, err.message);
+        return res.status(502).json({ error: err.message || "O fornecedor nao respondeu" });
+      }
       res.setHeader("Cache-Control", "no-store");
       // parent_series: permite achar o proximo episodio mesmo abrindo pelo historico.
       res.json(episodes.map((ep) => ({ ...xtreamChannel(c, ep, String(req.query.name || ""), directXtream(req), cat.sources), parent_series: req.params.id })));

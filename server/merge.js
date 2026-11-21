@@ -115,6 +115,13 @@ export const variant = (name) => {
 
 const isCinema = (tag) => String(tag || "").endsWith("|CINEMA");
 
+/**
+ * Copia que o fornecedor marcou como fora do ar ("[EM MANUTENCAO]", "Manutenção", "Maintenance"), no nome do
+ * titulo, do episodio ou da categoria. O nome normalizado ignora a marca, entao ela junta com a copia boa: nunca
+ * pode ser a principal (tocava o video de aviso do fornecedor no lugar do episodio).
+ */
+export const isDown = (name) => /\b(manutencao|maintenance|fora do ar)\b/.test(fold(name || ""));
+
 /** O titulo que fica no catalogo herda o que so a copia repetida trazia (nota, ano, genero, capa). */
 function fillIn(dst, src) {
   if (src.rating > (dst.rating || 0)) dst.rating = src.rating;
@@ -182,28 +189,32 @@ export function createCatalog(sources) {
   const index = (section) =>
     memo(`i|${section}`, async () => {
       const dedupe = joins(section);
-      const [{ map }, lists] = await Promise.all([
+      const [{ map, list: catList }, lists] = await Promise.all([
         cats(section),
         Promise.all(provs.map((p, i) => (i ? p.items(section, "").catch(() => []) : p.items(section, "")))),
       ]);
       const entries = [];
       const byKey = new Map();
       const byId = new Map();
+      const downCats = new Set(catList.filter((c) => isDown(c.name)).map((c) => c.id));
       lists.forEach((list, i) => {
         for (const raw of list) {
           const it = { ...raw, category_id: map.get(`${i}|${raw.category_id}`) ?? qualify(i, raw.category_id), _i: i };
           const k = normTitle(it.name);
           it._tag = variant(it.name);
+          if (isDown(it.name) || downCats.has(it.category_id)) it._down = true;
           const same = (e) => (e._i !== i ? i : dedupe) && sameYear(e, it);
           const hit = k ? (byKey.get(k) || []).find(same) : null;
           byId.set(qualify(i, rawId(raw)), hit || it);
           if (hit) {
             hit._cats.add(it.category_id);
-            if (isCinema(hit._tag) && !isCinema(it._tag)) {
-              // A copia de cinema chegou primeiro: a outra passa a ser o titulo (ficha, id e links) e ela vira reserva.
+            if ((isCinema(hit._tag) && !isCinema(it._tag) && !it._down) || (hit._down && !it._down)) {
+              // A copia de cinema (ou em manutencao) chegou primeiro: a outra passa a ser o titulo (ficha, id e
+              // links) e ela vira reserva.
               const { _alts, _cats, ...old } = hit;
               for (const f of Object.keys(old)) delete hit[f];
               Object.assign(hit, it, { _alts: [..._alts, old], _cats });
+              delete hit._named;
               fillIn(hit, old);
               continue;
             }
@@ -258,22 +269,30 @@ export function createCatalog(sources) {
         return (await r.prov.episodes(r.id)).map((ep) => ({ ...ep, _i: r.i }));
       }
       // Reserva de outra lista vem antes da copia repetida na mesma lista (que costuma ser o mesmo arquivo).
-      const group = [entry, ...entry._alts.filter((s) => s._i !== entry._i), ...entry._alts.filter((s) => s._i === entry._i)];
-      const lists = await Promise.all(
-        group.map((s, n) =>
-          provs[s._i]
-            .episodes(s.series_id)
-            .then((eps) => eps.map((ep) => ({ ...ep, _i: s._i, _g: n, _tag: s._tag })))
-            .catch((err) => (n === 0 ? Promise.reject(err) : [])),
-        ),
+      // Copias em manutencao ficam por ultimo.
+      const byList = [entry, ...entry._alts.filter((s) => s._i !== entry._i), ...entry._alts.filter((s) => s._i === entry._i)];
+      const group = [...byList.filter((s) => !s._down && !isDown(s.name)), ...byList.filter((s) => s._down || isDown(s.name))];
+      // Uma copia que falhar (fornecedor demorou, resposta quebrada) nao derruba a serie: so falha se todas falharem.
+      const results = await Promise.allSettled(
+        group.map((s, n) => provs[s._i].episodes(s.series_id).then((eps) => eps.map((ep) => ({ ...ep, _i: s._i, _g: n, _tag: s._tag, ...(s._down || isDown(s.name) ? { _down: true } : {}) })))),
       );
+      if (results.every((r) => r.status === "rejected")) throw results[0].reason;
+      const lists = results.map((r) => (r.status === "fulfilled" ? r.value : []));
       const out = [];
       const byNum = new Map();
+      const down = (ep) => ep._down || isDown(ep.name);
       for (const eps of lists) {
         for (const ep of eps) {
           const k = ep.episode ? `${ep.season}|${ep.episode}` : "";
           const hit = k && byNum.get(k);
           if (hit && hit._g !== ep._g) {
+            if (down(hit) && !down(ep)) {
+              // O episodio que ficou na frente e o aviso de manutencao: o desta copia passa a ser o principal.
+              const { _alts, ...old } = hit;
+              for (const f of Object.keys(old)) delete hit[f];
+              Object.assign(hit, ep, { _alts: [old, ..._alts] });
+              continue;
+            }
             if (ep.url !== hit.url && !hit._alts.some((x) => x.url === ep.url)) hit._alts.push(ep);
             continue;
           }

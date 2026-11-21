@@ -20,7 +20,7 @@ export function normTitle(name: string): string {
 
 /** "Nome da Serie S01 E02" -> { series: "Nome da Serie", season: 1, episode: 2 } */
 export function episodeInfo(name: string) {
-  const m = /^(.*?)[\s._-]*S(\d{1,2})\s*E(\d{1,3})\b/i.exec(name);
+  const m = /^(.*?)[\s._-]*S(\d{1,2})\s*E(\d{1,4})\b/i.exec(name);
   if (!m) return { series: name.trim(), season: 1, episode: 0 };
   return { series: m[1].trim() || name, season: Number(m[2]), episode: Number(m[3]) };
 }
