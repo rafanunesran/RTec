@@ -173,7 +173,31 @@ export type ClientProfile = {
   expires_at: string | null;
   /** Aparelho desta sessao (guest: entrou por link de conexao; ends_at: hora que a conexao acaba). */
   device?: { id: string; name: string; guest: boolean; ends_at: string | null };
+  /** Link assinado do "estou aberto" no servidor de video (contagem de quem esta usando, no Painel). */
+  presence?: string;
 };
+
+/** Painel: clientes e telas usando agora (servidor de video). */
+export type OnlineNow =
+  | { configured: false }
+  | { configured: true; ok: false; error: string }
+  | {
+      configured: true;
+      ok: true;
+      at: string;
+      window_seconds: number;
+      users: number;
+      watching_users: number;
+      devices: number;
+      screens: number;
+      clients: {
+        id: string;
+        name: string;
+        username: string;
+        screens: number;
+        devices: { id: string; name: string; kind: "tv" | "phone" | "computer"; watching: boolean; since: string | null; watching_since: string | null }[];
+      }[];
+    };
 
 /** Aparelho conectado a conta (Configuracoes > Dispositivos). */
 export type PlayerDevice = {

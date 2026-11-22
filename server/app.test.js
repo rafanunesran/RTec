@@ -959,6 +959,65 @@ test("servidor de video separado (Oracle) aceita os links assinados pelo painel"
   }
 });
 
+test("Painel: usuarios e telas usando agora (sinal do reprodutor no servidor de video)", async () => {
+  const { spawn } = await import("node:child_process");
+  // O teste anterior apaga PROXY_SECRET: painel e servidor de video precisam do mesmo segredo.
+  const secret = process.env.PROXY_SECRET;
+  process.env.PROXY_SECRET = "segredo-online";
+  const proxy = spawn(process.execPath, ["public/proxy/server.mjs"], { env: { ...process.env, PORT: "18091", RTEC_PANEL_URL: "" }, stdio: "pipe" });
+  process.env.STREAM_PROXY_URL = "http://127.0.0.1:18091";
+  try {
+    await new Promise((ok) => proxy.stdout.on("data", (d) => String(d).includes("rodando") && ok()));
+    cookie = "";
+    await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+    await call("POST", "/api/clients", { username: "online1", password: "pw", name: "Cliente Online" });
+    const admin = cookie;
+    let r = await call("GET", "/api/admin/online");
+    assert.equal(r.body.ok, true);
+    assert.equal(r.body.users, 0);
+
+    // Dois aparelhos da mesma conta: um assistindo (TV), outro so navegando
+    cookie = "";
+    const tv = await fetch(base + "/api/player/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) SamsungBrowser/3.0 TV" },
+      body: JSON.stringify({ username: "online1", password: "pw" }),
+    }).then((x) => x.json());
+    assert.match(tv.presence, /^http:\/\/127\.0\.0\.1:18091\/api\/player\/ping\?/);
+    assert.equal((await fetch(tv.presence + "&w=1")).status, 204);
+    const phone = (await call("POST", "/api/player/login", { username: "online1", password: "pw" })).body;
+    assert.equal((await fetch(phone.presence)).status, 204);
+    // Link adulterado nao conta
+    const forged = new URL(phone.presence);
+    forged.searchParams.set("c", "outro");
+    assert.equal((await fetch(forged)).status, 403);
+
+    cookie = admin;
+    r = await call("GET", "/api/admin/online");
+    assert.equal(r.body.users, 1);
+    assert.equal(r.body.devices, 2);
+    assert.equal(r.body.screens, 1);
+    assert.equal(r.body.clients[0].name, "Cliente Online");
+    assert.equal(r.body.clients[0].devices[0].kind, "tv");
+    assert.equal(r.body.clients[0].devices[0].watching, true);
+
+    // App fechado sai da conta na hora
+    await fetch(tv.presence + "&x=1");
+    r = await call("GET", "/api/admin/online");
+    assert.equal(r.body.devices, 1);
+    assert.equal(r.body.screens, 0);
+    // Cliente nao ve a contagem
+    cookie = "";
+    await call("POST", "/api/player/login", { username: "online1", password: "pw" });
+    assert.equal((await call("GET", "/api/admin/online")).status, 401);
+  } finally {
+    delete process.env.STREAM_PROXY_URL;
+    if (secret === undefined) delete process.env.PROXY_SECRET;
+    else process.env.PROXY_SECRET = secret;
+    proxy.kill();
+  }
+});
+
 test("sincronizacao: favoritos, historico e ponto onde parou valem em qualquer aparelho da conta", async () => {
   cookie = "";
   await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });

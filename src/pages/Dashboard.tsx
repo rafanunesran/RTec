@@ -6,6 +6,7 @@ import { formatDate } from "@/lib/utils";
 import { daysUntil } from "@/lib/payments";
 import { Card, Skeleton, StatCard } from "@/components/ui";
 import PageHeader from "@/components/PageHeader";
+import OnlineNowCard from "@/components/OnlineNowCard";
 
 const steps: [string, ReactNode][] = [
   [
@@ -89,6 +90,7 @@ export default function Dashboard() {
           <ChevronRight className="h-4 w-4 shrink-0" />
         </Link>
       )}
+      <OnlineNowCard />
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {cards.map(({ label, value, icon, to, tone }) => (
           <Link key={label} to={to}>

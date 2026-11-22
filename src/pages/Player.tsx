@@ -35,6 +35,7 @@ import { CastBar, CastButton, CastDialog, CastRemote, WhereDialog } from "@/comp
 import { DownloadButton, DownloadsDialog, OfflinePage } from "@/components/player/Downloads";
 import { deleteDownloads, downloadsCount, loadDownloadConfig, loadDownloads, renewDownloads, useDownloads, useDownloadsEnabled } from "@/lib/downloads";
 import { MAIN_PROFILE, fetchProfiles, lastProfile, rememberProfile, scoped, setStorageProfile, type ProfilesResponse, type Viewer } from "@/lib/profiles";
+import { startPresence, stopPresence } from "@/lib/presence";
 
 const FAVORITES = "__favoritos__";
 const HISTORY = "__historico__";
@@ -216,6 +217,13 @@ export default function Player() {
       })
       .finally(() => setChecking(false));
   }, []);
+
+  // "Estou aberto" para o Painel do admin (quantos clientes e telas estao usando agora).
+  const presence = profile?.presence;
+  useEffect(() => {
+    startPresence(presence);
+    return stopPresence;
+  }, [presence]);
 
   // Conexao por link com tempo: na hora marcada o aparelho sai sozinho da conta.
   const endsAt = profile?.device?.ends_at;

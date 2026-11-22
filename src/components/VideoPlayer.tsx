@@ -3,6 +3,7 @@ import { AlertTriangle, Loader2, Radio, RotateCw, Tv, VolumeX } from "lucide-rea
 import { cn } from "@/lib/utils";
 import type { Channel } from "@/lib/api";
 import { watchFullscreenOrientation } from "@/lib/orientation";
+import { setWatching } from "@/lib/presence";
 import { tvScreenOn } from "@/lib/tvnav";
 import { boostable, boostAttached, dropBoost, setBoost, setNativeBoost } from "@/lib/boost";
 
@@ -236,6 +237,11 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
   const force = useRef<() => boolean>(() => false); // tenta deixar o audio legivel para o reforco
 
   useEffect(() => watchFullscreenOrientation(), []);
+  // Tela em uso: conta no Painel do admin (servidor de video).
+  useEffect(() => {
+    setWatching(true);
+    return () => setWatching(false);
+  }, []);
 
   // Callbacks em ref: trocar a funcao nao reinicia o video.
   const cb = useRef({ onProgress, onEnded, startAt });

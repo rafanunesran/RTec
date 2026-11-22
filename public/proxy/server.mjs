@@ -421,6 +421,58 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// ---------- Quem esta usando agora (Painel do admin) ----------
+// O reprodutor manda um "ping" a cada minuto enquanto o app esta aberto (w=1 com video na tela). Fica so na
+// memoria deste servidor (nada vai para o banco); aparelho sem ping ha mais de 3 min sai da conta.
+const ONLINE_MS = 3 * 60_000;
+const presence = new Map();
+const KINDS = new Set(["tv", "phone", "computer"]);
+
+function prunePresence() {
+  const limit = Date.now() - ONLINE_MS;
+  for (const [id, p] of presence) if (p.at < limit) presence.delete(id);
+}
+
+/** /api/player/ping?c&d&k&n&e&s(&w=1)(&x=1): assinado pelo painel com u="ping|<d>|<k>|<n>". */
+function pingRoute(url, res) {
+  const { c, d = "", k = "", n = "", e, s } = Object.fromEntries(url.searchParams);
+  if (!d || !valid(c, e, `ping|${d}|${k}|${n}`, s)) return send(res, 403, "Link invalido ou expirado");
+  const now = Date.now();
+  const watching = url.searchParams.get("w") === "1";
+  // x=1: o app fechou (aba fechada, saiu da conta).
+  if (url.searchParams.get("x") === "1") presence.delete(d);
+  else {
+    const last = presence.get(d);
+    const old = last && last.at >= now - ONLINE_MS ? last : null;
+    if (!old && presence.size >= 20000) prunePresence();
+    presence.set(d, {
+      c,
+      k: KINDS.has(k) ? k : "computer",
+      n: n.slice(0, 80),
+      at: now,
+      w: watching,
+      since: old?.since || now,
+      w_since: watching ? (old?.w && old.w_since) || now : 0,
+    });
+  }
+  res.writeHead(204, { "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" });
+  res.end();
+}
+
+/** /api/player/online?c&e&s (assinado pelo painel com u="online"): aparelhos com o app aberto agora. */
+function onlineRoute(url, res) {
+  const { c, e, s } = Object.fromEntries(url.searchParams);
+  if (!valid(c, e, "online", s)) return send(res, 403, "Link invalido ou expirado");
+  prunePresence();
+  const iso = (t) => (t ? new Date(t).toISOString() : null);
+  json(res, 200, {
+    ok: true,
+    window_seconds: ONLINE_MS / 1000,
+    streaming,
+    devices: [...presence].map(([d, p]) => ({ d, c: p.c, kind: p.k, name: p.n, watching: p.w, seen_at: iso(p.at), since: iso(p.since), watching_since: iso(p.w_since) })),
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://local");
   if (url.pathname === "/health") return send(res, 200, "ok");
@@ -433,6 +485,8 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/api/player/marks") return marksRoute(url, res);
   if (url.pathname === "/api/player/status") return statusRoute(url, res);
+  if (url.pathname === "/api/player/ping") return pingRoute(url, res);
+  if (url.pathname === "/api/player/online") return onlineRoute(url, res);
   if (url.pathname !== "/api/player/proxy" && url.pathname !== "/api/player/aac") return send(res, 404, "not found");
   const { c, e, s } = Object.fromEntries(url.searchParams);
   const token = url.searchParams.get("u") || "";

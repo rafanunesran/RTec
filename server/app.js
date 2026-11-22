@@ -527,12 +527,28 @@ function hideChannel(c, ch, servers) {
 }
 
 function clientProfile(c, d) {
+  const presence = d && presenceLink(c, d);
   return {
     name: c.name,
     username: c.username,
     expires_at: c.expires_at,
     ...(d && { device: { id: d.id, name: d.name, guest: !!d.guest, ends_at: d.expires_at || null } }),
+    ...(presence && { presence }),
   };
+}
+
+// ---------- Quem esta usando agora (Painel) ----------
+// O reprodutor avisa o servidor de video (Oracle) a cada minuto que esta aberto e se tem video na tela. A
+// contagem fica so na memoria de la: nenhuma gravacao no Firestore e nada passa pela Vercel.
+const PRESENCE_TTL_SECONDS = 7 * 24 * 3600;
+function presenceLink(c, d) {
+  const base = proxyBase();
+  if (!base) return null;
+  const e = Math.ceil((Date.now() / 1000 + PRESENCE_TTL_SECONDS) / 3600) * 3600;
+  const k = ["tv", "phone", "computer"].includes(d.kind) ? d.kind : "computer";
+  const n = String(d.name || "").slice(0, 80);
+  const q = new URLSearchParams({ c: c.id, d: d.id, k, n, e: String(e), s: signUrl(c.id, e, `ping|${d.id}|${k}|${n}`) });
+  return `${base}/api/player/ping?${q}`;
 }
 
 // Publicado (Vercel), o cookie de sessao so viaja por https.
@@ -1433,6 +1449,63 @@ export function createApp() {
       } catch (err) {
         res.json({ configured: true, host, ok: false, error: `Sem resposta do servidor de video (${err.cause?.code || err.name})` });
       }
+    }),
+  );
+
+  // Quantos clientes e telas estao usando agora (contagem do servidor de video). Nome e login dos clientes
+  // ficam num cache curto, para o painel atualizar a cada 30 s sem gastar leituras do Firestore.
+  const onlineNames = new Map();
+  async function onlineClient(id) {
+    const hit = onlineNames.get(id);
+    if (hit && Date.now() - hit.at < 3600_000) return hit.c;
+    const doc = await db().clients.get(id).catch(() => null);
+    const c = doc ? { id, name: doc.name || "", username: doc.username } : { id, name: "", username: "(cliente apagado)" };
+    onlineNames.set(id, { at: Date.now(), c });
+    if (onlineNames.size > 5000) onlineNames.delete(onlineNames.keys().next().value);
+    return c;
+  }
+  app.get(
+    "/api/admin/online",
+    requireAdmin,
+    wrap(async (_req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      const base = proxyBase();
+      if (!base) return res.json({ configured: false });
+      const exp = Math.ceil(Date.now() / 1000) + 300;
+      const q = new URLSearchParams({ c: "admin", e: String(exp), s: signUrl("admin", exp, "online") });
+      let data;
+      try {
+        const r = await fetch(`${base}/api/player/online?${q}`, { signal: AbortSignal.timeout(10000) });
+        if (r.status === 404) return res.json({ configured: true, ok: false, error: "O servidor de vídeo ainda está na versão antiga (a atualização automática troca em até 15 min)." });
+        if (!r.ok) return res.json({ configured: true, ok: false, error: `O servidor de vídeo respondeu HTTP ${r.status}` });
+        data = await r.json();
+      } catch (err) {
+        return res.json({ configured: true, ok: false, error: `Sem resposta do servidor de vídeo (${err.cause?.code || err.name})` });
+      }
+      const byClient = new Map();
+      for (const d of data.devices || []) {
+        if (!byClient.has(d.c)) byClient.set(d.c, []);
+        byClient.get(d.c).push({ id: d.d, name: d.name, kind: d.kind, watching: !!d.watching, since: d.since, watching_since: d.watching_since });
+      }
+      const clients = await Promise.all(
+        [...byClient].map(async ([id, devices]) => ({
+          ...(await onlineClient(id)),
+          devices: devices.sort((a, b) => Number(b.watching) - Number(a.watching) || String(a.since).localeCompare(String(b.since))),
+          screens: devices.filter((d) => d.watching).length,
+        })),
+      );
+      clients.sort((a, b) => b.screens - a.screens || b.devices.length - a.devices.length || (a.name || a.username).localeCompare(b.name || b.username));
+      res.json({
+        configured: true,
+        ok: true,
+        at: nowIso(),
+        window_seconds: data.window_seconds || 180,
+        users: clients.length,
+        watching_users: clients.filter((c) => c.screens > 0).length,
+        devices: clients.reduce((n, c) => n + c.devices.length, 0),
+        screens: clients.reduce((n, c) => n + c.screens, 0),
+        clients,
+      });
     }),
   );
 

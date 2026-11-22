@@ -174,8 +174,9 @@
       var u = document.getElementById("u").value, p = document.getElementById("p").value;
       if (!u || !p) return false;
       app.getElementsByTagName("p")[0].innerHTML = "Entrando...";
-      api("POST", "/api/player/login", { username: u, password: p }, function (err) {
+      api("POST", "/api/player/login", { username: u, password: p }, function (err, data) {
         if (err) return loginScreen(err.status === 401 ? "Usuario ou senha incorretos." : err.message);
+        presence(data);
         store("rtec:lite:user", u);
         state.catalog = null;
         go("home");
@@ -443,9 +444,21 @@
     home();
   }
 
+  // "Estou aberto" para o Painel do admin (usuarios e telas usando agora), a cada minuto no servidor de video.
+  var presenceTimer = null;
+  function presence(data) {
+    var url = data && data.presence;
+    clearInterval(presenceTimer);
+    if (!url) return;
+    var ping = function () { new Image().src = url + "&w=" + (player.style.display === "block" ? 1 : 0) + "&t=" + new Date().getTime(); };
+    ping();
+    presenceTimer = setInterval(ping, 60000);
+  }
+
   // Abertura: confere se ja tem sessao (cookie) antes de pedir login.
   function start(notice) {
-    api("GET", "/api/player/me", null, function (err) {
+    api("GET", "/api/player/me", null, function (err, data) {
+      if (!err) presence(data);
       if (err && (err.status === 401 || err.status === 403)) {
         if (location.hash !== "#login") location.replace("#login");
         return loginScreen(notice || (err.status === 403 || err.code === "disconnected" || err.code === "connection_ended" ? err.message : ""));
