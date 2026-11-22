@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useRef, useSyncExternalStore } from "react";
 import type { Channel } from "@/lib/api";
 import { scoped } from "@/lib/profiles";
 import { titleKey } from "@/lib/titlekey";
@@ -110,14 +110,22 @@ function write(all: Record<string, Progress>) {
   listeners.forEach((l) => l());
 }
 
-/** Re-renderiza o componente quando algum progresso muda. */
-export function useProgressVersion() {
-  return useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => cache,
-    () => cache,
-  );
+/**
+ * Re-renderiza o componente quando algum progresso muda. paused: com o video aberto o progresso e salvo a cada
+ * 5 s; re-renderizar a tela inteira de tras (catalogo) a cada vez deixava TVs e celulares fracos lentos e o video
+ * engasgando. Pausado, so pega o progresso novo na proxima vez que renderizar (ao fechar o video).
+ */
+export function useProgressVersion(paused = false) {
+  const hold = useRef(paused);
+  hold.current = paused;
+  const subscribe = useCallback((l: () => void) => {
+    const f = () => {
+      if (!hold.current) l();
+    };
+    listeners.add(f);
+    return () => {
+      listeners.delete(f);
+    };
+  }, []);
+  return useSyncExternalStore(subscribe, () => cache, () => cache);
 }

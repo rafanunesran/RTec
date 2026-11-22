@@ -313,7 +313,9 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     if (aacSrc) paths.push({ src: aacSrc, type: "mpegts", label: "servidor com o som convertido", list: -1, aac: true });
     let step = resume?.step ?? 0;
     let active = { src: resume?.src ?? channel.src, type: resume?.type ?? channel.type };
-    const seekTo = resume ? resume.at : cb.current.startAt;
+    // Ponto para continuar (filmes/episodios): comeca no salvo e acompanha o video. Se o caminho cair e o
+    // reprodutor recarregar (mesmo link ou plano B), volta de onde estava, e nao do inicio/ponto salvo.
+    let seekTo = resume ? resume.at : cb.current.startAt;
     /** Recria o <video> e continua do mesmo caminho e do mesmo ponto. */
     const remount = (cors: boolean) => {
       carry.current = { ...active, step, at: live ? 0 : video.currentTime };
@@ -328,6 +330,8 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     };
     let playedAt = 0; // quando comecou a tocar (para saber se a queda foi depois de funcionar)
     let reconnects = 0;
+    let vodRetries = 0; // filme/episodio que ja tocou e caiu: tenta o mesmo caminho antes do plano B
+    let waits = 0; // filme ainda chegando (servidor lento): espera mais um pouco antes do plano B
     let firstError = ""; // o motivo da primeira tentativa e o mais util
     const steps: string[] = [];
     let lastSaved = 0;
@@ -363,8 +367,20 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
       stop?.();
       stop = undefined;
       clearTimers();
+      waits = 0;
       // Se nao comecar a tocar em alguns segundos, passa para o proximo caminho (plano B).
-      watchdog = setTimeout(() => !cancelled && fail(channel!.kind === "radio" ? "A rádio não começou a tocar (sem som depois de 15 s)." : "O canal não começou a tocar (sem imagem depois de 15 s)."), live ? 15000 : 25000);
+      const timeout = () => {
+        if (cancelled) return;
+        // Filme que ja abriu (sabe a duracao) ou ainda esta baixando: o servidor esta lento, nao fora do ar.
+        // Trocar de caminho agora so recomeca o carregamento do zero: espera mais (ate 2 x 15 s).
+        if (!live && waits < 2 && (video.readyState >= 1 || video.buffered.length > 0)) {
+          waits++;
+          watchdog = setTimeout(timeout, 15000);
+          return;
+        }
+        fail(channel!.kind === "radio" ? "A rádio não começou a tocar (sem som depois de 15 s)." : live ? "O canal não começou a tocar (sem imagem depois de 15 s)." : "O vídeo não começou a tocar (o servidor demorou demais para mandar a imagem).");
+      };
+      watchdog = setTimeout(timeout, live ? 15000 : 25000);
       delete video.dataset.acodec;
       try {
         const s = await attach(video, src, type, fail);
@@ -389,6 +405,18 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
           playedAt = 0;
           setState("loading");
           setTimeout(() => !cancelled && start(active.src, active.type), 500);
+          return;
+        }
+      }
+      // Filme/episodio que ja estava tocando e caiu (rede oscilou, servidor reiniciou): tenta o mesmo caminho
+      // de novo, do mesmo ponto, antes de passar para o plano B.
+      if (!live && playedAt) {
+        if (video!.currentTime > 1) seekTo = video!.currentTime;
+        if (vodRetries < 2) {
+          vodRetries++;
+          playedAt = 0;
+          setState("loading");
+          setTimeout(() => !cancelled && start(active.src, active.type), vodRetries === 1 ? 2000 : 5000);
           return;
         }
       }
@@ -501,6 +529,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
     };
     const onTime = () => {
       if (live || !Number.isFinite(video.duration)) return;
+      if (video.currentTime > 1 && !video.seeking) seekTo = video.currentTime;
       const now = Date.now();
       if (now - lastSaved < 5000) return;
       lastSaved = now;

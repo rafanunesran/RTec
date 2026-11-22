@@ -558,10 +558,11 @@ function Watch({
   const [allTerm, setAllTerm] = useState("");
   const [allRes, setAllRes] = useState<{ key: string; loading: boolean; data: Record<Section, { total: number; items: Channel[] }> } | null>(null);
   const pendingSeries = useRef<{ key: string; name: string; logo: string; sub: string; episodes: Episode[] | null } | null>(null);
-  useProgressVersion();
   const seasonsVersion = useSeasonsVersion();
   const [playlistId, setPlaylistId] = useState("");
   const [current, setCurrent] = useState<Channel | null>(null);
+  // Com o video aberto, o progresso salvo a cada 5 s nao re-renderiza o catalogo de tras (pega ao fechar).
+  useProgressVersion(!!current);
   const [group, setGroup] = useState("");
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(PAGE);
