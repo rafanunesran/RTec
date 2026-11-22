@@ -21,7 +21,7 @@ const src = http.createServer((req,res)=>{ const q=new URL(req.url,"http://x").s
    if (id==="10") return j({episodes:{1:[ep(100,1,"Em manutenção")]}});
    if (id==="11") return j({episodes:{1:[ep(110,1,"Ep 1"),ep(111,2,"Ep 2")]}});
    if (id==="20") return res.writeHead(200,{"Content-Type":"text/html"}).end("<b>Fatal error</b>: Allowed memory size exhausted");
-   if (id==="21") return j({episodes:{1:[ep(210,1,"Ep 1"),ep(211,1001,"Ep 1001")]}});
+   if (id==="21") return j({episodes:{1:[ep(210,1,"Ep 1"),{...ep(211,1001,"Ep 1001"),direct_source:"http://cdn.example/op1001.mp4"}]}});
    if (id==="30") return res.writeHead(500).end("x");
  } } res.end("[]"); }).listen(0);
 const api = createApp().listen(0); const base=`http://127.0.0.1:${api.address().port}`; let cookie="";
@@ -40,12 +40,16 @@ test("copia em manutencao nunca fica na frente; copia que falha nao derruba a se
   const bbt = (await eps("11")).body;
   assert.deepEqual(bbt.map((e) => [e.episode, file(e.src)]), [[1, "110.mp4"], [2, "111.mp4"]], "toca o episodio bom, nao o aviso");
   assert.deepEqual(bbt[0].more.map((m) => file(m.src)), ["100.mp4"], "a copia em manutencao fica so de reserva");
+  // Nome de cada lista para o cliente trocar na mao no reprodutor.
+  assert.equal(bbt[0].from, "Lista");
+  assert.equal(bbt[0].more[0].from, "Lista · outra cópia");
   // Pelo id antigo (historico/favoritos da copia em manutencao) tambem abre a boa.
   assert.equal(file((await eps("10")).body[0].src), "110.mp4");
 
   const op = await eps("21");
   assert.equal(op.status, 200, "copia na categoria EM MANUTENCAO responde HTML e mesmo assim a serie abre");
   assert.deepEqual(op.body.map((e) => e.episode), [1, 1001]);
+  assert.equal(plain(op.body[1].alt), "http://cdn.example/op1001.mp4", "link proprio do painel vira plano B");
 
   const broken = await eps("30");
   assert.equal(broken.status, 502);

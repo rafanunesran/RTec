@@ -32,7 +32,27 @@ export function saveVersionPref(tag: string) {
 
 /** O titulo tocando na versao escolhida (links, reservas e tag dela). */
 export function withVersion(c: Channel, v: Version): Channel {
-  return { ...c, src: v.src, type: v.type, alt: v.alt, alt_type: v.alt_type, fallback: v.fallback, more: v.more, tag: v.tag };
+  return { ...c, src: v.src, type: v.type, alt: v.alt, alt_type: v.alt_type, fallback: v.fallback, from: v.from, more: v.more, tag: v.tag };
+}
+
+/** Listas que tem o titulo tocando: a atual primeiro, depois as reservas ("more"), com nomes sem repetir. */
+export function sourceLabels(c: Channel): string[] {
+  const raw = [c.from || "Lista 1", ...(c.more || []).map((m, n) => m.from || `Lista ${n + 2}`)];
+  const seen = new Map<string, number>();
+  return raw.map((l) => {
+    const n = (seen.get(l) || 0) + 1;
+    seen.set(l, n);
+    return n > 1 ? `${l} (${n})` : l;
+  });
+}
+
+/** Troca na mao para a reserva n (1 = primeira de "more"): ela vira a principal e a atual fica por ultimo. */
+export function withSource(c: Channel, n: number): Channel {
+  const m = c.more?.[n - 1];
+  if (!m) return c;
+  const self = { src: c.src, type: c.type, alt: c.alt, alt_type: c.alt_type, fallback: c.fallback, from: c.from || "Lista 1" };
+  const rest = (c.more || []).filter((_, i) => i !== n - 1);
+  return { ...c, src: m.src, type: m.type, alt: m.alt, alt_type: m.alt_type, fallback: m.fallback, from: m.from || `Lista ${n + 1}`, more: [...rest, self] };
 }
 
 /** Versao pelas marcas do nome (mesma regra do servidor): "Filme [L] 4K" -> "L|4K". */

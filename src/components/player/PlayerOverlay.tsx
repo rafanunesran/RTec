@@ -21,7 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { api, type Channel, type EpisodeMarks, type Version } from "@/lib/api";
-import { singleVersion } from "@/lib/versions";
+import { singleVersion, sourceLabels } from "@/lib/versions";
 import { cn } from "@/lib/utils";
 import { fraction, resumeAt, saveProgress, WATCHED_AT } from "@/lib/progress";
 import VideoPlayer, { type BoostState } from "@/components/VideoPlayer";
@@ -83,6 +83,7 @@ export default function PlayerOverlay({
   info,
   onCast,
   onVersion,
+  onSource,
   children,
 }: {
   channel: Channel;
@@ -101,6 +102,8 @@ export default function PlayerOverlay({
   onCast?: () => void;
   /** Trocou a versao (dublado, legendado, 4K...): continua do mesmo ponto. */
   onVersion?: (v: Version) => void;
+  /** Trocou na mao para outra lista que tem o mesmo titulo (n = posicao em channel.more, a partir de 1). */
+  onSource?: (n: number) => void;
   /** Janelas abertas por cima do player (ficam dentro dele para aparecer em tela cheia). */
   children?: ReactNode;
 }) {
@@ -815,6 +818,17 @@ export default function PlayerOverlay({
           tracks={tracks}
           versions={versions}
           current={channel.tag ?? versions?.[0]?.tag}
+          sources={channel.more?.length && onSource ? sourceLabels(channel) : null}
+          onSource={(n) => {
+            const v = video();
+            if (v && isVod && v.duration > 0) {
+              saveProgress(channel, v.currentTime, v.duration);
+              switchAt.current = { id: channel.id, at: v.currentTime };
+            }
+            setPanel(null);
+            onSource?.(n);
+            say(`Tocando pela ${sourceLabels(channel)[n]}`);
+          }}
           onVersion={(ver) => {
             const v = video();
             if (v && isVod && v.duration > 0) {
@@ -1009,6 +1023,8 @@ export function TracksPanel({
   versions,
   current,
   onVersion,
+  sources,
+  onSource,
   onAudio,
   onText,
   onClose,
@@ -1018,6 +1034,9 @@ export function TracksPanel({
   versions?: Version[] | null;
   current?: string;
   onVersion?: (v: Version) => void;
+  /** Listas que tem o titulo (a atual primeiro), quando tem mais de uma. */
+  sources?: string[] | null;
+  onSource?: (n: number) => void;
   onAudio: (id: number) => void;
   onText: (id: number) => void;
   onClose: () => void;
@@ -1043,6 +1062,12 @@ export function TracksPanel({
           <div className="space-y-1">
             <div className="px-1 text-xs font-semibold uppercase tracking-wider text-white/50">Versão</div>
             {versions.map((v, n) => row({ id: n, label: v.label, active: v.tag === current }, () => v.tag !== current && onVersion(v)))}
+          </div>
+        )}
+        {sources && sources.length > 1 && onSource && (
+          <div className="space-y-1">
+            <div className="px-1 text-xs font-semibold uppercase tracking-wider text-white/50">Lista</div>
+            {sources.map((l, n) => row({ id: 100 + n, label: l, active: n === 0 }, () => n > 0 && onSource(n)))}
           </div>
         )}
         {/* Sempre aparece: com uma faixa so (ou nenhuma informada), mostra a unica que existe. */}

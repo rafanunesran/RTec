@@ -16,7 +16,7 @@ import { episodeInfo, lastEpisodePerSeries, seriesKeyOf } from "@/lib/titlekey";
 import { listChanged, onRemoteList, startSync } from "@/lib/sync";
 import { refreshChannels } from "@/lib/links";
 import VersionPicker from "@/components/player/VersionPicker";
-import { preferredVersion, saveVersionPref, withVersion } from "@/lib/versions";
+import { preferredVersion, saveVersionPref, withSource, withVersion } from "@/lib/versions";
 import { warmPlayer } from "@/lib/warm";
 import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
@@ -1895,6 +1895,7 @@ function Watch({
             saveVersionPref(v.tag);
             setCurrent((c) => (c ? withVersion(c, v) : c));
           }}
+          onSource={(n) => setCurrent((c) => (c ? withSource(c, n) : c))}
           onCast={
             tv
               ? undefined

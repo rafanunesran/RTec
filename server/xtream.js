@@ -128,6 +128,12 @@ function metaInfo(it) {
   return out;
 }
 
+/** Link proprio do arquivo que alguns paineis informam (direct_source): plano B se o caminho padrao der 404. */
+const directSource = (it) => {
+  const s = String(it?.direct_source || "").trim();
+  return /^https?:\/\//i.test(s) ? { alt_url: s } : {};
+};
+
 const ext = (v, fallback) => (/^[a-z0-9]{2,5}$/i.test(String(v || "")) ? String(v).toLowerCase() : fallback);
 
 /** Itens de uma categoria (ou todos os canais ao vivo, sem categoria) ja com o link do video. */
@@ -154,6 +160,7 @@ export async function items(creds, section, categoryId) {
         name: it.name || it.title || "",
         logo: it.stream_icon || "",
         url: `${base}/${it.stream_id}.${ext(it.container_extension, "mp4")}`,
+        ...directSource(it),
         category_id: String(it.category_id ?? ""),
         ...sortInfo(it),
         ...metaInfo(it),
@@ -188,6 +195,7 @@ export async function seriesEpisodes(creds, seriesId) {
         logo: ep.info?.movie_image || data?.info?.cover || "",
         cover: data?.info?.cover || "",
         url: `${base}/${ep.id}.${ext(ep.container_extension, "mp4")}`,
+        ...directSource(ep),
       });
     }
   }

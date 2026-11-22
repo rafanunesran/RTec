@@ -1026,12 +1026,17 @@ function playLinks(c, item, p, app) {
 const MAX_MORE = 4;
 
 /** Servidores irmaos: o mesmo video no outro endereco, tentado primeiro se este nao tocar. */
-function siblingLinks(c, item, p, app) {
+function siblingLinks(c, item, p, app, srcs = []) {
   if (!item?.url || !failover.groups.length) return [];
   return siblingsOf(failover.groups, originOf(item.url))
     .slice(0, 2)
-    .map((to) => playLinks(c, { ...item, url: swapOrigin(item.url, to), alt_url: item.alt_url ? swapOrigin(item.alt_url, to) : "" }, p, app));
+    .map((to) => ({ ...playLinks(c, { ...item, url: swapOrigin(item.url, to), alt_url: item.alt_url ? swapOrigin(item.alt_url, to) : "" }, p, app), from: `${listName(srcs, item._i)} · outro endereço` }));
 }
+
+/** Nome da lista de onde vem um link, para o cliente trocar na mao no reprodutor ("Lista 2"). */
+const listName = (srcs, i = 0) => (srcs.length > 1 ? `Lista ${(i || 0) + 1}` : "Lista");
+/** Link de reserva com o nome da lista (copia repetida na mesma lista do principal: "outra cópia"). */
+const altLinks = (c, a, srcs, app, mainI) => ({ ...playLinks(c, a, srcs[a._i], app), from: (a._i || 0) === (mainI || 0) ? `${listName(srcs, a._i)} · outra cópia` : listName(srcs, a._i) });
 
 /**
  * Converte um item do catalogo no formato de canal usado pelo reprodutor. srcs: listas do catalogo (o item diz
@@ -1049,8 +1054,8 @@ function xtreamChannel(c, item, group, app = false, srcs = [c.source]) {
   // Versao "cinema" so toca se for escolhida: com outra versao, a outra e a padrao.
   const main = versions && isCinema(item._tag) ? versions.find((v) => !isCinema(v.tag)) : null;
   const tag = main ? main.tag : item._tag || "|";
-  const others = main ? main.more || [] : (versions ? alts.filter((a) => (a._tag || "|") === tag) : alts).slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app));
-  const more = main ? others : [...siblingLinks(c, item, p, app), ...others];
+  const others = main ? main.more || [] : (versions ? alts.filter((a) => (a._tag || "|") === tag) : alts).slice(0, MAX_MORE).map((a) => altLinks(c, a, srcs, app, i));
+  const more = main ? others : [...siblingLinks(c, item, p, app, srcs), ...others];
   return {
     id: i ? hashId(c.id, p.key, item.kind, item.stream_id) : hashId(c.id, item.kind, item.stream_id),
     name: item.name,
@@ -1058,6 +1063,7 @@ function xtreamChannel(c, item, group, app = false, srcs = [c.source]) {
     logo: logoUrl(c.id, item.logo || (item._alts || []).find((a) => a.logo)?.logo),
     ...playLinks(c, item, p, app),
     ...(main ? { src: main.src, type: main.type, alt: main.alt, alt_type: main.alt_type, fallback: main.fallback } : {}),
+    ...(more.length ? { from: main ? main.from : listName(srcs, i) } : {}),
     kind: item.kind,
     // Lista M3U comum: guia pelo tvg-id (XMLTV); Xtream: pela API do fornecedor.
     epg_id: item.kind !== "live" ? "" : item.tvg_id != null ? item.tvg_id : `xt:${pre}${item.stream_id}`,
@@ -1097,8 +1103,8 @@ function versionsOf(c, item, alts, srcs, app) {
   const quals = new Set(tags.map((t) => t.split("|")[1])).size > 1;
   return tags.map((tag) => {
     const [first, ...rest] = all.filter((a) => (a._tag || "|") === tag);
-    const more = [...siblingLinks(c, first, srcs[first._i], app), ...rest.slice(0, MAX_MORE).map((a) => playLinks(c, a, srcs[a._i], app))];
-    return { tag, label: versionLabel(tag, langs, quals), ...playLinks(c, first, srcs[first._i], app), ...(more.length ? { more } : {}) };
+    const more = [...siblingLinks(c, first, srcs[first._i], app, srcs), ...rest.slice(0, MAX_MORE).map((a) => altLinks(c, a, srcs, app, first._i))];
+    return { tag, label: versionLabel(tag, langs, quals), ...playLinks(c, first, srcs[first._i], app), from: listName(srcs, first._i), ...(more.length ? { more } : {}) };
   });
 }
 
@@ -1156,7 +1162,7 @@ const MAX_FAVORITES = 500;
 const MAX_HISTORY = 60;
 const MAX_PROGRESS = 400;
 const MAX_SYNC_BYTES = 900 * 1024; // um documento do Firestore aceita ate 1 MB
-const CHANNEL_TEXT = ["id", "name", "group", "logo", "src", "type", "kind", "epg_id", "playlist_id", "series_id", "parent_series", "cover", "alt", "alt_type", "fallback", "xt_id"];
+const CHANNEL_TEXT = ["id", "name", "group", "logo", "src", "type", "kind", "epg_id", "playlist_id", "series_id", "parent_series", "cover", "alt", "alt_type", "fallback", "xt_id", "from"];
 
 /** Guarda so os campos conhecidos de um canal/filme/serie vindo do aparelho. */
 function cleanChannel(c) {
@@ -1168,7 +1174,7 @@ function cleanChannel(c) {
   if (Array.isArray(c.more)) {
     const more = c.more
       .slice(0, MAX_MORE)
-      .map((m) => (m && typeof m.src === "string" ? Object.fromEntries(["src", "type", "alt", "alt_type", "fallback"].map((k) => [k, typeof m[k] === "string" ? m[k].slice(0, 2000) : ""])) : null))
+      .map((m) => (m && typeof m.src === "string" ? Object.fromEntries(["src", "type", "alt", "alt_type", "fallback", "from"].map((k) => [k, typeof m[k] === "string" ? m[k].slice(0, 2000) : ""])) : null))
       .filter(Boolean);
     if (more.length) out.more = more;
   }

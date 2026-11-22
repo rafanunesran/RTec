@@ -128,6 +128,8 @@ export type Channel = {
   fallback?: string;
   /** O mesmo titulo nas outras listas do cliente: tentado em ordem se este nao tocar. */
   more?: PlayLink[];
+  /** Nome da lista de onde vem o link acima ("Lista 1"), para trocar na mao no reprodutor. */
+  from?: string;
   /** Filme/episodio com mais de uma versao (dublado, legendado, 4K...): a que esta nos links acima e todas. */
   tag?: string;
   versions?: Version[];
@@ -135,7 +137,7 @@ export type Channel = {
   reasons?: string[];
 };
 
-export type PlayLink = Pick<Channel, "src" | "type" | "alt" | "alt_type" | "fallback">;
+export type PlayLink = Pick<Channel, "src" | "type" | "alt" | "alt_type" | "fallback" | "from">;
 
 /** Uma versao do titulo: tag "L|4K" (legendado, 4K), nome para mostrar e os links dela. */
 export type Version = PlayLink & { tag: string; label: string; more?: PlayLink[] };
