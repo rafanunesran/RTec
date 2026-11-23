@@ -220,11 +220,13 @@ type Props = {
   /** Filme/episodio chegou ao fim. */
   onEnded?: () => void;
   className?: string;
+  /** Preencher a tela cortando as bordas do video (sem faixas pretas) em vez de mostrar o quadro inteiro. */
+  fill?: boolean;
   /** Camadas por cima do video e por baixo dos avisos (carregando, erro). */
   children?: ReactNode;
 };
 
-export default function VideoPlayer({ channel, boost = false, onBoost, startAt = 0, onProgress, onEnded, className, children }: Props) {
+export default function VideoPlayer({ channel, boost = false, onBoost, startAt = 0, onProgress, onEnded, className, fill = false, children }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [state, setState] = useState<"idle" | "loading" | "playing" | "error">("idle");
   const [error, setError] = useState("");
@@ -566,7 +568,7 @@ export default function VideoPlayer({ channel, boost = false, onBoost, startAt =
 
   return (
     <div className={className ?? "relative aspect-video w-full overflow-hidden bg-black lg:rounded-2xl lg:ring-1 lg:ring-border"}>
-      <video key={el.n} ref={videoRef} crossOrigin={el.cors ? "anonymous" : undefined} className="h-full w-full" controls={!children && !tvScreenOn()} playsInline autoPlay />
+      <video key={el.n} ref={videoRef} crossOrigin={el.cors ? "anonymous" : undefined} className={fill ? "h-full w-full object-cover" : "h-full w-full object-contain"} controls={!children && !tvScreenOn()} playsInline autoPlay />
       {channel?.kind === "radio" && <RadioScreen channel={channel} playing={state === "playing"} />}
       {children}
       {!channel && (
