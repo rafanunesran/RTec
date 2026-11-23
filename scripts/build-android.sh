@@ -16,10 +16,18 @@ case "$APP_URL" in https://*) ;; *) echo "APP_URL precisa comecar com https:// (
 : "${RTEC_KEYSTORE:?Defina RTEC_KEYSTORE (arquivo .jks de assinatura)}"
 : "${RTEC_KEYSTORE_PASSWORD:?Defina RTEC_KEYSTORE_PASSWORD}"
 
+# Cada APK novo precisa de um numero de versao maior: os apps instalados comparam com rtec-tv.json e se atualizam sozinhos.
+code=$(sed -n 's/^ *versionCode \([0-9]*\).*/\1/p' android/app/build.gradle)
+code=$((code + 1))
+sed -i.bak "s/^\( *versionCode \)[0-9]*/\1$code/; s/^\( *versionName \)\"[^\"]*\"/\1\"1.$code\"/" android/app/build.gradle && rm -f android/app/build.gradle.bak
+echo "Versao do app: $code"
+
 npm run build
 APP_URL="$APP_URL" npx cap sync android
 (cd android && ./gradlew --no-daemon -q assembleRelease)
 
 mkdir -p public/download
 cp android/app/build/outputs/apk/release/app-release.apk public/download/rtec-tv.apk
-echo "APK gerado: public/download/rtec-tv.apk  (app abre $APP_URL)"
+printf '{"versionCode":%s,"versionName":"1.%s","apk":"/download/rtec-tv.apk"}\n' "$code" "$code" > public/download/rtec-tv.json
+echo "APK gerado: public/download/rtec-tv.apk  (app abre $APP_URL), versao $code"
+echo "Publique: git add android/app/build.gradle public/download && git commit -m 'App Android versao $code' && git push origin main"

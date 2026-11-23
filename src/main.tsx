@@ -7,10 +7,12 @@ import "./index.css";
 import { registerServiceWorker } from "./lib/pwa";
 import { setupTvNavigation } from "./lib/tvnav";
 import { releaseTvOrientation } from "./lib/orientation";
+import { checkAppUpdate } from "./lib/appupdate";
 
 registerServiceWorker();
 setupTvNavigation();
 releaseTvOrientation();
+setTimeout(() => void checkAppUpdate(), 5000);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

@@ -63,8 +63,12 @@ Gerar o APK (precisa de Java 21 e Android SDK):
 export ANDROID_HOME=/caminho/android-sdk
 export RTEC_KEYSTORE=/caminho/rtec-release.jks RTEC_KEYSTORE_PASSWORD='senha'
 APP_URL=https://SEU-SITE.vercel.app npm run app:android
-git add public/download/rtec-tv.apk && git commit -m "App Android" && git push origin main
+git add android/app/build.gradle public/download && git commit -m "App Android" && git push origin main
 ```
+**Atualizacao automatica**: o script aumenta sozinho o numero da versao e gera `public/download/rtec-tv.json`. Ao abrir, o app
+compara a versao dele com esse arquivo e, se houver nova, baixa e instala por cima. No Android 12+ (depois da primeira
+atualizacao feita pelo proprio app) entra sem perguntar, quando o cliente sai do app; na primeira vez o Android pede para
+permitir "instalar apps desta fonte" e confirmar. Apps da versao 3 ou mais antiga nao tem o atualizador: atualize na mao uma vez.
 Os clientes baixam em `https://SEU-SITE/download/rtec-tv.apk` (o reprodutor mostra o botao "Baixar app Android").
 **Guarde o arquivo `.jks` e a senha fora do repositorio**: sem eles, uma versao nova do app nao instala por cima da antiga.
 
