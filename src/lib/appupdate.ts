@@ -1,15 +1,27 @@
+import { useEffect, useState } from "react";
 import { isNativeApp } from "./pwa";
+import { tvScreenOn } from "./tvnav";
 
-// Atualizacao automatica do app Android (android/.../AppUpdatePlugin.java). Ao abrir o app, compara a
-// versao instalada com /download/rtec-tv.json (gerado pelo scripts/build-android.sh junto com o APK).
-// Se houver versao nova, baixa o APK em segundo plano e instala:
-// - Android 12+ depois da primeira vez: instala sozinho, sem perguntar, quando o cliente sai do app
-//   (nunca fecha o app no meio de um video);
-// - primeira vez ou Android antigo: o Android mostra "Atualizar?" (no maximo uma vez por dia, e so se nao
-//   houver video tocando).
-// APKs antigos nao tem o plugin: precisam ser atualizados na mao uma vez.
+// Atualizacao do app Android. Ao abrir, compara a versao instalada com /download/rtec-tv.json (gerado pelo
+// scripts/build-android.sh junto com o APK).
+// - App com o atualizador (AppUpdatePlugin.java, versao 4+): baixa o APK novo em segundo plano. No Android 12+,
+//   depois da primeira vez, instala sozinho quando o cliente sai do app (nunca corta um video). Na primeira vez
+//   (ou Android antigo) mostra o aviso "Atualizar agora", que abre a confirmacao do Android.
+// - App antigo (versao 3 ou menos, sem o atualizador): mostra o mesmo aviso; o botao baixa o APK pelo
+//   gerenciador de downloads do Android (o WebView do app antigo nao baixa arquivos), e o cliente so abre e
+//   toca em Atualizar.
+// O aviso aparece no maximo uma vez por dia e nunca por cima de um video tocando.
 type Info = { versionCode: number; versionName: string; silent: boolean; canInstall: boolean };
 type Native = { info(): Promise<Info>; download(o: { url: string }): Promise<void>; install(): Promise<void> };
+type Latest = { versionCode: number; versionName?: string; apk?: string; mirror?: string };
+
+/** Ultima versao sem o atualizador: apps assim nao sabem dizer a versao, mas certamente sao <= 3. */
+const OLD_MAX = 3;
+/**
+ * O app antigo so abre fora dele links de outro endereco (no mesmo endereco do site ele tenta abrir dentro e
+ * nada acontece). O GitHub serve o mesmo APK publicado na main como download.
+ */
+const MIRROR = "https://raw.githubusercontent.com/rafanunesran/RTec/main/public/download/rtec-tv.apk";
 
 const ASKED_KEY = "rtec:update-asked";
 const DAY = 24 * 60 * 60 * 1000;
@@ -31,40 +43,104 @@ function markAsked() {
   }
 }
 
-export async function checkAppUpdate() {
-  if (!isNativeApp()) return;
-  try {
-    const { Capacitor, registerPlugin } = await import("@capacitor/core");
-    if (!Capacitor.isPluginAvailable("AppUpdate")) return;
-    const plugin = registerPlugin<Native>("AppUpdate");
-    const [info, latest] = await Promise.all([
-      plugin.info(),
-      fetch(`/download/rtec-tv.json?t=${Date.now()}`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)),
-    ]);
-    if (!latest || !(Number(latest.versionCode) > info.versionCode)) return;
-    if (!info.silent && askedRecently()) return;
-    await plugin.download({ url: new URL(latest.apk || "/download/rtec-tv.apk", location.href).href });
+export type AppUpdate = {
+  /** "plugin" = o app instala sozinho ao tocar; "old" = baixa pelo Android e o cliente abre o arquivo. */
+  mode: "plugin" | "old";
+  version: string;
+  /** Toque em "Atualizar agora". */
+  start: () => void;
+  /** Toque em "Depois". */
+  later: () => void;
+};
 
-    if (info.silent) {
-      // Sem perguntar: instala quando o cliente sair do app (o app fecha ao atualizar).
-      const onHide = () => {
-        if (document.visibilityState !== "hidden") return;
-        document.removeEventListener("visibilitychange", onHide);
-        void plugin.install().catch(() => {});
+/** Aviso de versao nova do app (so dentro do app Android). */
+export function useAppUpdate(): AppUpdate | null {
+  const [update, setUpdate] = useState<AppUpdate | null>(null);
+
+  useEffect(() => {
+    if (!isNativeApp()) return;
+    let stop = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let onHide: (() => void) | undefined;
+
+    // Mostra o aviso quando nao houver video tocando.
+    const offer = (u: AppUpdate) => {
+      const tryShow = () => {
+        if (stop || document.visibilityState !== "visible" || playing()) return false;
+        setUpdate(u);
+        return true;
       };
-      document.addEventListener("visibilitychange", onHide);
-      return;
-    }
-    // Primeira vez: o Android pede confirmacao. Espera o video parar para nao interromper.
-    const tryAsk = () => {
-      if (document.visibilityState !== "visible" || playing()) return false;
-      markAsked();
-      void plugin.install().catch(() => {});
-      return true;
+      if (!tryShow()) timer = setInterval(() => tryShow() && clearInterval(timer), 30_000);
     };
-    if (tryAsk()) return;
-    const timer = setInterval(() => tryAsk() && clearInterval(timer), 30_000);
-  } catch {
-    /* sem internet ou aparelho sem suporte: tenta na proxima abertura */
-  }
+
+    (async () => {
+      const latest: Latest | null = await fetch(`/download/rtec-tv.json?t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
+      if (!latest || !Number(latest.versionCode)) return;
+      const version = latest.versionName || String(latest.versionCode);
+      const { Capacitor, registerPlugin } = await import("@capacitor/core");
+
+      if (!Capacitor.isPluginAvailable("AppUpdate")) {
+        // TV Box costuma nao ter navegador para baixar o arquivo: la a atualizacao continua manual.
+        if (latest.versionCode <= OLD_MAX || askedRecently() || tvScreenOn()) return;
+        const url = latest.mirror || MIRROR;
+        offer({
+          mode: "old",
+          version,
+          start: () => {
+            markAsked();
+            // Endereco de fora: o app abre no Android, que baixa o arquivo.
+            window.location.href = url;
+          },
+          later: () => {
+            markAsked();
+            setUpdate(null);
+          },
+        });
+        return;
+      }
+
+      const plugin = registerPlugin<Native>("AppUpdate");
+      const info = await plugin.info();
+      if (!(latest.versionCode > info.versionCode)) return;
+      if (!info.silent && askedRecently()) return;
+      await plugin.download({ url: new URL(latest.apk || "/download/rtec-tv.apk", location.href).href });
+      if (stop) return;
+
+      if (info.silent) {
+        // Sem perguntar: instala quando o cliente sair do app (o app fecha ao atualizar).
+        onHide = () => {
+          if (document.visibilityState !== "hidden") return;
+          document.removeEventListener("visibilitychange", onHide!);
+          void plugin.install().catch(() => {});
+        };
+        document.addEventListener("visibilitychange", onHide);
+        return;
+      }
+      offer({
+        mode: "plugin",
+        version,
+        start: () => {
+          markAsked();
+          setUpdate(null);
+          void plugin.install().catch(() => {});
+        },
+        later: () => {
+          markAsked();
+          setUpdate(null);
+        },
+      });
+    })().catch(() => {
+      /* sem internet ou aparelho sem suporte: tenta na proxima abertura */
+    });
+
+    return () => {
+      stop = true;
+      clearInterval(timer);
+      if (onHide) document.removeEventListener("visibilitychange", onHide);
+    };
+  }, []);
+
+  return update;
 }

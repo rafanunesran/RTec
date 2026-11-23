@@ -20,6 +20,7 @@ import { preferredVersion, saveVersionPref, withSource, withVersion } from "@/li
 import { warmPlayer } from "@/lib/warm";
 import PinDialog from "@/components/player/PinDialog";
 import SettingsDialog from "@/components/player/SettingsDialog";
+import AppUpdatePrompt from "@/components/player/AppUpdatePrompt";
 import NotificationsPage, { CountBadge, useNotificationCount } from "@/components/player/Notifications";
 import { Avatar, ProfilePicker } from "@/components/player/Profiles";
 import ListExpired from "@/components/player/ListExpired";
@@ -1451,6 +1452,7 @@ function Watch({
   );
   return (
     <div className={cn("flex min-h-[100dvh] flex-col", tv && "pl-24")}>
+      <AppUpdatePrompt />
       {tv ? (
         <TvSidebar
           items={[

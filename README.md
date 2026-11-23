@@ -68,7 +68,9 @@ git add android/app/build.gradle public/download && git commit -m "App Android" 
 **Atualizacao automatica**: o script aumenta sozinho o numero da versao e gera `public/download/rtec-tv.json`. Ao abrir, o app
 compara a versao dele com esse arquivo e, se houver nova, baixa e instala por cima. No Android 12+ (depois da primeira
 atualizacao feita pelo proprio app) entra sem perguntar, quando o cliente sai do app; na primeira vez o Android pede para
-permitir "instalar apps desta fonte" e confirmar. Apps da versao 3 ou mais antiga nao tem o atualizador: atualize na mao uma vez.
+permitir "instalar apps desta fonte" e confirmar. Apps da versao 3 ou mais antiga nao tem o atualizador: no celular eles mostram o aviso "Nova versao do app"
+e o botao baixa o APK pelo Android (link do GitHub da main, ja que o app antigo nao baixa arquivos do proprio site);
+o cliente so abre o arquivo e toca em Atualizar. Por isso o `rtec-tv.apk` precisa estar commitado na main.
 Os clientes baixam em `https://SEU-SITE/download/rtec-tv.apk` (o reprodutor mostra o botao "Baixar app Android").
 **Guarde o arquivo `.jks` e a senha fora do repositorio**: sem eles, uma versao nova do app nao instala por cima da antiga.
 
