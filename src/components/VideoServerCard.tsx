@@ -17,6 +17,8 @@ type Status = {
   aac?: number;
   marks?: { queue: number; busy: boolean; done: number; found: number; errors: number; last_error: string; last_at: string };
   update_log?: string[];
+  /** Ultimas recusas do fornecedor (401/403/404...) a pedidos do servidor de video. */
+  refusals?: { at: string; host: string; status: number; path: string }[];
 };
 
 const when = (iso?: string) => (iso ? new Date(iso).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—");
@@ -93,6 +95,14 @@ export default function VideoServerCard() {
               <Row label="Na fila">{m.busy ? m.queue + 1 : m.queue}</Row>
               {m.last_error && <Row label="Último erro">{m.last_error}</Row>}
             </>
+          )}
+          {!!st.refusals?.length && (
+            <div className="mt-3">
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Recusas do fornecedor (desde o último reinício)</div>
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-muted p-2 text-[11px] leading-relaxed text-muted-foreground">
+                {st.refusals.map((r) => `${when(r.at)} · ${r.host} · ${r.path || "-"} · HTTP ${r.status}`).join("\n")}
+              </pre>
+            </div>
           )}
           {!!st.update_log?.length && (
             <div className="mt-3">

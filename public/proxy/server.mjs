@@ -14,6 +14,7 @@ const PORT = Number(process.env.PORT || 8080);
 // So o Caddy (https, na mesma maquina) fala com este servidor: a porta em http nao fica aberta para a internet.
 const HOST = process.env.HOST || "127.0.0.1";
 const UA = "VLC/3.0.20 LibVLC/3.0.20";
+const refusals = []; // ultimas recusas do fornecedor (Admin > Configuracoes > servidor de video)
 const TTL_SECONDS = 12 * 3600;
 // Canais com audio Dolby (AC-3) ficam mudos no navegador: /api/player/aac troca so o audio por AAC com o
 // ffmpeg (a imagem passa sem mexer, gasta pouco processador). Limite de conversoes ao mesmo tempo.
@@ -413,6 +414,7 @@ async function statusRoute(url, res) {
     marks: { queue: markQueue.length, busy: markBusy, ...markStats },
     update_log: updateLog(),
     monitor: { panel: PANEL_URL, ...monitor },
+    refusals,
   });
 }
 
@@ -507,7 +509,11 @@ const server = http.createServer(async (req, res) => {
     if (!controller.signal.aborted) console.warn(`[proxy] falha ao conectar em ${new URL(u).host}: ${err.cause?.code || err.message}`);
     return res.headersSent ? res.end() : send(res, 502, "Falha ao conectar na fonte");
   }
-  if (!upstream.ok) console.warn(`[proxy] fornecedor respondeu HTTP ${upstream.status} para ${new URL(u).host}`);
+  if (!upstream.ok) {
+    console.warn(`[proxy] fornecedor respondeu HTTP ${upstream.status} para ${new URL(u).host}`);
+    refusals.unshift({ at: new Date().toISOString(), host: new URL(u).host, status: upstream.status, path: new URL(u).pathname.split("/")[1] || "" });
+    refusals.length = Math.min(refusals.length, 20);
+  }
   const type = upstream.headers.get("content-type") || "";
   if (/mpegurl/i.test(type) || /\.m3u8$/i.test(new URL(upstream.url).pathname)) {
     const text = await upstream.text();
