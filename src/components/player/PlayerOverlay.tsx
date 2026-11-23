@@ -9,6 +9,8 @@ import {
   ListVideo,
   Maximize,
   Minimize,
+  Expand,
+  Shrink,
   Pause,
   Play,
   RotateCcw,
@@ -28,6 +30,7 @@ import VideoPlayer, { type BoostState } from "@/components/VideoPlayer";
 import { readTracks, setAudioTrack, setTextTrack, type Track } from "@/lib/tracks";
 import { boostSaved, saveBoost } from "@/lib/boost";
 import { restorePortrait } from "@/lib/orientation";
+import { setSystemBars } from "@/lib/systembars";
 import { tvNavigationOn, tvScreenOn } from "@/lib/tvnav";
 
 const fsElement = () =>
@@ -53,6 +56,16 @@ function exitFullscreen() {
 /** Celular/tablet: controles grandes no meio da tela e toque duplo nas laterais para voltar/avancar. */
 const touchScreen = () => !tvScreenOn() && typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
+
+// Preencher a tela (corta as bordas, sem faixas pretas) ou mostrar o quadro inteiro: lembrado no aparelho.
+const FILL_KEY = "rtec:player-fill";
+const fillSaved = () => {
+  try {
+    return localStorage.getItem(FILL_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
 
 const clock = (s: number) => {
   const t = Math.max(0, Math.floor(s));
@@ -123,6 +136,8 @@ export default function PlayerOverlay({
   const [tracks, setTracks] = useState<{ audio: Track[]; text: Track[] }>({ audio: [], text: [] });
   const [fs, setFs] = useState(false);
   const [scrub, setScrub] = useState<number | null>(null); // posicao sendo escolhida na barra de tempo
+  const [fill, setFill] = useState(fillSaved); // preencher a tela (sem faixas pretas)
+  const pinch = useRef<number | null>(null); // distancia inicial do gesto de pinca
   const scrubTimer = useRef<ReturnType<typeof setTimeout>>();
   const playRef = useRef<HTMLButtonElement>(null);
   const switchAt = useRef<{ id: string; at: number } | null>(null); // trocou de versao: segue do mesmo ponto
@@ -331,6 +346,52 @@ export default function PlayerOverlay({
   }, [channel.id]);
   // Pausado, com uma janela aberta ou escolhendo o ponto na barra de tempo, os controles ficam na tela.
   const shown = chrome || st.paused || panel !== null || scrub !== null;
+
+  // App Android: barras do sistema (hora, notificacoes, gestos) escondidas com o player aberto. Aparecem
+  // junto com os controles quando o cliente toca na tela e somem de novo 2 s depois.
+  useEffect(() => {
+    if (tv) return;
+    if (!shown) {
+      setSystemBars(true, false);
+      return;
+    }
+    setSystemBars(true, true);
+    const t = setTimeout(() => setSystemBars(true, false), 2000);
+    return () => clearTimeout(t);
+  }, [shown, tv]);
+  useEffect(() => {
+    if (tv) return;
+    // Voltou de outro app: o Android mostra as barras de novo.
+    const onVis = () => document.visibilityState === "visible" && setSystemBars(true, false);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      setSystemBars(false, true);
+    };
+  }, [tv]);
+
+  const changeFill = (on: boolean) => {
+    setFill(on);
+    try {
+      localStorage.setItem(FILL_KEY, on ? "1" : "0");
+    } catch {
+      /* sem armazenamento: vale so agora */
+    }
+    say(on ? "Preenchendo a tela" : "Vídeo inteiro na tela");
+  };
+  // Pinca com dois dedos: abrir preenche a tela, fechar mostra o video inteiro.
+  const touchDist = (t: React.TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const onTouchStart = (e: React.TouchEvent) => {
+    pinch.current = e.touches.length === 2 ? touchDist(e.touches) : null;
+  };
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (pinch.current === null || e.touches.length !== 2) return;
+    const r = touchDist(e.touches) / pinch.current;
+    if (r > 1.15 || r < 0.87) {
+      pinch.current = null;
+      if (r > 1 !== fill) changeFill(r > 1);
+    }
+  };
 
   const nearEnd = isVod && next && remaining !== null && remaining < 45;
   // Com os creditos conhecidos, o "Proximo episodio" aparece quando eles comecam; com cena pos-creditos,
@@ -576,14 +637,20 @@ export default function PlayerOverlay({
           }
         }}
         className="relative h-full w-full flex-1 overflow-hidden bg-black"
+        fill={fill}
       >
-        <div className="absolute inset-0" onClick={onSurface} onDoubleClick={() => tap.current.type === "mouse" && toggleFullscreen()} />
+        <div
+          className="absolute inset-0"
+          style={touch ? { touchAction: "pan-x pan-y" } : undefined}
+          onTouchStart={touch ? onTouchStart : undefined}
+          onTouchMove={touch ? onTouchMove : undefined}
+          onClick={onSurface} onDoubleClick={() => tap.current.type === "mouse" && toggleFullscreen()} />
       </VideoPlayer>
 
       {/* Barra de cima: voltar, titulo, reforco de volume, transmitir e favorito. */}
       <div
         className={cn(
-          "pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/80 to-transparent px-3 pb-10 pt-[max(12px,env(safe-area-inset-top))] transition-opacity",
+          "pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/80 to-transparent pb-10 pl-[max(12px,env(safe-area-inset-left))] pr-[max(12px,env(safe-area-inset-right))] pt-[max(12px,env(safe-area-inset-top))] transition-opacity",
           shown ? "opacity-100" : "opacity-0",
         )}
       >
@@ -647,7 +714,7 @@ export default function PlayerOverlay({
       {/* Barra de baixo: tempo e controles. */}
       <div
         className={cn(
-          "pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent px-3 pb-[max(12px,env(safe-area-inset-bottom))] pt-16 transition-opacity sm:px-5",
+          "pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent pb-[max(12px,env(safe-area-inset-bottom))] pl-[max(12px,env(safe-area-inset-left))] pr-[max(12px,env(safe-area-inset-right))] pt-16 transition-opacity sm:pl-[max(20px,env(safe-area-inset-left))] sm:pr-[max(20px,env(safe-area-inset-right))]",
           tv && "px-10 pb-8",
           shown ? "opacity-100" : "opacity-0",
         )}
@@ -705,6 +772,12 @@ export default function PlayerOverlay({
               <CtlButton onClick={() => setPanel("list")} label={listLabel} wide>
                 <ListVideo className="h-5 w-5" />
                 <span className="text-sm font-semibold">{channel.kind === "series" ? "EPs" : listLabel}</span>
+              </CtlButton>
+            )}
+            {!tv && (
+              <CtlButton onClick={() => changeFill(!fill)} label={fill ? "Mostrar o vídeo inteiro" : "Preencher a tela"} wide>
+                {fill ? <Shrink className="h-5 w-5" /> : <Expand className="h-5 w-5" />}
+                <span className="text-sm font-semibold">{fill ? "Ajustar" : "Preencher"}</span>
               </CtlButton>
             )}
             <CtlButton onClick={() => setPanel("tracks")} label="Configurações">
