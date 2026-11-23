@@ -904,7 +904,7 @@ function Watch({
     else setPinFor(() => fn);
   };
 
-  const addHistory = (c0: Channel) =>
+  const addHistory = (c0: Channel, oldId?: string) =>
     setHistory((old) => {
       // Episodio: sai do historico o EP anterior da mesma serie, fica so o ultimo tocado.
       const sk = seriesKeyOf(c0);
@@ -912,18 +912,31 @@ function Watch({
       const fromSeries = series && (xt ? c0.group : episodeInfo(c0.name).series) === series.name ? series.logo : "";
       const cover = c0.cover || (sk && old.find((h) => h.cover && seriesKeyOf(h) === sk)?.cover) || fromSeries;
       const c = sk && cover ? { ...c0, cover } : c0;
-      const next = [c, ...old.filter((h) => h.id !== c.id && (!sk || seriesKeyOf(h) !== sk))].slice(0, HISTORY_MAX);
+      const next = [c, ...old.filter((h) => h.id !== c.id && h.id !== oldId && (!sk || seriesKeyOf(h) !== sk))].slice(0, HISTORY_MAX);
       saveList("history", next);
       return next;
     });
-  const startPlay = async (c0: Channel, list?: Channel[] | null) => {
-    // Itens guardados (historico, favoritos) podem ter o link do servidor de video vencido: renova antes.
-    const c = await refreshChannels([c0])
-      .then((r) => r[0])
-      .catch(() => c0);
+  const startPlay = async (c0: Channel, list?: Channel[] | null, saved = false) => {
+    // Filme/episodio guardado (historico, "Continuar assistindo", favoritos, vindo de outro aparelho) traz os
+    // links de quando foi tocado: a lista pode ter mudado (listas trocadas, copia que saiu do ar, outra versao).
+    // Pega o titulo de novo na lista atual, com os links, versoes e reservas de agora; se nao achar, usa o guardado.
+    const stored = saved || history.some((h) => h.id === c0.id) || favorites.some((f) => f.id === c0.id);
+    const fresh =
+      xt && stored && (c0.kind === "movie" || (c0.kind === "series" && !!c0.season))
+        ? await relinkXtream([c0])
+            .then((m) => m.get(c0.id))
+            .catch(() => undefined)
+        : undefined;
+    const base = fresh ? { ...c0, ...fresh, cover: c0.cover || fresh.cover } : c0;
+    // Itens guardados podem ter o link do servidor de video vencido: renova antes.
+    const c = fresh
+      ? base
+      : await refreshChannels([base])
+          .then((r) => r[0])
+          .catch(() => base);
     setCurrent(preferredVersion(c));
     if (list !== undefined) setQueue(list);
-    addHistory(c);
+    addHistory(c, c0.id);
   };
   // Conectado a outro aparelho (TV): o titulo toca la, continuando de onde parou aqui.
   const sendTo = async (c: Channel, at = resumeAt(c), dur = getProgress(c)?.d ?? 0) => {
@@ -955,7 +968,7 @@ function Watch({
   fromCast.current = (p) => {
     if (p.at > 0 && p.dur > 0) saveProgress(p.item, p.at + 5, p.dur);
     setMovie(null);
-    void startPlay(p.item, p.item.kind === "series" ? undefined : null);
+    void startPlay(p.item, p.item.kind === "series" ? undefined : null, true);
   };
   useEffect(() => {
     castInbox = (p) => fromCast.current?.(p);
