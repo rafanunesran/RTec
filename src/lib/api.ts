@@ -15,6 +15,8 @@ export type Source = {
   playback: PlaybackMode;
   /** Lista desligada no painel: fica salva, mas o cliente nao ve nem toca. */
   disabled?: boolean;
+  /** Excecao dos links blindados: esta lista toca direto do aparelho (fornecedor que recusa o servidor de video). */
+  unshielded?: boolean;
 };
 
 export type Client = {

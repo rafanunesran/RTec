@@ -1639,6 +1639,44 @@ test("links blindados: nenhum aparelho recebe o link do fornecedor (usuario/senh
   }
 });
 
+test("links blindados: excecao por lista toca direto do aparelho e as outras continuam blindadas", async () => {
+  process.env.PROXY_SECRET = "teste-proxy";
+  process.env.STREAM_PROXY_URL = "https://video.exemplo.com";
+  cookie = "";
+  await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+  await call("PUT", "/api/admin/security", { hide_links: true });
+  try {
+    const server = `http://127.0.0.1:${source.address().port}`;
+    const created = await call("POST", "/api/clients", {
+      username: "excecao",
+      password: "x1",
+      source: { kind: "xtream", xtream_server: server, xtream_username: "TiaX", xtream_password: "Sen@1", unshielded: true },
+      // Outro endereco (localhost) para a lista blindada: servidores diferentes, como no caso real.
+      extra_sources: [{ kind: "m3u_url", url: `${server.replace("127.0.0.1", "localhost")}/get.php?username=Extra&password=E1&type=m3u_plus` }],
+    });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.source.unshielded, true);
+    assert.equal(created.body.extra_sources[0].unshielded, undefined);
+    cookie = "";
+    await call("POST", "/api/player/login", { username: "excecao", password: "x1" });
+    const movie = (await call("GET", "/api/player/xtream/items?section=movie&category=20")).body.find((m) => m.name === "Filme Teste");
+    assert.match(movie.src, /\/movie\/TiaX\/Sen%401\/50\.mp4$/, "lista com excecao: link direto do fornecedor");
+    assert.match(movie.fallback, /^https:\/\/video\.exemplo\.com\//, "servidor de video fica de ultimo recurso");
+    const extra = movie.more.find((m) => /video\.exemplo/.test(m.src) && /\/Extra\/E1\//.test(plain(m.src)));
+    assert.ok(extra, "a outra lista continua blindada");
+    // Historico com link direto da lista com excecao continua direto (nao vira proxy nem some).
+    const raw = `${server}/movie/TiaX/Sen%401/50.mp4`;
+    const { urls } = (await call("POST", "/api/player/resign", { urls: [raw] })).body;
+    assert.equal(urls[0], raw);
+  } finally {
+    cookie = "";
+    await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+    await call("PUT", "/api/admin/security", { hide_links: false });
+    delete process.env.PROXY_SECRET;
+    delete process.env.STREAM_PROXY_URL;
+  }
+});
+
 test("pagamento previsto: marca a data, aparece no painel e Recebido passa para o mes seguinte", async () => {
   const { nextPaymentDue } = await import("./app.js");
   assert.equal(nextPaymentDue("2026-01-31", 31), "2026-02-28");

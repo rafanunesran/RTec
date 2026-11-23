@@ -55,6 +55,24 @@ function ListSwitch({ src, onChange }: { src: Source; onChange: (s: Source) => v
   );
 }
 
+/** Excecao dos links blindados so para esta lista: o aparelho pede o video direto ao fornecedor. */
+function ShieldSwitch({ src, onChange }: { src: Source; onChange: (s: Source) => void }) {
+  const direct = !!src.unshielded;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="font-medium">Tocar direto do aparelho (sem blindagem)</span>
+        <Switch label={direct ? "Voltar a blindar esta lista" : "Tocar esta lista direto do aparelho"} checked={direct} onChange={(v) => onChange({ ...src, unshielded: v })} />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {direct
+          ? "Os vídeos desta lista vão direto do fornecedor para o aparelho: o link dela fica visível no aparelho. As outras listas continuam blindadas."
+          : "Ligue só se o fornecedor desta lista recusar vídeos pelo servidor de vídeo (ex.: toca com Links blindados desligados e não toca ligado)."}
+      </p>
+    </div>
+  );
+}
+
 const OffNote = () => (
   <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
     Lista desligada: fica salva aqui, mas o cliente não vê nem toca nada dela. Ligue de novo quando quiser.
@@ -710,6 +728,7 @@ export default function Clients() {
             <p className="text-xs text-muted-foreground">Cole o link ou o login do fornecedor deste cliente. É só isso que ele vai ver no reprodutor.</p>
             {form.source.disabled && <OffNote />}
             <SourceEditor value={form.source} onChange={(source) => setForm({ ...form, source })} />
+            <ShieldSwitch src={form.source} onChange={(source) => setForm({ ...form, source })} />
           </div>
 
           {form.extra.map((src, i) => (
@@ -725,6 +744,7 @@ export default function Clients() {
               </div>
               {src.disabled && <OffNote />}
               <SourceEditor value={src} onChange={(next) => setExtra(i, next)} />
+              <ShieldSwitch src={src} onChange={(next) => setExtra(i, next)} />
             </div>
           ))}
           {form.extra.length < MAX_EXTRA && (

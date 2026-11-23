@@ -485,9 +485,16 @@ const CRED_LINK = /\/(live|movie|series|timeshift)\/[^/?#]+\/[^/?#]+\/|[?&](user
 const isOurLink = (url) => /\/api\/player\/(proxy|aac)\?/.test(url);
 
 /** Servidores (origin) das listas do cliente, inclusive as listas do painel ligadas a ele. */
-async function clientServers(c) {
+async function clientServers(c, { shieldedOnly = false } = {}) {
   const out = new Set();
+  // Com shieldedOnly, os servidores das listas com excecao da blindagem ficam marcados em out.direct.
+  out.direct = new Set();
   for (const p of await clientPlaylists(c).catch(() => enabledSources(c))) {
+    if (shieldedOnly && p.unshielded) {
+      const o = sourceServer(p);
+      if (o) out.direct.add(o);
+      continue;
+    }
     const o = sourceServer(p);
     if (o) out.add(o);
   }
@@ -509,6 +516,8 @@ function hideLink(c, url, servers) {
     return "";
   }
   if (servers.has(origin)) return proxyUrl(c.id, link);
+  // Lista com excecao da blindagem: o link direto continua valendo.
+  if (servers.direct?.has(origin)) return link;
   return CRED_LINK.test(link) ? "" : link;
 }
 
@@ -1028,6 +1037,8 @@ const hashId = (...parts) => crypto.createHash("sha1").update(parts.join("|")).d
 /** Links de video de um item (direto ou pelo servidor, conforme o modo da lista), com os planos B. */
 function playLinks(c, item, p, app) {
   const mode = p?.playback || DEFAULT_PLAYBACK;
+  // Lista com excecao da blindagem: toca direto do aparelho (o servidor de video fica como ultimo recurso).
+  if (app === "hide" && p?.unshielded) app = "direct";
   const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
   return {
     src: link(item.url),
@@ -1239,7 +1250,7 @@ async function requestProfile(req) {
 /** Links blindados: favoritos/historico antigos (de quando o app tocava direto) saem com o link do servidor de video. */
 async function hideSync(req, s) {
   if (!req.hideLinks) return s;
-  const servers = await clientServers(req.client);
+  const servers = await clientServers(req.client, { shieldedOnly: true });
   const fix = (list) => list.map((it) => hideChannel(req.client, it, servers));
   return { ...s, favorites: fix(s.favorites), history: fix(s.history) };
 }
@@ -1589,7 +1600,8 @@ export function createApp() {
     }
     let source = existing?.source ?? null;
     // disabled: lista desligada pelo painel (fica salva, mas o cliente nao ve nem toca).
-    const withSwitch = (p) => (p.disabled ? { ...readSource(p), disabled: true } : readSource(p));
+    // unshielded: excecao dos links blindados so para esta lista (o aparelho toca direto do fornecedor).
+    const withSwitch = (p) => ({ ...readSource(p), ...(p.disabled ? { disabled: true } : {}), ...(p.unshielded ? { unshielded: true } : {}) });
     if (body.source !== undefined) source = body.source && body.source.kind ? withSwitch(body.source) : null;
     // Listas extras: completam a principal (mesmo login; titulos repetidos aparecem uma vez so).
     let extra = existing?.extra_sources || [];
@@ -2411,7 +2423,7 @@ export function createApp() {
       // Varias listas do cliente: aparecem como uma lista so (as extras completam a principal).
       if (!p.id.startsWith(`own-${c.id}`) || !playlists.some((x) => x.id.startsWith(`own-${c.id}`))) playlists.push({ id: p.id, name: p.name });
       const mode = p.playback || DEFAULT_PLAYBACK;
-      const app = directM3u(req);
+      const app = p.unshielded && req.hideLinks ? "direct" : directM3u(req);
       const link = (url) => (viaProxy(mode, url, app) ? proxyUrl(c.id, url) : url);
       for (const e of parseEntries(text, Infinity)) {
         if (!/^https?:\/\//i.test(e.url)) continue;
@@ -2881,7 +2893,7 @@ export function createApp() {
         let items = body[key].map(cleanChannel).filter(Boolean);
         // Links blindados: nada de link do fornecedor guardado no banco (e devolvido a outros aparelhos).
         if (req.hideLinks) {
-          const servers = await clientServers(req.client);
+          const servers = await clientServers(req.client, { shieldedOnly: true });
           items = items.map((it) => hideChannel(req.client, it, servers));
         }
         const next = body.merge ? [...s[key], ...items.filter((i) => !s[key].some((o) => o.id === i.id))] : items;
@@ -3239,7 +3251,7 @@ export function createApp() {
     requireClient,
     wrap(async (req, res) => {
       const urls = Array.isArray(req.body?.urls) ? req.body.urls.slice(0, 50) : [];
-      const servers = req.hideLinks ? await clientServers(req.client) : null;
+      const servers = req.hideLinks ? await clientServers(req.client, { shieldedOnly: true }) : null;
       const out = urls.map((raw) => {
         const link = String(raw || "");
         let parsed;
