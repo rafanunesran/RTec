@@ -156,13 +156,17 @@ function describe(code: number | undefined, detail: string) {
 }
 
 /** Descobre por que o arquivo nao abriu: pede o primeiro byte e olha a resposta do servidor. */
-async function probe(src: string): Promise<number> {
+async function probe(src: string): Promise<{ status: number; expired: boolean }> {
   try {
     const r = await fetch(src, { headers: { Range: "bytes=0-0" }, signal: AbortSignal.timeout(8000) });
-    void r.body?.cancel();
-    return r.status;
+    // 403 do proprio servidor de video (link vencido) vem com o texto "Link invalido ou expirado"; um 403 que o
+    // fornecedor devolveu passa pelo proxy com outro texto e e o fornecedor recusando o arquivo.
+    let expired = false;
+    if (r.status === 403) expired = /inv[aá]lido ou expirado/i.test((await r.text().catch(() => "")).slice(0, 300));
+    else void r.body?.cancel();
+    return { status: r.status, expired };
   } catch {
-    return 0;
+    return { status: 0, expired: false };
   }
 }
 
@@ -170,7 +174,7 @@ function native(video: HTMLVideoElement, src: string, onFail: (msg: string) => v
   let retried = false;
   const onError = async () => {
     const code = video.error?.code; // 2 = rede, 3 = decodificacao, 4 = formato/fonte
-    const status = await probe(src);
+    const { status, expired } = await probe(src);
     // Falha passageira do fornecedor ("stream temporarily unavailable"): tenta de novo uma vez.
     if (!retried && (status === 503 || status === 429 || status === 502 || status === 504 || code === 2)) {
       retried = true;
@@ -182,7 +186,7 @@ function native(video: HTMLVideoElement, src: string, onFail: (msg: string) => v
       }, 3000);
       return;
     }
-    if (status === 403 && /\/api\/player\/proxy/.test(src)) onFail("O link deste vídeo expirou. Toque em Tentar novamente.");
+    if (expired) onFail("O link deste vídeo expirou. Toque em Tentar novamente.");
     else if (status && (status < 200 || status >= 300)) onFail(describe(status, "arquivo"));
     else if (code === 3 || code === 4) onFail("Este aparelho não consegue tocar o formato deste vídeo (áudio ou vídeo incompatível).");
     else onFail("Não foi possível reproduzir este vídeo agora. Tente novamente.");
