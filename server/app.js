@@ -3139,6 +3139,23 @@ export function createApp() {
   );
 
   // ---------- Controle parental (PIN) ----------
+  // Local aproximado do aparelho pelo IP (cabecalhos da Vercel, sem servico externo nem Firestore), para o clima do Inicio.
+  app.get("/api/geo", (req, res) => {
+    const h = (k) => {
+      const v = req.headers[k];
+      try {
+        return v ? decodeURIComponent(String(v)) : "";
+      } catch {
+        return String(v);
+      }
+    };
+    const lat = Number(h("x-vercel-ip-latitude"));
+    const lon = Number(h("x-vercel-ip-longitude"));
+    res.set("Cache-Control", "private, max-age=3600");
+    if (!h("x-vercel-ip-latitude") || !Number.isFinite(lat) || !Number.isFinite(lon)) return res.json({});
+    res.json({ lat, lon, city: h("x-vercel-ip-city") || undefined });
+  });
+
   app.get("/api/player/settings", requireClient, (req, res) => {
     res.json({ custom_pin: !!req.client.parental_pin_hash, locked_groups: req.client.locked_groups || [] });
   });

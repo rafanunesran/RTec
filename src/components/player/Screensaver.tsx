@@ -1,3 +1,4 @@
+import { SaverWeather } from "@/components/player/HomeWeather";
 import { useEffect, useRef, useState } from "react";
 import { api, type Channel, type TitleInfo } from "@/lib/api";
 import { episodeInfo } from "@/lib/titlekey";
@@ -233,6 +234,7 @@ function Saver({ resume, loadRecs, onExit }: { resume: SaverItem[]; loadRecs: ()
         </div>
       ))}
       {empty && !slides.length && <div className="absolute inset-0 grid place-items-center text-white/40">RTec</div>}
+      <SaverWeather />
     </div>
   );
 }

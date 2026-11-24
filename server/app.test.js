@@ -1855,3 +1855,12 @@ test("muitas senhas erradas seguidas: o login espera um pouco", async () => {
   const locks = (await (await import("./store/index.js")).getStore().config.list()).filter((d) => String(d.id).startsWith("lock_"));
   assert.ok(locks.some((d) => d.count >= 8), "erros guardados no banco (valem em todas as instancias da Vercel)");
 });
+
+test("clima do Inicio: local aproximado pelo IP (cabecalhos da Vercel)", async () => {
+  const sem = await (await fetch(`${base}/api/geo`)).json();
+  assert.deepEqual(sem, {});
+  const r = await fetch(`${base}/api/geo`, {
+    headers: { "x-vercel-ip-latitude": "-23.55", "x-vercel-ip-longitude": "-46.63", "x-vercel-ip-city": "S%C3%A3o%20Paulo" },
+  });
+  assert.deepEqual(await r.json(), { lat: -23.55, lon: -46.63, city: "São Paulo" });
+});

@@ -29,6 +29,7 @@ import GamesPage, { GameAlerts } from "@/components/player/Games";
 import { alertOn, epLabel, favoriteAdded, favoriteRemoved, loadEpAlerts, markSeen, markShown, resetEpAlerts, setEpAlert, shouldShow, useEpAlerts, type EpAlert } from "@/lib/epalerts";
 import Screensaver, { saverItem, type SaverItem } from "@/components/player/Screensaver";
 import { tvScreenOn } from "@/lib/tvnav";
+import HomeWeather from "@/components/player/HomeWeather";
 import { ForYou, RecSetupDialog, type ForYouRow } from "@/components/player/ForYou";
 import { loadRecPrefs, saveRecPrefs, type RecKind } from "@/lib/recprefs";
 import { castControl, castPlay, castTarget, knownDevices, onCastPlay, setCastNow, setCastTarget, startCast, useCast, type CastPlay } from "@/lib/cast";
@@ -1584,6 +1585,8 @@ function Watch({
 
       <main className={cn("mx-auto w-full flex-1", tv ? "px-10 pb-10 pt-8" : "max-w-[1600px] px-4 pb-8 pt-4 lg:px-6", cast.target && !tv && "pb-24")}>
             {page === "home" ? (
+              <div className={cn("space-y-6", tv && "space-y-8")}>
+              <HomeWeather tv={tv} />
               <HomePage
                 newEpisodes={newEpisodes}
                 onOpenAlert={openAlert}
@@ -1604,6 +1607,7 @@ function Watch({
                 onFavorite={toggleFavorite}
                 epg={epg}
               />
+              </div>
             ) : page === "alerts" ? (
               <NotificationsPage onOpenSeries={openAlert} onPlay={(c, list) => play(c, list)} onGames={goGames} isLocked={isLocked} currentId={current?.id} tv={tv} />
             ) : page === "games" ? (
@@ -2196,17 +2200,26 @@ function PosterGrid<T extends PosterItem>({
   activeId,
   onSelect,
   onRemove,
+  row,
 }: {
   items: T[];
   activeId?: string;
   onSelect: (item: T) => void;
   /** Historico: botao "Remover" embaixo de cada card. */
   onRemove?: (item: T) => void;
+  /** Uma fileira so, rolando para o lado (Continuar assistindo no Inicio). */
+  row?: boolean;
 }) {
   return (
-    <div className="poster-grid grid grid-cols-3 gap-3 pb-1 pt-1 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8">
+    <div
+      className={
+        row
+          ? "poster-row -mx-4 flex snap-x gap-3 overflow-x-auto px-4 pb-2 pt-1 [scrollbar-width:none] lg:-mx-6 lg:px-6 [&::-webkit-scrollbar]:hidden"
+          : "poster-grid grid grid-cols-3 gap-3 pb-1 pt-1 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8"
+      }
+    >
       {items.map((item) => (
-        <div key={item.id} className="flex min-w-0 flex-col">
+        <div key={item.id} className={cn("flex min-w-0 flex-col", row && "w-28 shrink-0 snap-start sm:w-36")}>
         <button onClick={() => onSelect(item)} className="poster-card group text-left">
           <div
             className={cn(
@@ -2598,18 +2611,18 @@ function HomePage({
   }
   return (
     <div className="space-y-8">
+      {!!resume.length && (
+        <section>
+          <h2 className="mb-3 text-lg font-bold tracking-tight">Continuar assistindo</h2>
+          <PosterGrid row items={resume.slice(0, 20).map((c) => ({ ...c, progress: fraction(c), sub: c.kind === "series" ? c.group : undefined }))} activeId={currentId} onSelect={onOpen} />
+        </section>
+      )}
       {!!newEpisodes.length && (
         <section>
           <h2 className="mb-3 flex items-center gap-2 text-lg font-bold tracking-tight">
             <BellRing className="h-5 w-5 text-primary" /> Novos episódios
           </h2>
-          <PosterGrid items={newEpisodes.map((a) => ({ ...a, sub: epLabel(a) }))} onSelect={onOpenAlert} />
-        </section>
-      )}
-      {!!resume.length && (
-        <section>
-          <h2 className="mb-3 text-lg font-bold tracking-tight">Continuar assistindo</h2>
-          <PosterGrid items={resume.slice(0, 16).map((c) => ({ ...c, progress: fraction(c), sub: c.kind === "series" ? c.group : undefined }))} activeId={currentId} onSelect={onOpen} />
+          <PosterGrid row items={newEpisodes.map((a) => ({ ...a, sub: epLabel(a) }))} onSelect={onOpenAlert} />
         </section>
       )}
       {!!history.length && (
