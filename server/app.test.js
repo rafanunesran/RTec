@@ -1634,6 +1634,7 @@ test("links blindados: nenhum aparelho recebe o link do fornecedor (usuario/senh
     cookie = "";
     await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
     await call("PUT", "/api/admin/security", { hide_links: false });
+    await call("PUT", "/api/admin/downloads", { enabled: false });
     delete process.env.PROXY_SECRET;
     delete process.env.STREAM_PROXY_URL;
   }
@@ -1668,10 +1669,27 @@ test("links blindados: excecao por lista toca direto do aparelho e as outras con
     const raw = `${server}/movie/TiaX/Sen%401/50.mp4`;
     const { urls } = (await call("POST", "/api/player/resign", { urls: [raw] })).body;
     assert.equal(urls[0], raw);
+
+    // Download: lista com excecao tambem baixa direto (fornecedor que recusa o servidor de video), com o servidor
+    // de video de reserva; a copia da lista blindada vai como outra opcao, sem link direto.
+    const player = cookie;
+    cookie = "";
+    await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
+    await call("PUT", "/api/admin/downloads", { enabled: true });
+    cookie = player;
+    const dl = (await call("POST", "/api/player/downloads/link", { src: movie.src, kind: "movie", more: movie.more.map((m) => m.src) })).body;
+    assert.equal(dl.direct, raw, "baixa direto do fornecedor");
+    assert.match(dl.url, /^https:\/\/video\.exemplo\.com\/api\/player\/proxy\?/);
+    assert.ok(dl.others.length >= 1, "outras listas de reserva");
+    assert.ok(dl.others.every((o) => o.url.startsWith("https://video.exemplo.com/") && !o.direct), "lista blindada nao entrega o link do fornecedor");
+    // Copia de servidor que nao e do cliente e ignorada.
+    const only = (await call("POST", "/api/player/downloads/link", { src: movie.src, kind: "movie", more: ["http://outro.tv/movie/a/b/2.mp4"] })).body;
+    assert.deepEqual(only.others, []);
   } finally {
     cookie = "";
     await call("POST", "/api/auth/login", { username: "admin", password: "secret123" });
     await call("PUT", "/api/admin/security", { hide_links: false });
+    await call("PUT", "/api/admin/downloads", { enabled: false });
     delete process.env.PROXY_SECRET;
     delete process.env.STREAM_PROXY_URL;
   }

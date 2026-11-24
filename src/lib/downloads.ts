@@ -1,5 +1,6 @@
 // Downloads offline: filmes e episodios guardados no aparelho (IndexedDB, em pedacos) para assistir sem internet.
-// O arquivo vem pelo servidor de video (Oracle) com link cifrado; o aparelho nunca ve o link do fornecedor.
+// O arquivo vem pelo servidor de video (Oracle) com link cifrado. Lista sem blindagem baixa direto do fornecedor
+// (o servidor de video fica de reserva), e se uma copia for recusada tenta a mesma em outra lista do cliente.
 // Cada download tem validade (renovada quando o aparelho fica online e a conta esta em dia); vencido, nao toca.
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { api, ApiError, type Channel } from "@/lib/api";
@@ -20,7 +21,15 @@ export type Download = {
   error?: string;
   valid_until: string;
   created_at: number;
+  /** O mesmo titulo nas outras listas do cliente (tentado se a copia principal for recusada). */
+  more?: string[];
+  /** Copia (0 = principal) e caminho que estao baixando, para continuar pelo mesmo arquivo. */
+  pick?: number;
+  route?: "direct" | "proxy";
 };
+
+type Route = { url: string; direct?: string; ext: string };
+type LinkResponse = Route & { others?: Route[]; valid_until: string; max_items: number };
 
 export type DownloadConfig = { enabled: boolean; max_items: number; days: number };
 
@@ -165,8 +174,10 @@ export async function startDownload(account: string, item: Channel, title: strin
   if (list.filter((d) => d.account === account).length >= max) throw new Error(`Limite de ${max} downloads neste aparelho. Apague algum para baixar outro.`);
   // Pede ao navegador para nao apagar os videos quando faltar espaco (quando ele deixa).
   navigator.storage?.persist?.().catch(() => {});
-  const src = item.type === "file" ? item.src : item.alt_type === "file" ? item.alt : item.src;
-  const link = await api.post<{ url: string; ext: string; valid_until: string }>("/api/player/downloads/link", { src, kind: item.kind });
+  const fileOf = (l: { src: string; type: string; alt: string; alt_type: string }) => (l.type === "file" ? l.src : l.alt_type === "file" ? l.alt : l.src);
+  const src = fileOf(item);
+  const more = [...new Set((item.more || []).map(fileOf).filter((u) => u && u !== src))].slice(0, 4);
+  const link = await api.post<LinkResponse>("/api/player/downloads/link", { src, kind: item.kind, more });
   const est = await navigator.storage?.estimate?.().catch(() => undefined);
   const d: Download = {
     id,
@@ -180,11 +191,12 @@ export async function startDownload(account: string, item: Channel, title: strin
     status: "queued",
     valid_until: link.valid_until,
     created_at: Date.now(),
+    ...(more.length ? { more } : {}),
   };
   if (est?.quota && est.usage !== undefined && est.quota - est.usage < 300 * 1024 * 1024) throw new Error("Pouco espaço livre no aparelho para baixar.");
   await putMeta(d);
   setOne(d);
-  pump(link.url);
+  pump(link);
 }
 
 export async function resumeDownload(id: string) {
@@ -220,47 +232,95 @@ export async function deleteDownloads(filter: (d: Download) => boolean = () => t
 }
 
 /** Baixa um por vez, em pedacos de 8 MB (continua de onde parou). */
-function pump(firstUrl?: string) {
+function pump(firstLink?: LinkResponse) {
   if (running) return;
   const d = list.find((x) => x.status === "queued");
   if (!d) return;
   const abort = new AbortController();
   running = { id: d.id, abort };
-  void run(d, abort.signal, firstUrl).finally(() => {
+  void run(d, abort.signal, firstLink).finally(() => {
     running = null;
     pump();
   });
 }
 
 async function freshLink(d: Download) {
-  return (await api.post<{ url: string; valid_until: string }>("/api/player/downloads/link", { src: d.item.src, kind: d.item.kind })).url;
+  return api.post<LinkResponse>("/api/player/downloads/link", { src: d.item.src, kind: d.item.kind, more: d.more || [] });
 }
 
-async function run(d0: Download, signal: AbortSignal, firstUrl?: string) {
+const routesOf = (l: LinkResponse): Route[] => [{ url: l.url, direct: l.direct, ext: l.ext }, ...(l.others || [])];
+
+/** Resposta do proprio servidor de video para link vencido (o resto vem do fornecedor). */
+async function expiredLink(res: Response) {
+  const text = await res.text().catch(() => "");
+  return /link inv[aá]lido ou expirado/i.test(text);
+}
+
+async function run(d0: Download, signal: AbortSignal, firstLink?: LinkResponse) {
   let d: Download = { ...d0, status: "downloading" };
   await putMeta(d);
   setOne(d);
   try {
-    let url = firstUrl || (await freshLink(d));
+    let routes = routesOf(firstLink || (await freshLink(d)));
+    // Copia e caminho em uso. Direto primeiro quando a lista deixa (fornecedor que recusa o servidor de video).
+    let i = Math.min(d.pick || 0, routes.length - 1);
+    let direct = d.route ? d.route === "direct" && !!routes[i].direct : !!routes[i].direct;
+    const tried = new Set<string>();
+    /** Proximo caminho: o mesmo arquivo pelo outro caminho; outra copia so antes de comecar (arquivo diferente). */
+    const nextRoute = () => {
+      tried.add(`${i}:${direct}`);
+      if (!tried.has(`${i}:false`)) direct = false;
+      else if (routes[i].direct && !tried.has(`${i}:true`)) direct = true;
+      else if (d.done === 0 && i + 1 < routes.length) {
+        i++;
+        direct = !!routes[i].direct;
+      } else return false;
+      working = false;
+      return true;
+    };
+    let working = false; // algum pedaco ja veio por este caminho
     let retries = 0;
+    let renewed = 0;
     while (!d.size || d.done < d.size) {
       const end = d.done + CHUNK - 1;
+      const url = direct ? routes[i].direct! : routes[i].url;
       let res: Response;
       try {
         res = await fetch(url, { headers: { Range: `bytes=${d.done}-${end}` }, signal });
       } catch (err) {
         if (signal.aborted) return;
+        // Direto do fornecedor pode ser barrado pelo navegador (http em site https, sem permissao): vai pelo servidor.
+        if (direct && !working && nextRoute()) continue;
         if (++retries > 4) throw new Error("Sem conexão. Continue quando a internet voltar.");
         await new Promise((r) => setTimeout(r, 2000 * retries));
         continue;
       }
-      if (res.status === 403 && retries < 2) {
-        // Link do servidor de video vencido (download longo): pede outro.
-        retries++;
-        url = await freshLink(d);
-        continue;
+      if (res.status === 416 && d.done > 0) {
+        d.size = d.done; // pediu depois do fim: arquivo completo
+        break;
       }
-      if (!res.ok) throw new Error(res.status === 404 ? "Título não encontrado no servidor" : `O servidor respondeu ${res.status}`);
+      if (!res.ok) {
+        if (!direct && res.status === 403 && (await expiredLink(res))) {
+          // Link do servidor de video vencido (download longo): pede outro.
+          if (++renewed > 2) throw new Error("O link do download expirou. Tente de novo.");
+          routes = routesOf(await freshLink(d));
+          if (i >= routes.length) i = 0;
+          continue;
+        }
+        if (nextRoute()) continue;
+        throw new Error(
+          res.status === 404
+            ? "Título não encontrado no servidor"
+            : res.status === 401 || res.status === 403
+              ? `O fornecedor da lista recusou o download (HTTP ${res.status}). Tente mais tarde ou assista online.`
+              : `O servidor respondeu ${res.status}`,
+        );
+      }
+      working = true;
+      if (d.pick !== i || d.route !== (direct ? "direct" : "proxy")) {
+        d = { ...d, pick: i, route: direct ? "direct" : "proxy", ext: routes[i].ext || d.ext };
+        await putMeta(d);
+      }
       if (res.status === 200 && d.done > 0) {
         // Fonte sem pedacos (Range): recomeca do zero.
         await removeAll(d.id);
@@ -270,6 +330,7 @@ async function run(d0: Download, signal: AbortSignal, firstUrl?: string) {
       if (total) d.size = total;
       const reader = res.body?.getReader();
       if (!reader) throw new Error("Resposta vazia do servidor");
+      const before = d.done;
       let pending: Uint8Array[] = [];
       let pendingBytes = 0;
       const flush = async () => {
@@ -297,7 +358,9 @@ async function run(d0: Download, signal: AbortSignal, firstUrl?: string) {
       await flush();
       retries = 0;
       if (res.status === 200) d.size = d.done; // veio inteiro
-      if (!d.size) throw new Error("Tamanho do arquivo desconhecido");
+      // Direto do fornecedor o navegador pode esconder o tamanho total: pedaco menor que o pedido = fim do arquivo.
+      if (d.done === before) throw new Error("Resposta vazia do servidor");
+      if (!d.size && d.done - before < CHUNK) d.size = d.done;
     }
     d = { ...d, status: "done" };
     await putMeta(d);

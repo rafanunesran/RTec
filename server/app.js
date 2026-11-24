@@ -3199,7 +3199,10 @@ export function createApp() {
     }),
   );
 
-  // Link para baixar um filme/episodio: sempre pelo servidor de video, com o link do fornecedor cifrado.
+  // Link para baixar um filme/episodio: pelo servidor de video, com o link do fornecedor cifrado. Lista sem
+  // blindagem (ou blindagem desligada) tambem leva o link direto, tentado primeiro: fornecedor que recusa o
+  // servidor de video (HTTP 403) baixa direto do aparelho, como ja toca. "more": o mesmo titulo nas outras
+  // listas do cliente, tentado se este nao baixar.
   app.post(
     "/api/player/downloads/link",
     requireClient,
@@ -3210,24 +3213,34 @@ export function createApp() {
       if (!proxyBase()) throw new HttpError(503, "Downloads indisponíveis no momento", "no_video_server");
       const kind = String(req.body?.kind || "");
       if (kind !== "movie" && kind !== "series") throw new HttpError(400, "Só filmes e episódios podem ser baixados");
-      const raw = String(req.body?.src || "");
-      let target = "";
-      try {
-        const parsed = new URL(raw, "http://local");
-        if (parsed.pathname.endsWith("/api/player/proxy")) {
-          const { u, c: cid, e, s } = Object.fromEntries(parsed.searchParams);
-          target = cid === c.id ? proxyTarget(u, cid, e, s, { allowExpired: true }) : "";
-        } else if (/^https?:\/\//i.test(raw) && (await clientServers(c)).has(parsed.origin.toLowerCase())) {
-          target = raw;
+      const servers = await clientServers(c, { shieldedOnly: true });
+      const resolve = (raw) => {
+        try {
+          const parsed = new URL(String(raw || ""), "http://local");
+          if (parsed.pathname.endsWith("/api/player/proxy")) {
+            const { u, c: cid, e, s } = Object.fromEntries(parsed.searchParams);
+            return cid === c.id ? proxyTarget(u, cid, e, s, { allowExpired: true }) || "" : "";
+          }
+          const origin = parsed.origin.toLowerCase();
+          if (/^https?:\/\//i.test(String(raw)) && (servers.has(origin) || servers.direct.has(origin))) return String(raw);
+        } catch {
+          /* link invalido */
         }
-      } catch {
-        target = "";
-      }
+        return "";
+      };
+      const linkFor = (target) => {
+        const origin = new URL(target).origin.toLowerCase();
+        const direct = !req.hideLinks || servers.direct.has(origin);
+        return { url: proxyUrl(c.id, target), ...(direct ? { direct: target } : {}), ext: new URL(target).pathname.split(".").pop().toLowerCase() };
+      };
+      const target = resolve(req.body?.src);
       if (!target) throw new HttpError(400, "Link inválido para download");
       if (!DOWNLOADABLE.test(new URL(target).pathname)) throw new HttpError(415, "Este título não pode ser baixado (formato de transmissão)", "not_file");
+      const more = (Array.isArray(req.body?.more) ? req.body.more.slice(0, MAX_MORE) : [])
+        .map(resolve)
+        .filter((t) => t && t !== target && DOWNLOADABLE.test(new URL(t).pathname));
       res.setHeader("Cache-Control", "no-store");
-      const ext = new URL(target).pathname.split(".").pop().toLowerCase();
-      res.json({ url: proxyUrl(c.id, target), ext, valid_until: downloadValidUntil(c, d.days), max_items: d.max_items });
+      res.json({ ...linkFor(target), others: [...new Set(more)].map(linkFor), valid_until: downloadValidUntil(c, d.days), max_items: d.max_items });
     }),
   );
 
